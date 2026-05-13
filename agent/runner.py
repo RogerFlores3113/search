@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
+from browser_use import Agent, ChatOllama
+from browser_use.browser.session import BrowserSession
 
 from agent.config import config
 
@@ -103,9 +105,6 @@ async def run_agent(task: str) -> None:
 
     Final: await browser.kill().
     """
-    from browser_use import Agent, ChatOllama
-    from browser_use.browser.session import BrowserSession
-
     await pre_flight_check(config)
 
     browser = BrowserSession(channel="chrome", headless=False, keep_alive=False)

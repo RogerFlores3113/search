@@ -2,15 +2,34 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from agent.runner import run_agent
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI lifespan. Wave 1 will add asyncio.create_task(run_agent(...)) here."""
+    """FastAPI lifespan hook.
+
+    On startup: if app.state.pending_task is set, create an asyncio task for run_agent.
+    On shutdown: cancel the task if still running.
+    """
+    task_ref: Optional[asyncio.Task] = None
+    pending = getattr(app.state, "pending_task", None)
+    if pending:
+        task_ref = asyncio.create_task(run_agent(pending))
+
     yield
+
+    if task_ref is not None and not task_ref.done():
+        task_ref.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task_ref), timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
 
 
 app = FastAPI(lifespan=lifespan)
@@ -22,5 +41,6 @@ class RunRequest(BaseModel):
 
 @app.post("/run")
 async def run_endpoint(request: RunRequest):
-    """Accept a task and trigger the agent. Stub — Wave 1 will wire run_agent."""
-    return {"status": "stub — wave 1 will wire run_agent"}
+    """Accept a task string and start the agent as a fire-and-forget asyncio task."""
+    asyncio.create_task(run_agent(request.task))
+    return {"status": "started"}
