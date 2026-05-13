@@ -2,11 +2,11 @@
 
 ## What This Is
 
-A local-first agentic browser automation framework with a bring-your-own-model (BYOM) architecture. The agent runs entirely on the user's machine — a visible Playwright browser window captures screenshots, an LLM decides the next action (click/type/scroll), and results are streamed live to a localhost web UI. Users bring their own model (Ollama, Anthropic, OpenAI, Gemini) or point at a local Ollama instance. Designed for tech-adjacent users who want a real UI, not a config file.
+A consumer-grade local AI browser agent — download, double-click, done. The app drives the user's own Chrome from their machine and residential IP, the LLM has full browser control (click, type, scroll, navigate), and every step streams live to a localhost web UI. User types any natural language task; the agent completes it on any site. No Python, no terminal, no cloud required.
 
 ## Core Value
 
-A working apartment finder preset that completes a real search end-to-end from a residential IP — proving the local agentic loop works before any other preset is built.
+User types any natural language task, the agent opens Chrome and completes it — a general-purpose agentic loop that works on arbitrary sites before structured presets are layered on top.
 
 ## Requirements
 
@@ -16,27 +16,30 @@ A working apartment finder preset that completes a real search end-to-end from a
 
 ### Active
 
-- [ ] Core agentic loop: screenshot → LLM decision → browser action → repeat until done
-- [ ] browser-use integration as the loop engine (evaluate vs raw Playwright + custom loop)
-- [ ] LiteLLM provider abstraction: Ollama (local), Anthropic, OpenAI, Gemini
-- [ ] Apartment finder preset (port from existing webapp): goal, allowed domains, search constraints, output schema
-- [ ] Fast path for non-JS sites (Craigslist, Zumper via httpx) alongside full agentic loop
-- [ ] Domain allowlist enforcement per preset (guardrails)
-- [ ] Action blocklist: no bank sites, no email composition, no out-of-scope form submissions
-- [ ] Localhost web UI with live status updates, spinners, and streaming result tables
-- [ ] Output to SQLite and/or Excel (.xlsx) files
-- [ ] Cross-platform launch script: opens localhost UI in user's browser (Windows/Mac/Linux)
-- [ ] User-facing safety disclaimer on launch
-- [ ] Preset viewer/editor: users can inspect and tweak preset config
+- [ ] General-purpose agentic loop: screenshot → LLM decision → browser action → repeat (any site, any task)
+- [ ] LLM has full browser control: click, type, scroll, navigate — no per-domain logic
+- [ ] browser-use as the loop engine (Python-native, MIT, validated over raw Playwright)
+- [ ] BYOM: Ollama (local, Qwen2.5-VL:7b recommended), Anthropic (Claude), OpenAI (GPT-4o)
+- [ ] Guardrails: global domain blocklist + action system-prompt instructions (no payment CTAs, no credential submission outside user-directed sites)
+- [ ] Localhost web UI: prompt box, live screenshot stream, narration feed, state/progress, pause/stop
+- [ ] Run history: task, status, timestamp saved locally; recent runs viewable
+- [ ] Mac .app distribution: double-click launch, no dependencies, drives user's Chrome
+- [ ] Safety disclaimer on first launch
 
 ### Out of Scope
 
 - Cloud deployment — datacenter IPs get blocked by apartment/job sites; residential IP is a functional requirement, not just a privacy preference
 - Electron wrapper — adds complexity; localhost UI in the system browser is sufficient
+- Headless browser — the app uses the user's real Chrome (headed), which avoids bot detection and is the better UX; headless mode not needed
+- Authenticated sessions (login, saved credentials) in v1 — apartment search is unauthenticated; credential management is a dedicated v2 feature requiring secure storage design
+- Using the user's existing browser — too risky; could corrupt active sessions; agent runs its own isolated Chromium instance
 - CAPTCHA solving — not a v1 concern; log and surface to user when encountered
 - Multi-user or shared sessions — local single-user tool
-- Custom preset builder (GUI) in v1 — presets are editable config files; GUI builder is v2
+- Per-domain scrapers / regex selectors — obsolete; LLM vision handles arbitrary domains; building per-domain logic is regressing to pre-LLM tooling
+- Structured task presets in v1 — apartment/job/lead presets are v2, layered on top of the proven general loop
+- Fast path (httpx) in v1 — v2 performance optimization once the general agent loop is solid
 - Training data pipeline in v1 — session (screenshot, action) pairs are a stretch goal; log them but no LoRA tooling yet
+- Voice dictation in v1 — nice-to-have for search input, deferred to v2
 
 ## Context
 
@@ -55,10 +58,11 @@ A working apartment finder preset that completes a real search end-to-end from a
 ## Constraints
 
 - **Tech stack**: Python — browser-use, LiteLLM, Playwright are all Python; no reason to deviate
-- **Distribution**: Cross-platform launch script, no Electron, no cloud required
+- **Distribution**: Bundled native app — `.app` (Mac) and `.exe` (Windows) via PyInstaller or Briefcase. Double-click to launch, zero dependencies for end users. Built and published via GitHub Actions → GitHub Releases. Developer workflow uses `uv`.
+- **Browser**: User's installed Google Chrome via `playwright.chromium.launch(channel="chrome")`. No Chromium download bundled. Headed (visible), residential IP, real browser fingerprint — not flagged as bot. Fallback: friendly prompt to install Chrome if not found.
 - **Performance**: Minimize overhead — running Playwright + an LLM is already CPU/RAM intensive; UI must be lightweight
 - **Security**: No cloud component; user's API keys stay local; no data leaves the machine except LLM API calls
-- **Scope**: v1 is apartment preset only — prove the loop before adding presets
+- **Scope**: v1 is the general-purpose loop — prove it works on any site before building structured presets
 
 ## Key Decisions
 
@@ -67,9 +71,9 @@ A working apartment finder preset that completes a real search end-to-end from a
 | Local-first (no cloud deployment) | Datacenter IPs blocked by target sites; residential IP is functionally required | — Pending |
 | BYOM via LiteLLM | Single abstraction for Ollama + all major API providers; user brings their own key | — Pending |
 | browser-use as loop engine (to validate) | Avoid building agentic loop from scratch; research to confirm it's the right foundation | — Pending |
-| Apartment preset as v1 anchor | Existing scraper logic to port; clearest success criteria; single preset proves framework | — Pending |
-| Fast path (httpx) + full agentic path | Non-JS sites don't need a full browser loop; hybrid is more efficient and reliable | — Pending |
+| General-purpose loop as v1 (no presets) | LLM vision handles arbitrary domains — per-domain scrapers are pre-LLM thinking; prove the loop first | — Pending |
 | Localhost UI (no Electron) | Simpler distribution; system browser is sufficient; lower resource overhead | — Pending |
+| Native bundled app (.app / .exe) | Consumer app target — zero dependencies, double-click launch; uses user's Chrome via `channel="chrome"` | — Pending |
 
 ## Evolution
 
