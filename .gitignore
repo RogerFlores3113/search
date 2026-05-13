@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+training/*.jsonl
+.env
+dist/
+build/
+*.egg-info/
+.planning/
