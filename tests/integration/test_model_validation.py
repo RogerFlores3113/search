@@ -10,7 +10,6 @@ import pytest
 from agent.config import Settings
 
 
-@pytest.mark.xfail(reason="Wave 1 will implement pre_flight_check")
 async def test_preflight_passes_when_ollama_up_and_model_pulled(mock_ollama_tags_ok):
     """pre_flight_check must return normally when Ollama is up and model is available."""
     from agent.runner import pre_flight_check
@@ -19,7 +18,6 @@ async def test_preflight_passes_when_ollama_up_and_model_pulled(mock_ollama_tags
     await pre_flight_check(Settings())
 
 
-@pytest.mark.xfail(reason="Wave 1 will implement pre_flight_check")
 async def test_preflight_exits_with_actionable_msg_when_ollama_down(
     mock_ollama_unreachable, capsys
 ):
@@ -36,7 +34,6 @@ async def test_preflight_exits_with_actionable_msg_when_ollama_down(
     )
 
 
-@pytest.mark.xfail(reason="Wave 1 will implement pre_flight_check")
 async def test_preflight_exits_with_pull_instruction_when_model_missing(
     mock_ollama_model_missing, capsys
 ):

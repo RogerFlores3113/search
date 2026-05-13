@@ -22,7 +22,6 @@ def _make_fake_agent():
     return types.SimpleNamespace(history=history)
 
 
-@pytest.mark.xfail(reason="Wave 1 will implement log_step")
 async def test_log_step_writes_jsonl_line(training_dir):
     """log_step must write exactly one JSONL record with all nine D-09 schema fields."""
     from agent.runner import log_step
@@ -51,7 +50,6 @@ async def test_log_step_writes_jsonl_line(training_dir):
         assert field in record, f"Missing field: {field}"
 
 
-@pytest.mark.xfail(reason="Wave 1 will implement log_step")
 async def test_log_step_creates_training_dir(training_dir):
     """log_step must create the training/ directory if it does not exist."""
     import shutil
@@ -68,7 +66,6 @@ async def test_log_step_creates_training_dir(training_dir):
     assert (training_dir / "runs.jsonl").exists()
 
 
-@pytest.mark.xfail(reason="Wave 1 will implement log_step")
 async def test_log_step_appends_not_overwrites(training_dir):
     """Calling log_step twice must produce exactly 2 JSONL lines (append, not overwrite)."""
     from agent.runner import log_step
