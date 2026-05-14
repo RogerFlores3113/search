@@ -109,7 +109,7 @@ async def run_agent(task: str) -> None:
 
     browser = BrowserSession(channel="chrome", headless=False, keep_alive=False)
     try:
-        llm = ChatOllama(model=config.ollama_model, num_ctx=32000)
+        llm = ChatOllama(model=config.ollama_model, ollama_options={"num_ctx": 32000})
         agent = Agent(task=task, llm=llm, browser_session=browser)
 
         try:

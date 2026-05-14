@@ -148,10 +148,10 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
         keep_alive=False,
     )
 
-    # ChatOllama was constructed with num_ctx=32000 and the configured model
+    # ChatOllama was constructed with ollama_options={"num_ctx": 32000} and the configured model
     MockChatOllama.assert_called_once_with(
         model=config.ollama_model,
-        num_ctx=32000,
+        ollama_options={"num_ctx": 32000},
     )
 
     # Agent was instantiated (task= argument and others come from run_agent)

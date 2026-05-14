@@ -92,7 +92,7 @@ async def test_run_agent_constructs_chat_ollama_with_num_ctx(monkeypatch):
 
     MockChatOllama.assert_called_once_with(
         model=_default_config.ollama_model,
-        num_ctx=32000,
+        ollama_options={"num_ctx": 32000},
     )
 
 
