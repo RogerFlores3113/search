@@ -8,7 +8,10 @@ import pytest
 @pytest.fixture
 def monkeypatch_env(monkeypatch):
     """Clear all agent-relevant env vars so Settings() uses defaults."""
-    for var in ("PROVIDER", "OLLAMA_HOST", "OLLAMA_MODEL", "MAX_STEPS", "SESSION_TIMEOUT"):
+    for var in (
+        "PROVIDER", "OLLAMA_HOST", "OLLAMA_MODEL", "MAX_STEPS", "SESSION_TIMEOUT",
+        "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", "OPENAI_API_KEY", "OPENAI_MODEL",
+    ):
         monkeypatch.delenv(var, raising=False)
     return monkeypatch
 
@@ -53,5 +56,28 @@ def mock_ollama_model_missing(httpx_mock):
         method="GET",
         url="http://localhost:11434/api/tags",
         json={"models": [{"name": "gemma4:e4b"}]},
+    )
+    return httpx_mock
+
+
+@pytest.fixture
+def mock_openai_models_ok(httpx_mock):
+    """Return 200 for OpenAI /v1/models endpoint."""
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.openai.com/v1/models",
+        json={"object": "list", "data": []},
+        status_code=200,
+    )
+    return httpx_mock
+
+
+@pytest.fixture
+def mock_openai_models_401(httpx_mock):
+    """Return 401 for OpenAI /v1/models endpoint."""
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.openai.com/v1/models",
+        status_code=401,
     )
     return httpx_mock

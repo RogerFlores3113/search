@@ -48,3 +48,67 @@ def test_max_steps_coerced_to_int(monkeypatch_env):
     s = Settings()
     assert isinstance(s.max_steps, int)
     assert s.max_steps == 3
+
+
+# ---------------------------------------------------------------------------
+# Multi-provider API key fields (MODEL-02, MODEL-03)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+def test_anthropic_api_key_loads_as_secret_str(monkeypatch_env):
+    """ANTHROPIC_API_KEY must load as SecretStr and hide value in repr."""
+    from pydantic import SecretStr
+    monkeypatch_env.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    from agent.config import Settings
+
+    s = Settings()
+    assert isinstance(s.anthropic_api_key, SecretStr)
+    assert "sk-ant-test-key" not in repr(s.anthropic_api_key)
+    assert s.anthropic_api_key.get_secret_value() == "sk-ant-test-key"
+
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+def test_openai_api_key_loads_as_secret_str(monkeypatch_env):
+    """OPENAI_API_KEY must load as SecretStr and hide value in repr."""
+    from pydantic import SecretStr
+    monkeypatch_env.setenv("OPENAI_API_KEY", "sk-openai-test-key")
+    from agent.config import Settings
+
+    s = Settings()
+    assert isinstance(s.openai_api_key, SecretStr)
+    assert "sk-openai-test-key" not in repr(s.openai_api_key)
+    assert s.openai_api_key.get_secret_value() == "sk-openai-test-key"
+
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+def test_anthropic_api_key_defaults_to_none(monkeypatch_env):
+    """ANTHROPIC_API_KEY must default to None when not set."""
+    from agent.config import Settings
+
+    assert Settings().anthropic_api_key is None
+
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+def test_openai_api_key_defaults_to_none(monkeypatch_env):
+    """OPENAI_API_KEY must default to None when not set."""
+    from agent.config import Settings
+
+    assert Settings().openai_api_key is None
+
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+def test_anthropic_model_env_override(monkeypatch_env):
+    """ANTHROPIC_MODEL env var must override the default model string."""
+    monkeypatch_env.setenv("ANTHROPIC_MODEL", "claude-opus-4-5")
+    from agent.config import Settings
+
+    assert Settings().anthropic_model == "claude-opus-4-5"
+
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+def test_openai_model_env_override(monkeypatch_env):
+    """OPENAI_MODEL env var must override the default model string."""
+    monkeypatch_env.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    from agent.config import Settings
+
+    assert Settings().openai_model == "gpt-4o-mini"

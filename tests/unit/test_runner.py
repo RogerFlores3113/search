@@ -289,3 +289,134 @@ async def test_lifespan_creates_agent_task_when_pending_task_set(monkeypatch):
         await asyncio.sleep(0)
 
     run_agent_mock.assert_awaited_once_with("test task")
+
+
+# ---------------------------------------------------------------------------
+# build_llm factory (MODEL-02, MODEL-03)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+def test_build_llm_returns_chat_ollama_for_ollama_provider(monkeypatch_env):
+    """build_llm must return a ChatOllama instance when provider='ollama'."""
+    from agent.config import Settings
+    from agent.runner import build_llm
+
+    cfg = Settings()
+    with patch("agent.runner.ChatOllama") as MockChatOllama:
+        build_llm(cfg)
+        MockChatOllama.assert_called_once_with(
+            model=cfg.ollama_model,
+            ollama_options={"num_ctx": 32000},
+        )
+
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+def test_build_llm_returns_chat_anthropic_for_anthropic_provider(monkeypatch_env):
+    """build_llm must return a ChatAnthropic instance when provider='anthropic'."""
+    monkeypatch_env.setenv("PROVIDER", "anthropic")
+    monkeypatch_env.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+    from agent.config import Settings
+    from agent.runner import build_llm
+
+    cfg = Settings()
+    with patch("agent.runner.ChatAnthropic") as MockChatAnthropic:
+        build_llm(cfg)
+        MockChatAnthropic.assert_called_once_with(
+            model=cfg.anthropic_model,
+            api_key="sk-ant-fake",
+        )
+
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+def test_build_llm_returns_chat_litellm_for_openai_provider(monkeypatch_env):
+    """build_llm must return a ChatLiteLLM instance when provider='openai'."""
+    monkeypatch_env.setenv("PROVIDER", "openai")
+    monkeypatch_env.setenv("OPENAI_API_KEY", "sk-openai-fake")
+    from agent.config import Settings
+    from agent.runner import build_llm
+
+    cfg = Settings()
+    with patch("agent.runner.ChatLiteLLM") as MockChatLiteLLM:
+        build_llm(cfg)
+        MockChatLiteLLM.assert_called_once_with(
+            model=cfg.openai_model,
+            api_key="sk-openai-fake",
+        )
+
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+def test_build_llm_raises_for_unknown_provider(monkeypatch_env):
+    """build_llm must raise ValueError for an unrecognised provider string."""
+    monkeypatch_env.setenv("PROVIDER", "groq")
+    from agent.config import Settings
+    from agent.runner import build_llm
+
+    with pytest.raises(ValueError, match="Unknown provider"):
+        build_llm(Settings())
+
+
+# ---------------------------------------------------------------------------
+# pre_flight_check — anthropic branch (MODEL-02)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+async def test_preflight_raises_when_anthropic_key_missing(monkeypatch_env):
+    """pre_flight_check must raise PreFlightError when provider=anthropic and key absent."""
+    monkeypatch_env.setenv("PROVIDER", "anthropic")
+    from agent.config import Settings
+    from agent.runner import PreFlightError, pre_flight_check
+
+    with pytest.raises(PreFlightError, match="Missing Anthropic API key"):
+        await pre_flight_check(Settings())
+
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+async def test_preflight_raises_when_anthropic_key_invalid(monkeypatch_env):
+    """pre_flight_check must raise PreFlightError on Anthropic AuthenticationError."""
+    import anthropic as _anthropic
+    monkeypatch_env.setenv("PROVIDER", "anthropic")
+    monkeypatch_env.setenv("ANTHROPIC_API_KEY", "sk-ant-bad-key")
+    from agent.config import Settings
+    from agent.runner import PreFlightError, pre_flight_check
+
+    mock_client = MagicMock()
+    mock_client.models.list = AsyncMock(
+        side_effect=_anthropic.AuthenticationError(
+            message="invalid key", response=MagicMock(), body={}
+        )
+    )
+    with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+        with pytest.raises(PreFlightError, match="Invalid Anthropic API key"):
+            await pre_flight_check(Settings())
+
+
+# ---------------------------------------------------------------------------
+# pre_flight_check — openai branch (MODEL-03)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+async def test_preflight_raises_when_openai_key_missing(monkeypatch_env):
+    """pre_flight_check must raise PreFlightError when provider=openai and key absent."""
+    monkeypatch_env.setenv("PROVIDER", "openai")
+    from agent.config import Settings
+    from agent.runner import PreFlightError, pre_flight_check
+
+    with pytest.raises(PreFlightError, match="Missing OpenAI API key"):
+        await pre_flight_check(Settings())
+
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+async def test_preflight_raises_when_openai_key_invalid(monkeypatch_env, httpx_mock):
+    """pre_flight_check must raise PreFlightError when OpenAI returns 401."""
+    monkeypatch_env.setenv("PROVIDER", "openai")
+    monkeypatch_env.setenv("OPENAI_API_KEY", "sk-bad")
+    httpx_mock.add_response(
+        method="GET",
+        url="https://api.openai.com/v1/models",
+        status_code=401,
+    )
+    from agent.config import Settings
+    from agent.runner import PreFlightError, pre_flight_check
+
+    with pytest.raises(PreFlightError, match="Invalid OpenAI API key"):
+        await pre_flight_check(Settings())
