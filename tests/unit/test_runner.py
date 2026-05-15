@@ -44,8 +44,10 @@ def _make_mock_browser():
 # ---------------------------------------------------------------------------
 
 async def test_run_agent_constructs_browser_session_with_chrome_channel(monkeypatch):
-    """run_agent must build BrowserSession(channel='chrome', headless=False, keep_alive=False)."""
+    """run_agent must build BrowserProfile(channel='chrome', ...) then BrowserSession(browser_profile=...)."""
     mock_browser = _make_mock_browser()
+    mock_profile = MagicMock()
+    MockBrowserProfile = MagicMock(return_value=mock_profile)
     MockBrowserSession = MagicMock(return_value=mock_browser)
 
     mock_history = _make_mock_history()
@@ -55,18 +57,24 @@ async def test_run_agent_constructs_browser_session_with_chrome_channel(monkeypa
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
 
-    with patch("agent.runner.BrowserSession", MockBrowserSession), \
+    with patch("agent.runner.BrowserProfile", MockBrowserProfile), \
+         patch("agent.runner.BrowserSession", MockBrowserSession), \
          patch("agent.runner.ChatOllama", MockChatOllama), \
          patch("agent.runner.Agent", MockAgent):
         from agent.runner import run_agent
         await run_agent("test task")
 
-    MockBrowserSession.assert_called_once_with(
-        channel="chrome",
-        headless=False,
-        keep_alive=False,
-        window_size={"width": 1280, "height": 800},
-    )
+    # BrowserProfile must be built with browser settings and prohibited_domains
+    assert MockBrowserProfile.called, "BrowserProfile was never instantiated"
+    profile_kwargs = MockBrowserProfile.call_args.kwargs
+    assert profile_kwargs.get("channel") == "chrome"
+    assert profile_kwargs.get("headless") is False
+    assert profile_kwargs.get("keep_alive") is False
+    assert profile_kwargs.get("window_size") == {"width": 1280, "height": 800}
+    assert "prohibited_domains" in profile_kwargs
+
+    # BrowserSession must be built with the profile object
+    MockBrowserSession.assert_called_once_with(browser_profile=mock_profile)
     assert mock_browser.llm_screenshot_size == (1024, 640)
 
 
@@ -412,3 +420,71 @@ async def test_preflight_raises_when_openai_key_invalid(monkeypatch_env, httpx_m
 
     with pytest.raises(PreFlightError, match="Invalid OpenAI API key"):
         await pre_flight_check(Settings())
+
+
+# ---------------------------------------------------------------------------
+# CAPTCHA detection in log_step (GUARD-04)
+# ---------------------------------------------------------------------------
+
+async def test_captcha_keyword_triggers_pause(training_dir):
+    """log_step must call agent.pause() when error text contains a CAPTCHA keyword."""
+    import types
+    from agent.runner import log_step
+
+    result_stub = types.SimpleNamespace(error="Please solve the captcha to continue")
+    history = types.SimpleNamespace(
+        number_of_steps=lambda: 1,
+        model_actions=lambda: [{"action_type": "navigate", "action_target": "", "action_value": ""}],
+        screenshots=lambda: ["iVBORw0KGgo="],
+        has_errors=lambda: True,
+    )
+    agent = types.SimpleNamespace(
+        history=history,
+        state=types.SimpleNamespace(last_result=[result_stub]),
+        pause=MagicMock(),
+    )
+    await log_step(agent)
+    agent.pause.assert_called_once()
+
+
+async def test_captcha_notification_printed_to_stdout(training_dir, capsys):
+    """log_step must print a CAPTCHA notification message to stdout on detection."""
+    import types
+    from agent.runner import log_step
+
+    result_stub = types.SimpleNamespace(error="recaptcha challenge detected")
+    history = types.SimpleNamespace(
+        number_of_steps=lambda: 1,
+        model_actions=lambda: [{"action_type": "navigate", "action_target": "", "action_value": ""}],
+        screenshots=lambda: ["iVBORw0KGgo="],
+        has_errors=lambda: True,
+    )
+    agent = types.SimpleNamespace(
+        history=history,
+        state=types.SimpleNamespace(last_result=[result_stub]),
+        pause=MagicMock(),
+    )
+    await log_step(agent)
+    captured = capsys.readouterr()
+    assert "CAPTCHA" in captured.out
+
+
+async def test_no_captcha_no_pause_when_error_text_clean(training_dir):
+    """log_step must NOT call agent.pause() when error text contains no CAPTCHA keyword."""
+    import types
+    from agent.runner import log_step
+
+    result_stub = types.SimpleNamespace(error="element not found")
+    history = types.SimpleNamespace(
+        number_of_steps=lambda: 1,
+        model_actions=lambda: [{"action_type": "click", "action_target": "#x", "action_value": ""}],
+        screenshots=lambda: ["iVBORw0KGgo="],
+        has_errors=lambda: True,
+    )
+    agent = types.SimpleNamespace(
+        history=history,
+        state=types.SimpleNamespace(last_result=[result_stub]),
+        pause=MagicMock(),
+    )
+    await log_step(agent)
+    agent.pause.assert_not_called()

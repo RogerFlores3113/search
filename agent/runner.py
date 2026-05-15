@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 from browser_use import Agent, ChatAnthropic, ChatLiteLLM, ChatOllama
+from browser_use.browser.profile import BrowserProfile
 from browser_use.browser.session import BrowserSession
 
 from agent.config import config
@@ -24,6 +25,22 @@ class PreFlightError(RuntimeError):
 RUN_ID = str(uuid.uuid4())
 
 TRAINING_FILE = Path("training/runs.jsonl")
+
+GUARDRAIL_PROMPT = (
+    "\nSAFETY GUARDRAILS — override everything else:\n"
+    "1. NEVER click Buy Now, Purchase, Checkout, Pay, Place Order, Confirm Order, "
+    "Complete Purchase, or any equivalent commerce CTA.\n"
+    "2. NEVER submit forms containing credit card numbers, CVVs, bank account details, "
+    "Social Security Numbers, or passwords on any site the user did not explicitly name.\n"
+    "3. NEVER submit credentials (username/password) on any site not explicitly named.\n"
+    "4. If you encounter such an element, set is_done=True, success=False, explain what you found.\n"
+)
+
+CAPTCHA_KEYWORDS = frozenset([
+    "captcha", "recaptcha", "hcaptcha", "cloudflare",
+    "bot detection", "access denied", "verify you are human",
+    "i'm not a robot", "challenge",
+])
 
 
 def build_llm(cfg: "Settings"):
@@ -168,6 +185,19 @@ async def log_step(agent) -> None:
 
     print(f"[step {step_idx + 1}] {record['narration']}")
 
+    # CAPTCHA detection via error keyword scan (CaptchaWatchdog does not fire for local Chrome)
+    last_results = agent.state.last_result or []
+    for result in last_results:
+        error_text = (getattr(result, "error", None) or "").lower()
+        if any(kw in error_text for kw in CAPTCHA_KEYWORDS):
+            print(
+                "\n[CAPTCHA DETECTED] Agent encountered a CAPTCHA challenge.\n"
+                "  The agent is now paused. Solve the CAPTCHA manually in Chrome.\n"
+                "  The run will not auto-continue. Press Ctrl+C to stop.\n"
+            )
+            agent.pause()
+            break
+
 
 async def run_agent(task: str) -> None:
     """Pre-flight, build BrowserSession+ChatOllama+Agent, asyncio.wait_for(agent.run(...), timeout).
@@ -179,16 +209,23 @@ async def run_agent(task: str) -> None:
     except PreFlightError:
         return  # Error already printed; exit task cleanly without leaking SystemExit
 
-    browser = BrowserSession(
+    profile = BrowserProfile(
+        prohibited_domains=config.blocked_domains,
         channel="chrome",
         headless=False,
         keep_alive=False,
         window_size={"width": config.browser_width, "height": config.browser_height},
     )
+    browser = BrowserSession(browser_profile=profile)
     browser.llm_screenshot_size = (config.llm_screenshot_width, config.llm_screenshot_height)
     try:
         llm = build_llm(config)
-        agent = Agent(task=task, llm=llm, browser_session=browser)
+        agent = Agent(
+            task=task,
+            llm=llm,
+            browser_session=browser,
+            extend_system_message=GUARDRAIL_PROMPT,
+        )
 
         try:
             history = await asyncio.wait_for(

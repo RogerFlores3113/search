@@ -50,7 +50,9 @@ def _make_fake_history(num_steps: int = 2) -> MagicMock:
 
 def _make_fake_agent(history: MagicMock) -> SimpleNamespace:
     """Minimal Agent stand-in that on_step_end (log_step) can introspect."""
-    return SimpleNamespace(history=history)
+    # state.last_result must be present for the CAPTCHA detection branch in log_step
+    state = SimpleNamespace(last_result=[])
+    return SimpleNamespace(history=history, state=state, pause=MagicMock())
 
 
 def _make_browser_session_class() -> tuple[type, MagicMock]:
@@ -123,7 +125,10 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
         del app.state.pending_task
     app.state.pending_task = "test task"
 
+    MockBrowserProfile = MagicMock(return_value=MagicMock())
+
     with patch("agent.runner.pre_flight_check", new=AsyncMock()), \
+         patch("agent.runner.BrowserProfile", MockBrowserProfile), \
          patch("agent.runner.BrowserSession", MockBrowserSession), \
          patch("agent.runner.ChatOllama", MockChatOllama), \
          patch("agent.runner.Agent", MockAgent):
@@ -141,12 +146,17 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
 
     # --- Assertions ---
 
-    # BrowserSession was constructed with the correct channel/headless/keep_alive/size
+    # BrowserProfile was constructed with prohibited_domains and browser settings
+    assert MockBrowserProfile.called, "BrowserProfile was never instantiated"
+    profile_kwargs = MockBrowserProfile.call_args.kwargs
+    assert profile_kwargs.get("channel") == "chrome"
+    assert profile_kwargs.get("headless") is False
+    assert profile_kwargs.get("keep_alive") is False
+    assert "prohibited_domains" in profile_kwargs
+
+    # BrowserSession was constructed with browser_profile=
     MockBrowserSession.assert_called_once_with(
-        channel="chrome",
-        headless=False,
-        keep_alive=False,
-        window_size={"width": 1280, "height": 800},
+        browser_profile=MockBrowserProfile.return_value,
     )
     assert browser_instance.llm_screenshot_size == (1024, 640)
 
@@ -214,7 +224,10 @@ def test_post_run_endpoint_starts_agent(monkeypatch, tmp_path):
     if hasattr(app.state, "pending_task"):
         del app.state.pending_task
 
+    MockBrowserProfile = MagicMock(return_value=MagicMock())
+
     with patch("agent.runner.pre_flight_check", new=AsyncMock()), \
+         patch("agent.runner.BrowserProfile", MockBrowserProfile), \
          patch("agent.runner.BrowserSession", MockBrowserSession), \
          patch("agent.runner.ChatOllama", MockChatOllama), \
          patch("agent.runner.Agent", MockAgent):
@@ -224,9 +237,11 @@ def test_post_run_endpoint_starts_agent(monkeypatch, tmp_path):
             assert response.status_code == 200
             assert response.json() == {"status": "started"}
 
-    # Agent was instantiated with task="another task"
+    # Agent was instantiated with task="another task" and guardrail prompt
+    from agent.runner import GUARDRAIL_PROMPT
     MockAgent.assert_called_once_with(
         task="another task",
         llm=MockChatOllama.return_value,
         browser_session=MockBrowserSession.return_value,
+        extend_system_message=GUARDRAIL_PROMPT,
     )
