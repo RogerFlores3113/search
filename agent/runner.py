@@ -118,8 +118,8 @@ async def run_agent(task: str) -> None:
         headless=False,
         keep_alive=False,
         window_size={"width": config.browser_width, "height": config.browser_height},
-        llm_screenshot_size=(config.llm_screenshot_width, config.llm_screenshot_height),
     )
+    browser.llm_screenshot_size = (config.llm_screenshot_width, config.llm_screenshot_height)
     try:
         llm = ChatOllama(model=config.ollama_model, ollama_options={"num_ctx": 32000})
         agent = Agent(task=task, llm=llm, browser_session=browser)

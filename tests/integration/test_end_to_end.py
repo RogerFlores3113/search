@@ -147,8 +147,8 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
         headless=False,
         keep_alive=False,
         window_size={"width": 1280, "height": 800},
-        llm_screenshot_size=(1024, 640),
     )
+    assert browser_instance.llm_screenshot_size == (1024, 640)
 
     # ChatOllama was constructed with ollama_options={"num_ctx": 32000} and the configured model
     MockChatOllama.assert_called_once_with(
