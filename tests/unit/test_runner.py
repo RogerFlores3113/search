@@ -295,7 +295,6 @@ async def test_lifespan_creates_agent_task_when_pending_task_set(monkeypatch):
 # build_llm factory (MODEL-02, MODEL-03)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
 def test_build_llm_returns_chat_ollama_for_ollama_provider(monkeypatch_env):
     """build_llm must return a ChatOllama instance when provider='ollama'."""
     from agent.config import Settings
@@ -310,7 +309,6 @@ def test_build_llm_returns_chat_ollama_for_ollama_provider(monkeypatch_env):
         )
 
 
-@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
 def test_build_llm_returns_chat_anthropic_for_anthropic_provider(monkeypatch_env):
     """build_llm must return a ChatAnthropic instance when provider='anthropic'."""
     monkeypatch_env.setenv("PROVIDER", "anthropic")
@@ -327,7 +325,6 @@ def test_build_llm_returns_chat_anthropic_for_anthropic_provider(monkeypatch_env
         )
 
 
-@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
 def test_build_llm_returns_chat_litellm_for_openai_provider(monkeypatch_env):
     """build_llm must return a ChatLiteLLM instance when provider='openai'."""
     monkeypatch_env.setenv("PROVIDER", "openai")
@@ -344,7 +341,6 @@ def test_build_llm_returns_chat_litellm_for_openai_provider(monkeypatch_env):
         )
 
 
-@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
 def test_build_llm_raises_for_unknown_provider(monkeypatch_env):
     """build_llm must raise ValueError for an unrecognised provider string."""
     monkeypatch_env.setenv("PROVIDER", "groq")
@@ -359,7 +355,6 @@ def test_build_llm_raises_for_unknown_provider(monkeypatch_env):
 # pre_flight_check — anthropic branch (MODEL-02)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
 async def test_preflight_raises_when_anthropic_key_missing(monkeypatch_env):
     """pre_flight_check must raise PreFlightError when provider=anthropic and key absent."""
     monkeypatch_env.setenv("PROVIDER", "anthropic")
@@ -370,7 +365,6 @@ async def test_preflight_raises_when_anthropic_key_missing(monkeypatch_env):
         await pre_flight_check(Settings())
 
 
-@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
 async def test_preflight_raises_when_anthropic_key_invalid(monkeypatch_env):
     """pre_flight_check must raise PreFlightError on Anthropic AuthenticationError."""
     import anthropic as _anthropic
@@ -394,7 +388,6 @@ async def test_preflight_raises_when_anthropic_key_invalid(monkeypatch_env):
 # pre_flight_check — openai branch (MODEL-03)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
 async def test_preflight_raises_when_openai_key_missing(monkeypatch_env):
     """pre_flight_check must raise PreFlightError when provider=openai and key absent."""
     monkeypatch_env.setenv("PROVIDER", "openai")
@@ -405,7 +398,6 @@ async def test_preflight_raises_when_openai_key_missing(monkeypatch_env):
         await pre_flight_check(Settings())
 
 
-@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
 async def test_preflight_raises_when_openai_key_invalid(monkeypatch_env, httpx_mock):
     """pre_flight_check must raise PreFlightError when OpenAI returns 401."""
     monkeypatch_env.setenv("PROVIDER", "openai")

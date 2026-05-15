@@ -1,3 +1,4 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,6 +22,14 @@ class Settings(BaseSettings):
     # Screenshot size sent to the LLM — smaller = fewer tokens = faster loops
     llm_screenshot_width: int = 1024
     llm_screenshot_height: int = 640
+
+    # Anthropic provider
+    anthropic_api_key: SecretStr | None = None
+    anthropic_model: str = "claude-sonnet-4-5"
+
+    # OpenAI provider
+    openai_api_key: SecretStr | None = None
+    openai_model: str = "gpt-4o"
 
 
 config = Settings()

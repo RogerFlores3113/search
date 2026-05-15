@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
-from browser_use import Agent, ChatOllama
+from browser_use import Agent, ChatAnthropic, ChatLiteLLM, ChatOllama
 from browser_use.browser.session import BrowserSession
 
 from agent.config import config
@@ -26,32 +26,98 @@ RUN_ID = str(uuid.uuid4())
 TRAINING_FILE = Path("training/runs.jsonl")
 
 
+def build_llm(cfg: "Settings"):
+    """Construct the LLM object for the configured provider.
+
+    api_key is passed explicitly — never set as os.environ to avoid log leakage.
+    .get_secret_value() is called at the call site only; the SecretStr wrapper is
+    never passed to an external constructor or logged.
+    """
+    provider = cfg.provider.lower()
+    if provider == "ollama":
+        return ChatOllama(model=cfg.ollama_model, ollama_options={"num_ctx": 32000})
+    elif provider == "anthropic":
+        return ChatAnthropic(
+            model=cfg.anthropic_model,
+            api_key=cfg.anthropic_api_key.get_secret_value(),
+        )
+    elif provider == "openai":
+        return ChatLiteLLM(
+            model=cfg.openai_model,
+            api_key=cfg.openai_api_key.get_secret_value(),
+        )
+    else:
+        raise ValueError(f"Unknown provider: {provider!r}")
+
+
 async def pre_flight_check(cfg: "Settings") -> None:
-    """Validate Ollama daemon + model availability.
+    """Validate provider availability before launching the browser.
+
+    For Ollama: checks daemon is running and model is pulled.
+    For Anthropic: validates API key against the live endpoint.
+    For OpenAI: validates API key against the live endpoint.
 
     Prints actionable error and raises PreFlightError on failure.
     """
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{cfg.ollama_host}/api/tags")
-            resp.raise_for_status()
-            models = [m["name"] for m in resp.json().get("models", [])]
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError):
-        print(
-            f"ERROR: Ollama is not running or unreachable.\n"
-            f"  Start it with: ollama serve\n"
-            f"  Then pull the model: ollama pull {cfg.ollama_model}"
-        )
-        raise PreFlightError("Ollama unreachable")
+    if cfg.provider == "ollama":
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{cfg.ollama_host}/api/tags")
+                resp.raise_for_status()
+                models = [m["name"] for m in resp.json().get("models", [])]
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError):
+            print(
+                f"ERROR: Ollama is not running or unreachable.\n"
+                f"  Start it with: ollama serve\n"
+                f"  Then pull the model: ollama pull {cfg.ollama_model}"
+            )
+            raise PreFlightError("Ollama unreachable")
 
-    # Base-name substring match: "qwen3-vl" matches "qwen3-vl:8b", "qwen3-vl:latest", etc.
-    model_base = cfg.ollama_model.split(":")[0]
-    if not any(model_base in m for m in models):
-        print(
-            f"ERROR: Model '{cfg.ollama_model}' is not pulled.\n"
-            f"  Pull it with: ollama pull {cfg.ollama_model}"
-        )
-        raise PreFlightError(f"Model not pulled: {cfg.ollama_model}")
+        # Base-name substring match: "qwen3-vl" matches "qwen3-vl:8b", "qwen3-vl:latest", etc.
+        model_base = cfg.ollama_model.split(":")[0]
+        if not any(model_base in m for m in models):
+            print(
+                f"ERROR: Model '{cfg.ollama_model}' is not pulled.\n"
+                f"  Pull it with: ollama pull {cfg.ollama_model}"
+            )
+            raise PreFlightError(f"Model not pulled: {cfg.ollama_model}")
+
+    elif cfg.provider == "anthropic":
+        if not cfg.anthropic_api_key:
+            print("ERROR: ANTHROPIC_API_KEY is not set in .env")
+            raise PreFlightError("Missing Anthropic API key")
+        try:
+            import anthropic as _anthropic
+            client = _anthropic.AsyncAnthropic(
+                api_key=cfg.anthropic_api_key.get_secret_value()
+            )
+            await client.models.list()
+        except _anthropic.AuthenticationError:
+            print("ERROR: Anthropic API key is invalid.")
+            raise PreFlightError("Invalid Anthropic API key")
+        except Exception as e:
+            print(f"ERROR: Cannot reach Anthropic API: {e}")
+            raise PreFlightError("Anthropic API unreachable")
+
+    elif cfg.provider == "openai":
+        if not cfg.openai_api_key:
+            print("ERROR: OPENAI_API_KEY is not set in .env")
+            raise PreFlightError("Missing OpenAI API key")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {cfg.openai_api_key.get_secret_value()}"},
+                )
+                if resp.status_code == 401:
+                    print("ERROR: OpenAI API key is invalid.")
+                    raise PreFlightError("Invalid OpenAI API key")
+                resp.raise_for_status()
+        except PreFlightError:
+            raise
+        except Exception as e:
+            print(f"ERROR: Cannot reach OpenAI API: {e}")
+            raise PreFlightError("OpenAI API unreachable")
 
 
 async def log_step(agent) -> None:
@@ -121,7 +187,7 @@ async def run_agent(task: str) -> None:
     )
     browser.llm_screenshot_size = (config.llm_screenshot_width, config.llm_screenshot_height)
     try:
-        llm = ChatOllama(model=config.ollama_model, ollama_options={"num_ctx": 32000})
+        llm = build_llm(config)
         agent = Agent(task=task, llm=llm, browser_session=browser)
 
         try:
