@@ -412,3 +412,73 @@ async def test_preflight_raises_when_openai_key_invalid(monkeypatch_env, httpx_m
 
     with pytest.raises(PreFlightError, match="Invalid OpenAI API key"):
         await pre_flight_check(Settings())
+
+
+# ---------------------------------------------------------------------------
+# CAPTCHA detection in log_step (GUARD-04)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+async def test_captcha_keyword_triggers_pause(training_dir):
+    """log_step must call agent.pause() when error text contains a CAPTCHA keyword."""
+    import types
+    from agent.runner import log_step
+
+    result_stub = types.SimpleNamespace(error="Please solve the captcha to continue")
+    history = types.SimpleNamespace(
+        number_of_steps=lambda: 1,
+        model_actions=lambda: [{"action_type": "navigate", "action_target": "", "action_value": ""}],
+        screenshots=lambda: ["iVBORw0KGgo="],
+        has_errors=lambda: True,
+    )
+    agent = types.SimpleNamespace(
+        history=history,
+        state=types.SimpleNamespace(last_result=[result_stub]),
+        pause=MagicMock(),
+    )
+    await log_step(agent)
+    agent.pause.assert_called_once()
+
+
+@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
+async def test_captcha_notification_printed_to_stdout(training_dir, capsys):
+    """log_step must print a CAPTCHA notification message to stdout on detection."""
+    import types
+    from agent.runner import log_step
+
+    result_stub = types.SimpleNamespace(error="recaptcha challenge detected")
+    history = types.SimpleNamespace(
+        number_of_steps=lambda: 1,
+        model_actions=lambda: [{"action_type": "navigate", "action_target": "", "action_value": ""}],
+        screenshots=lambda: ["iVBORw0KGgo="],
+        has_errors=lambda: True,
+    )
+    agent = types.SimpleNamespace(
+        history=history,
+        state=types.SimpleNamespace(last_result=[result_stub]),
+        pause=MagicMock(),
+    )
+    await log_step(agent)
+    captured = capsys.readouterr()
+    assert "CAPTCHA" in captured.out
+
+
+async def test_no_captcha_no_pause_when_error_text_clean(training_dir):
+    """log_step must NOT call agent.pause() when error text contains no CAPTCHA keyword."""
+    import types
+    from agent.runner import log_step
+
+    result_stub = types.SimpleNamespace(error="element not found")
+    history = types.SimpleNamespace(
+        number_of_steps=lambda: 1,
+        model_actions=lambda: [{"action_type": "click", "action_target": "#x", "action_value": ""}],
+        screenshots=lambda: ["iVBORw0KGgo="],
+        has_errors=lambda: True,
+    )
+    agent = types.SimpleNamespace(
+        history=history,
+        state=types.SimpleNamespace(last_result=[result_stub]),
+        pause=MagicMock(),
+    )
+    await log_step(agent)
+    agent.pause.assert_not_called()
