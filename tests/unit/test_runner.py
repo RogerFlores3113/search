@@ -65,6 +65,8 @@ async def test_run_agent_constructs_browser_session_with_chrome_channel(monkeypa
         channel="chrome",
         headless=False,
         keep_alive=False,
+        window_size={"width": 1280, "height": 800},
+        llm_screenshot_size=(1024, 640),
     )
 
 

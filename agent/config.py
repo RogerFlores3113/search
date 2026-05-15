@@ -14,5 +14,13 @@ class Settings(BaseSettings):
     max_steps: int = 25
     session_timeout: int = 600  # seconds
 
+    # Browser window size — kept sub-fullscreen so the window is moveable
+    browser_width: int = 1280
+    browser_height: int = 800
+
+    # Screenshot size sent to the LLM — smaller = fewer tokens = faster loops
+    llm_screenshot_width: int = 1024
+    llm_screenshot_height: int = 640
+
 
 config = Settings()

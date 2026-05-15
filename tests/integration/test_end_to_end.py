@@ -141,11 +141,13 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
 
     # --- Assertions ---
 
-    # BrowserSession was constructed with the correct channel/headless/keep_alive
+    # BrowserSession was constructed with the correct channel/headless/keep_alive/size
     MockBrowserSession.assert_called_once_with(
         channel="chrome",
         headless=False,
         keep_alive=False,
+        window_size={"width": 1280, "height": 800},
+        llm_screenshot_size=(1024, 640),
     )
 
     # ChatOllama was constructed with ollama_options={"num_ctx": 32000} and the configured model
