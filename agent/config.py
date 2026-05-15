@@ -31,5 +31,13 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4o"
 
+    # Guardrails — hardcoded default; not a .env field in Phase 2
+    # (pydantic-settings set[str] coercion from env var is unverified — see RESEARCH.md A3)
+    blocked_domains: set[str] = {
+        "chase.com", "wellsfargo.com", "bankofamerica.com",
+        "citi.com", "usbank.com", "paypal.com", "venmo.com",
+        "stripe.com", "square.com", "braintree.com",
+    }
+
 
 config = Settings()

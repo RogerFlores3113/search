@@ -9,11 +9,8 @@ from agent.config import Settings
 from agent.runner import PreFlightError
 
 
-@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
 async def test_run_agent_passes_blocked_domains_to_browser_profile(monkeypatch_env):
     """run_agent must construct BrowserProfile with prohibited_domains=cfg.blocked_domains."""
-    from agent.runner import GUARDRAIL_PROMPT
-
     cfg = Settings()
     mock_profile = MagicMock()
     MockBrowserProfile = MagicMock(return_value=mock_profile)
@@ -40,7 +37,6 @@ async def test_run_agent_passes_blocked_domains_to_browser_profile(monkeypatch_e
     assert call_kwargs["prohibited_domains"] == cfg.blocked_domains
 
 
-@pytest.mark.xfail(reason="Implemented in Task 2", strict=True)
 async def test_run_agent_passes_guardrail_prompt_to_agent(monkeypatch_env):
     """run_agent must construct Agent with extend_system_message=GUARDRAIL_PROMPT."""
     from agent.runner import GUARDRAIL_PROMPT

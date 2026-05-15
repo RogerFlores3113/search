@@ -19,7 +19,9 @@ def _make_fake_agent():
         screenshots=lambda: ["iVBORw0KGgo="],  # minimal base64 stub
         has_errors=lambda: False,
     )
-    return types.SimpleNamespace(history=history)
+    # state.last_result is required by the CAPTCHA detection branch in log_step
+    state = types.SimpleNamespace(last_result=[])
+    return types.SimpleNamespace(history=history, state=state)
 
 
 async def test_log_step_writes_jsonl_line(training_dir):
