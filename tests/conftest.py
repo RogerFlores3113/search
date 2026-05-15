@@ -28,7 +28,7 @@ def mock_ollama_tags_ok(httpx_mock):
     httpx_mock.add_response(
         method="GET",
         url="http://localhost:11434/api/tags",
-        json={"models": [{"name": "qwen2.5vl:7b"}, {"name": "gemma4:e4b"}]},
+        json={"models": [{"name": "qwen3-vl:8b"}, {"name": "gemma4:e4b"}]},
     )
     return httpx_mock
 

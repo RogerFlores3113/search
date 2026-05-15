@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +16,10 @@ from agent.config import config
 if TYPE_CHECKING:
     from agent.config import Settings
 
+
+class PreFlightError(RuntimeError):
+    """Raised when pre_flight_check detects a fatal configuration issue."""
+
 # Module-level constant: one run_id shared across all steps in a single process run.
 RUN_ID = str(uuid.uuid4())
 
@@ -26,7 +29,7 @@ TRAINING_FILE = Path("training/runs.jsonl")
 async def pre_flight_check(cfg: "Settings") -> None:
     """Validate Ollama daemon + model availability.
 
-    Print actionable error and sys.exit(1) on failure.
+    Prints actionable error and raises PreFlightError on failure.
     """
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -39,16 +42,16 @@ async def pre_flight_check(cfg: "Settings") -> None:
             f"  Start it with: ollama serve\n"
             f"  Then pull the model: ollama pull {cfg.ollama_model}"
         )
-        sys.exit(1)
+        raise PreFlightError("Ollama unreachable")
 
-    # Base-name substring match: "qwen2.5vl" matches "qwen2.5vl:7b", "qwen2.5vl:latest", etc.
+    # Base-name substring match: "qwen3-vl" matches "qwen3-vl:8b", "qwen3-vl:latest", etc.
     model_base = cfg.ollama_model.split(":")[0]
     if not any(model_base in m for m in models):
         print(
             f"ERROR: Model '{cfg.ollama_model}' is not pulled.\n"
             f"  Pull it with: ollama pull {cfg.ollama_model}"
         )
-        sys.exit(1)
+        raise PreFlightError(f"Model not pulled: {cfg.ollama_model}")
 
 
 async def log_step(agent) -> None:
@@ -105,7 +108,10 @@ async def run_agent(task: str) -> None:
 
     Final: await browser.kill().
     """
-    await pre_flight_check(config)
+    try:
+        await pre_flight_check(config)
+    except PreFlightError:
+        return  # Error already printed; exit task cleanly without leaking SystemExit
 
     browser = BrowserSession(channel="chrome", headless=False, keep_alive=False)
     try:

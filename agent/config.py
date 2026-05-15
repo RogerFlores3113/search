@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     provider: str = "ollama"
     ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5vl:7b"
+    ollama_model: str = "qwen3-vl:8b"
     max_steps: int = 25
     session_timeout: int = 600  # seconds
 

@@ -11,7 +11,7 @@ def test_defaults_match_d06(monkeypatch_env):
     settings = Settings()
     assert settings.provider == "ollama"
     assert settings.ollama_host == "http://localhost:11434"
-    assert settings.ollama_model == "qwen2.5vl:7b"
+    assert settings.ollama_model == "qwen3-vl:8b"
     assert settings.max_steps == 25
     assert settings.session_timeout == 600
 
