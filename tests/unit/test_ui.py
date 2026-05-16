@@ -963,6 +963,38 @@ async def test_get_index_contains_alpine_handlers():
         assert handler in body, f"Missing Alpine handler: {handler}"
 
 
+async def test_sse_bridges_use_data_bridge_not_hx_on():
+    """SSE bridge divs must use data-bridge + Alpine init(), not hx-on.
+
+    hx-on creates a global-scope function that cannot resolve Alpine component
+    methods, producing 'handleState is not defined' ReferenceErrors and breaking
+    all SSE-driven UI updates (screenshot, state, pause/stop buttons).
+    """
+    from agent.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/")
+
+    body = resp.text
+    assert "hx-on:htmx:sse-message" not in body, (
+        "hx-on:htmx:sse-message resolves handlers in global scope; "
+        "Alpine component methods are unreachable. Use data-bridge + init() instead."
+    )
+    for swap_name, handler in (
+        ("state", "handleState"),
+        ("narration", "handleNarration"),
+        ("summary", "handleSummary"),
+        ("error_msg", "handleError"),
+        ("screenshot", "handleScreenshot"),
+        ("progress", "handleProgress"),
+    ):
+        assert f'sse-swap="{swap_name}"' in body, f"Missing sse-swap bridge for {swap_name}"
+        assert f'data-bridge="{handler}"' in body, f"Missing data-bridge for {handler}"
+    assert "addEventListener('htmx:sseMessage'" in body, (
+        "Expected init() to attach handlers via addEventListener('htmx:sseMessage', ...)"
+    )
+
+
 async def test_get_index_has_result_area():
     """GET / response body must contain #result-area with x-show='summary' and x-show='errorMsg'."""
     from agent.main import app

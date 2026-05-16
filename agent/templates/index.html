@@ -117,29 +117,12 @@
           Each div listens to a specific SSE event type and dispatches to Alpine handlers.
           All SSE events carry JSON payload in event.detail.data (Plan 01 used data= not raw_data).
         -->
-        <div style="display:none"
-             sse-swap="state"
-             hx-on:htmx:sse-message="handleState($event)"></div>
-
-        <div style="display:none"
-             sse-swap="narration"
-             hx-on:htmx:sse-message="handleNarration($event)"></div>
-
-        <div style="display:none"
-             sse-swap="summary"
-             hx-on:htmx:sse-message="handleSummary($event)"></div>
-
-        <div style="display:none"
-             sse-swap="error_msg"
-             hx-on:htmx:sse-message="handleError($event)"></div>
-
-        <div style="display:none"
-             sse-swap="screenshot"
-             hx-on:htmx:sse-message="handleScreenshot($event)"></div>
-
-        <div style="display:none"
-             sse-swap="progress"
-             hx-on:htmx:sse-message="handleProgress($event)"></div>
+        <div style="display:none" sse-swap="state"      data-bridge="handleState"></div>
+        <div style="display:none" sse-swap="narration"  data-bridge="handleNarration"></div>
+        <div style="display:none" sse-swap="summary"    data-bridge="handleSummary"></div>
+        <div style="display:none" sse-swap="error_msg"  data-bridge="handleError"></div>
+        <div style="display:none" sse-swap="screenshot" data-bridge="handleScreenshot"></div>
+        <div style="display:none" sse-swap="progress"   data-bridge="handleProgress"></div>
 
       </div><!-- /right column -->
     </div><!-- /layout -->
@@ -167,6 +150,19 @@
         elapsed: 0,
         runStartedAt: null,
         _elapsedTimer: null,
+
+        init() {
+          // Wire SSE bridge elements to component methods. The bridges have
+          // sse-swap so htmx-ext-sse dispatches htmx:sseMessage on each one
+          // when its named event arrives. Using addEventListener (not hx-on)
+          // keeps `this` bound to the Alpine component so method lookup works.
+          this.$el.querySelectorAll('[data-bridge]').forEach((el) => {
+            const method = el.dataset.bridge;
+            if (typeof this[method] === 'function') {
+              el.addEventListener('htmx:sseMessage', (e) => this[method](e));
+            }
+          });
+        },
 
         badgeClass() {
           return {
