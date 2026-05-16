@@ -64,6 +64,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Default chrome_missing to False; set to True by __main__.py pre-flight check (DIST-02)
+app.state.chrome_missing = False
+
 # Mount static files with check_dir=False so startup does not crash when the
 # agent/static directory has not yet been created (RESEARCH Anti-Patterns).
 app.mount("/static", StaticFiles(directory=_resource_path("agent/static"), check_dir=False), name="static")
@@ -75,7 +78,9 @@ _active_agent = None                             # Agent ref for pause/stop (Pla
 
 @app.get("/")
 async def index(request: Request):
-    """Render the HTMX+Alpine UI skeleton."""
+    """Render the HTMX+Alpine UI skeleton, or Chrome-missing page if Chrome not found."""
+    if getattr(request.app.state, "chrome_missing", False):
+        return templates.TemplateResponse(request=request, name="no_chrome.html", context={})
     return templates.TemplateResponse(request=request, name="index.html", context={})
 
 
