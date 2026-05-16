@@ -39,3 +39,57 @@ def test_idempotent_mkdir(tmp_path, monkeypatch):
     importlib.reload(paths_mod)
     paths_mod.get_user_data_dir()
     paths_mod.get_user_data_dir()  # Second call must not raise
+
+
+def test_db_path_uses_user_data_dir_when_frozen(tmp_path, monkeypatch):
+    """When sys.frozen=True and agent.db is reloaded, DB_PATH resolves under user_data_dir."""
+    import platformdirs
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    # Reload agent.paths so frozen branch is active
+    import agent.paths as paths_mod
+    importlib.reload(paths_mod)
+
+    # Reload agent.db to re-evaluate module-level DB_PATH constant
+    import agent.db as db_mod
+    importlib.reload(db_mod)
+
+    expected = Path(platformdirs.user_data_dir("local-browser-agent")) / "history.db"
+    assert db_mod.DB_PATH == expected
+
+
+def test_training_file_uses_user_data_dir_when_frozen(tmp_path, monkeypatch):
+    """When sys.frozen=True and agent.runner is reloaded, TRAINING_FILE resolves under user_data_dir."""
+    import platformdirs
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    import agent.paths as paths_mod
+    importlib.reload(paths_mod)
+
+    import agent.runner as runner_mod
+    importlib.reload(runner_mod)
+
+    expected = Path(platformdirs.user_data_dir("local-browser-agent")) / "training" / "runs.jsonl"
+    assert runner_mod.TRAINING_FILE == expected
+
+
+def test_resource_path_helper_uses_meipass_when_frozen(monkeypatch):
+    """_resource_path returns sys._MEIPASS / relative when frozen; returns relative string otherwise."""
+    fake_meipass = "/fake/meipass"
+
+    # Test frozen branch
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", fake_meipass, raising=False)
+
+    import agent.main as main_mod
+    importlib.reload(main_mod)
+
+    result = main_mod._resource_path("agent/templates")
+    assert result == str(Path(fake_meipass) / "agent/templates")
+
+    # Test dev branch
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    importlib.reload(main_mod)
+
+    result_dev = main_mod._resource_path("agent/templates")
+    assert result_dev == "agent/templates"

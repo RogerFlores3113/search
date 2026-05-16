@@ -113,6 +113,13 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
     # Redirect file writes so runs.jsonl lands in tmp_path instead of cwd.
     monkeypatch.chdir(tmp_path)
 
+    # TRAINING_FILE is a module-level constant computed at import time via get_user_data_dir().
+    # Monkeypatch it to point into tmp_path so JSONL writes land in the test directory.
+    import agent.runner as runner_mod
+    training_file = tmp_path / "training" / "runs.jsonl"
+    training_file.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(runner_mod, "TRAINING_FILE", training_file)
+
     history = _make_fake_history(num_steps=2)
     fake_agent = _make_fake_agent(history)
 

@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import sys
 from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Form, Request
@@ -19,7 +21,20 @@ from agent import db as history_db
 from agent.runner import run_agent
 
 
-templates = Jinja2Templates(directory="agent/templates")
+def _resource_path(relative: str) -> str:
+    """Return absolute path to a bundled resource, works in dev and frozen modes.
+
+    Dev mode:   returns the relative path string unchanged
+    Frozen app: returns str(Path(sys._MEIPASS) / relative)
+
+    See: .planning/phases/04-distribution/04-RESEARCH.md Pitfall 5
+    """
+    if getattr(sys, "frozen", False):
+        return str(Path(sys._MEIPASS) / relative)
+    return relative
+
+
+templates = Jinja2Templates(directory=_resource_path("agent/templates"))
 
 
 @asynccontextmanager
@@ -51,7 +66,7 @@ app = FastAPI(lifespan=lifespan)
 
 # Mount static files with check_dir=False so startup does not crash when the
 # agent/static directory has not yet been created (RESEARCH Anti-Patterns).
-app.mount("/static", StaticFiles(directory="agent/static", check_dir=False), name="static")
+app.mount("/static", StaticFiles(directory=_resource_path("agent/static"), check_dir=False), name="static")
 
 _active_task: Optional[asyncio.Task] = None
 _active_queue: Optional[asyncio.Queue] = None   # per-run SSE queue

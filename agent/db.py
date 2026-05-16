@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import aiosqlite
 
-DB_PATH = Path("data/history.db")
+from agent.paths import get_user_data_dir
+
+DB_PATH = get_user_data_dir() / "history.db"
 
 
 async def init_db() -> None:
     """Create the runs table if it does not exist.
 
     Called from FastAPI lifespan at startup so the table is always present.
-    Uses Path.mkdir(exist_ok=True) to ensure the data/ directory exists first.
+    Ensures DB_PATH.parent exists — necessary because DB_PATH is computed at module
+    import time using get_user_data_dir(), which mkdir's the data dir at that point.
+    If tests chdir after import, the relative 'data/' may not exist in the new cwd.
+    Re-calling mkdir here is idempotent and safe.
     """
-    DB_PATH.parent.mkdir(exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS runs (
