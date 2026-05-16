@@ -21,9 +21,6 @@ if TYPE_CHECKING:
 class PreFlightError(RuntimeError):
     """Raised when pre_flight_check detects a fatal configuration issue."""
 
-# Module-level constant: one run_id shared across all steps in a single process run.
-RUN_ID = str(uuid.uuid4())
-
 TRAINING_FILE = Path("training/runs.jsonl")
 
 GUARDRAIL_PROMPT = (
@@ -141,13 +138,15 @@ async def pre_flight_check(cfg: "Settings") -> None:
             raise PreFlightError("OpenAI API unreachable")
 
 
-async def log_step(agent) -> None:
+async def log_step(agent, *, run_id: str) -> None:
     """on_step_end callback. Writes one JSONL record to training/runs.jsonl.
 
     Callback signature: async def log_step(agent: Agent) -> None
     Verified against installed browser_use 0.12.6 agent/service.py:
       AgentHookFunc = Callable[['Agent'], Awaitable[None]]
       agent.history (AgentHistoryList) is populated incrementally during run().
+    run_id must be passed via a closure (see run_agent) so each agent session
+    gets its own unique identifier.
     """
     Path("training").mkdir(exist_ok=True)
 
@@ -174,7 +173,7 @@ async def log_step(agent) -> None:
 
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "run_id": RUN_ID,
+        "run_id": run_id,
         "step_index": step_idx,
         "screenshot_b64": screenshot_b64,
         "action_type": action_type,
@@ -208,6 +207,8 @@ async def run_agent(task: str) -> None:
 
     Final: await browser.kill().
     """
+    run_id = str(uuid.uuid4())
+
     try:
         await pre_flight_check(config)
     except PreFlightError:
@@ -222,6 +223,10 @@ async def run_agent(task: str) -> None:
     )
     browser = BrowserSession(browser_profile=profile)
     browser.llm_screenshot_size = (config.llm_screenshot_width, config.llm_screenshot_height)
+
+    async def _log_step(agent_instance):
+        await log_step(agent_instance, run_id=run_id)
+
     try:
         llm = build_llm(config)
         agent = Agent(
@@ -233,7 +238,7 @@ async def run_agent(task: str) -> None:
 
         try:
             history = await asyncio.wait_for(
-                agent.run(max_steps=config.max_steps, on_step_end=log_step),
+                agent.run(max_steps=config.max_steps, on_step_end=_log_step),
                 timeout=config.session_timeout,
             )
             print(f"Done: {history.final_result()}")
