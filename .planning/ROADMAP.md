@@ -62,6 +62,16 @@ Plans:
 4. A simulated "Buy Now" / "Purchase" CTA click is blocked by the system prompt guardrail — verified by injecting a test page with such a button
 5. If a CAPTCHA is detected mid-run, the agent pauses and prints a clear notification; the run does not silently continue or silently fail
 
+**Plans:** 2 plans
+
+Plans:
+**Wave 1**
+- [x] 02-01-PLAN.md — Multi-provider LLM (Anthropic + OpenAI): SecretStr config, build_llm factory, pre_flight_check branches
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] 02-02-PLAN.md — Guardrails: BrowserProfile prohibited_domains, extend_system_message safety prompt, log_step CAPTCHA detection + agent.pause()
+
+
 ---
 
 ### Phase 3: Full Web UI
@@ -89,6 +99,18 @@ Plans:
 
 **UI hint:** yes
 
+**Plans:** 3 plans
+
+Plans:
+**Wave 1**
+- [x] 03-01-PLAN.md — Skeleton vertical slice: aiosqlite dep + events.py + db.py + queue-bridged run_agent + SSE endpoint + HTMX/Alpine index.html (LOOP-01, LOOP-09, UI-01, UI-03, UI-04)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] 03-02-PLAN.md — Visual fidelity slice: ScreenshotEvent + ProgressEvent + SummaryEvent emission, Alpine handlers, full UI-SPEC CSS, inline error/summary boxes (UI-02, UI-05, UI-08, UI-09, LOOP-10)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [x] 03-03-PLAN.md — Controls + history slice: /pause /stop /runs endpoints, runner→insert_run, Recent Runs panel + Pause/Stop buttons (LOOP-07, LOOP-08, UI-06, UI-07, RUN-01, RUN-02, RUN-03)
+
 ---
 
 ### Phase 4: Distribution
@@ -103,6 +125,15 @@ Plans:
 3. The app opens the user's default browser to `localhost:8080` within 3 seconds of double-clicking
 4. First-time users see a one-time safety disclaimer before the prompt box is accessible — explains what the agent does, what it won't do, and that it acts on their behalf
 5. Pushing a version tag (e.g., `v0.1.0`) to the main branch triggers GitHub Actions, which builds the `.app`, code-signs it (or notarizes with ad-hoc signing for v1), and uploads it to GitHub Releases — verified end-to-end
+
+**Plans:** 2 plans
+
+Plans:
+**Wave 1**
+- [ ] 04-01-PLAN.md — Vertical slice: frozen-aware paths + Chrome detection + auto-open + disclaimer modal + PyInstaller spec (DIST-01, DIST-02, DIST-03, DIST-04)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 04-02-PLAN.md — GitHub Actions release pipeline + README Gatekeeper instructions + clean-Mac UAT script (DIST-05, DIST-01)
 
 ---
 
