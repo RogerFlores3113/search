@@ -154,6 +154,7 @@ async def stream_events() -> AsyncIterable[ServerSentEvent]:
     global _active_queue
     if _active_queue is None:
         yield ServerSentEvent(raw_data='{"state":"idle"}', event="state")
+        yield ServerSentEvent(raw_data="", event="done")
         return
     queue = _active_queue
     while True:
