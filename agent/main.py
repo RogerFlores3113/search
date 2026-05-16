@@ -162,6 +162,6 @@ async def stream_events() -> AsyncIterable[ServerSentEvent]:
             yield ServerSentEvent(raw_data="", event="done")
             break
         yield ServerSentEvent(
-            data=json.dumps(dataclasses.asdict(event)),
+            raw_data=json.dumps(dataclasses.asdict(event)),
             event=event.type,
         )
