@@ -54,11 +54,15 @@ def build_llm(cfg: "Settings"):
     if provider == "ollama":
         return ChatOllama(model=cfg.ollama_model, ollama_options={"num_ctx": 32000})
     elif provider == "anthropic":
+        if not cfg.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY is not configured")
         return ChatAnthropic(
             model=cfg.anthropic_model,
             api_key=cfg.anthropic_api_key.get_secret_value(),
         )
     elif provider == "openai":
+        if not cfg.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is not configured")
         return ChatLiteLLM(
             model=cfg.openai_model,
             api_key=cfg.openai_api_key.get_secret_value(),
