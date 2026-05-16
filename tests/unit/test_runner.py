@@ -144,9 +144,11 @@ async def test_run_agent_wraps_in_wait_for(monkeypatch):
 # ---------------------------------------------------------------------------
 
 async def test_run_agent_calls_max_steps_25(monkeypatch):
-    """run_agent must call agent.run(max_steps=config.max_steps, on_step_end=log_step)."""
-    from agent.runner import log_step
+    """run_agent must call agent.run(max_steps=config.max_steps, on_step_end=<callable>).
 
+    After WR-01, on_step_end is a closure (_log_step) that threads run_id into log_step,
+    so we assert it is a callable rather than checking the exact function reference.
+    """
     mock_browser = _make_mock_browser()
     MockBrowserSession = MagicMock(return_value=mock_browser)
 
@@ -163,10 +165,10 @@ async def test_run_agent_calls_max_steps_25(monkeypatch):
         from agent.runner import run_agent
         await run_agent("test task")
 
-    mock_agent_instance.run.assert_called_once_with(
-        max_steps=_default_config.max_steps,
-        on_step_end=log_step,
-    )
+    call_kwargs = mock_agent_instance.run.call_args
+    assert call_kwargs is not None, "agent.run() was not called"
+    assert call_kwargs.kwargs.get("max_steps") == _default_config.max_steps
+    assert callable(call_kwargs.kwargs.get("on_step_end")), "on_step_end must be a callable"
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +445,7 @@ async def test_captcha_keyword_triggers_pause(training_dir):
         state=types.SimpleNamespace(last_result=[result_stub]),
         pause=MagicMock(),
     )
-    await log_step(agent)
+    await log_step(agent, run_id="test-run-id")
     agent.pause.assert_called_once()
 
 
@@ -464,7 +466,7 @@ async def test_captcha_notification_printed_to_stdout(training_dir, capsys):
         state=types.SimpleNamespace(last_result=[result_stub]),
         pause=MagicMock(),
     )
-    await log_step(agent)
+    await log_step(agent, run_id="test-run-id")
     captured = capsys.readouterr()
     assert "CAPTCHA" in captured.out
 
@@ -486,5 +488,5 @@ async def test_no_captcha_no_pause_when_error_text_clean(training_dir):
         state=types.SimpleNamespace(last_result=[result_stub]),
         pause=MagicMock(),
     )
-    await log_step(agent)
+    await log_step(agent, run_id="test-run-id")
     agent.pause.assert_not_called()
