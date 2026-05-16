@@ -11,7 +11,7 @@ The apartment search is a v1 *test case* to validate the loop, not a hardcoded p
 - [ ] **Phase 1: Scaffold + Core Loop PoC** — uv/pyproject setup, browser-use + Ollama wired, agent navigates a real URL from CLI
 - [ ] **Phase 2: Multi-Provider + Guardrails** — Anthropic and OpenAI added, domain blocklist and action guardrails enforced
 - [ ] **Phase 3: Full Web UI** — Prompt box, live screenshot stream, narration feed, state/progress, pause/stop, run history
-- [ ] **Phase 4: Distribution** — Mac .app bundle, Chrome detection, auto-open browser, safety disclaimer, GitHub Actions CI
+- [x] **Phase 4: Distribution** — Mac .app bundle, Chrome detection, auto-open browser, safety disclaimer, GitHub Actions CI (completed 2026-05-16)
 
 ---
 
@@ -126,14 +126,14 @@ Plans:
 4. First-time users see a one-time safety disclaimer before the prompt box is accessible — explains what the agent does, what it won't do, and that it acts on their behalf
 5. Pushing a version tag (e.g., `v0.1.0`) to the main branch triggers GitHub Actions, which builds the `.app`, code-signs it (or notarizes with ad-hoc signing for v1), and uploads it to GitHub Releases — verified end-to-end
 
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 
 Plans:
 **Wave 1**
-- [ ] 04-01-PLAN.md — Vertical slice: frozen-aware paths + Chrome detection + auto-open + disclaimer modal + PyInstaller spec (DIST-01, DIST-02, DIST-03, DIST-04)
+- [x] 04-01-PLAN.md — Vertical slice: frozen-aware paths + Chrome detection + auto-open + disclaimer modal + PyInstaller spec (DIST-01, DIST-02, DIST-03, DIST-04)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 04-02-PLAN.md — GitHub Actions release pipeline + README Gatekeeper instructions + clean-Mac UAT script (DIST-05, DIST-01)
+- [x] 04-02-PLAN.md — GitHub Actions release pipeline + README Gatekeeper instructions + clean-Mac UAT script (DIST-05, DIST-01)
 
 ---
 
