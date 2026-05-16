@@ -13,131 +13,169 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header class="app-header">local-browser-agent</header>
-
   <!--
-    Outer SSE container — hx-ext="sse" activates HTMX SSE extension.
-    sse-connect="/stream" opens the SSE connection.
-    sse-close="done" tells HTMX to close the connection when event:done arrives.
-    x-data="agentUI()" binds the Alpine reactive component.
+    Outer Alpine component gate — checks localStorage to determine whether the
+    one-time safety disclaimer has been accepted (DIST-04).
+    Pattern 5: .planning/phases/04-distribution/04-RESEARCH.md
   -->
-  <div id="sse-container"
-       hx-ext="sse"
-       sse-connect="/stream"
-       sse-close="done"
-       x-data="agentUI()">
+  <div x-data="{ disclaimerAccepted: localStorage.getItem('disclaimer_accepted') === '1' }">
 
-    <div class="layout">
+    <!-- Disclaimer modal overlay — shown only on first visit -->
+    <div x-show="!disclaimerAccepted"
+         style="position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:100;display:flex;align-items:center;justify-content:center;">
+      <div style="background:#1e1e1e;padding:2rem;border-radius:8px;max-width:480px;border:1px solid #2e2e2e;">
+        <h2 style="margin:0 0 1rem;font-size:1.25rem;color:#f5f5f5;">Before You Begin</h2>
+        <p style="margin:0 0 0.75rem;color:#c0c0c0;line-height:1.6;">
+          This app controls your Chrome browser to complete tasks on your behalf.
+          It can click, type, and navigate on any website you ask it to visit.
+        </p>
+        <p style="margin:0 0 0.75rem;color:#c0c0c0;line-height:1.6;">
+          <strong style="color:#f0f0f0;">It will not:</strong> make purchases, submit payment info,
+          or visit sites on its blocklist (banking, payment processors).
+        </p>
+        <p style="margin:0 0 1.5rem;color:#c0c0c0;line-height:1.6;">
+          <strong style="color:#f0f0f0;">You are in control:</strong> Pause or stop any run at any time.
+        </p>
+        <button
+          style="background:#2563eb;color:#fff;border:none;padding:0.65rem 1.5rem;border-radius:6px;font-size:0.95rem;font-weight:500;cursor:pointer;"
+          @click="disclaimerAccepted = true; localStorage.setItem('disclaimer_accepted', '1')">
+          I understand &mdash; let's go
+        </button>
+      </div>
+    </div>
 
-      <!-- Left column: screenshot viewport -->
-      <div class="screenshot-col panel">
-        <div class="screenshot-frame">
-          <div class="screenshot-placeholder" x-show="state === 'idle'">
-            Waiting for agent&hellip;
+    <!-- Main UI shell — always rendered but visually gated behind modal when disclaimer not accepted -->
+    <div :style="disclaimerAccepted ? '' : 'pointer-events:none;filter:blur(4px)'">
+
+      <header class="app-header">local-browser-agent</header>
+
+      <!--
+        Outer SSE container — hx-ext="sse" activates HTMX SSE extension.
+        sse-connect="/stream" opens the SSE connection.
+        sse-close="done" tells HTMX to close the connection when event:done arrives.
+        x-data="agentUI()" binds the Alpine reactive component.
+      -->
+      <div id="sse-container"
+           hx-ext="sse"
+           sse-connect="/stream"
+           sse-close="done"
+           x-data="agentUI()">
+
+        <div class="layout">
+
+          <!-- Left column: screenshot viewport -->
+          <div class="screenshot-col panel">
+            <div class="screenshot-frame">
+              <div class="screenshot-placeholder" x-show="state === 'idle'">
+                Waiting for agent&hellip;
+              </div>
+              <img id="screenshot-img"
+                   src=""
+                   alt="Agent viewport"
+                   style="display:none"
+                   x-show="state !== 'idle'">
+            </div>
           </div>
-          <img id="screenshot-img"
-               src=""
-               alt="Agent viewport"
-               style="display:none"
-               x-show="state !== 'idle'">
-        </div>
-      </div>
 
-      <!-- Right column: control panel -->
-      <div class="control-col panel control-panel">
+          <!-- Right column: control panel -->
+          <div class="control-col panel control-panel">
 
-        <!-- State badge + progress counter -->
-        <div class="state-row">
-          Status:&nbsp;
-          <span class="badge"
-                role="status"
-                aria-live="polite"
-                x-text="state"
-                :class="badgeClass()"></span>
-          <span class="progress-counter"
-                x-show="state === 'running' || state === 'paused'"
-                x-text="`Step ${stepNum} of ${maxSteps} · ${elapsed}s`"></span>
-        </div>
+            <!-- State badge + progress counter -->
+            <div class="state-row">
+              Status:&nbsp;
+              <span class="badge"
+                    role="status"
+                    aria-live="polite"
+                    x-text="state"
+                    :class="badgeClass()"></span>
+              <span class="progress-counter"
+                    x-show="state === 'running' || state === 'paused'"
+                    x-text="`Step ${stepNum} of ${maxSteps} · ${elapsed}s`"></span>
+            </div>
 
-        <!-- Task form -->
-        <form hx-post="/run" hx-swap="none">
-          <textarea name="task"
-                    rows="3"
-                    maxlength="2000"
-                    placeholder="Describe a task for the agent — e.g. find the Wikipedia page for the Eiffel Tower"
-                    :readonly="state === 'running' || state === 'paused'"></textarea>
-          <button type="submit"
-                  class="btn btn-primary"
-                  style="margin-top:8px"
-                  :disabled="state === 'running' || state === 'paused'">
-            Run
-          </button>
-        </form>
+            <!-- Task form -->
+            <form hx-post="/run" hx-swap="none">
+              <textarea name="task"
+                        rows="3"
+                        maxlength="2000"
+                        placeholder="Describe a task for the agent — e.g. find the Wikipedia page for the Eiffel Tower"
+                        :readonly="state === 'running' || state === 'paused'"></textarea>
+              <button type="submit"
+                      class="btn btn-primary"
+                      style="margin-top:8px"
+                      :disabled="state === 'running' || state === 'paused'">
+                Run
+              </button>
+            </form>
 
-        <!-- Result area: summary + error (inline, no modals — D-10) -->
-        <div id="result-area" class="result-area">
-          <div class="summary-box"
-               role="status"
-               aria-live="polite"
-               x-show="summary"
-               x-text="summary"></div>
-          <div class="error-box"
-               role="alert"
-               aria-live="assertive"
-               x-show="errorMsg"
-               x-text="errorMsg + ' — check your config and try again.'"></div>
-        </div>
+            <!-- Result area: summary + error (inline, no modals — D-10) -->
+            <div id="result-area" class="result-area">
+              <div class="summary-box"
+                   role="status"
+                   aria-live="polite"
+                   x-show="summary"
+                   x-text="summary"></div>
+              <div class="error-box"
+                   role="alert"
+                   aria-live="assertive"
+                   x-show="errorMsg"
+                   x-text="errorMsg + ' — check your config and try again.'"></div>
+            </div>
 
-        <!-- Pause / Stop buttons — wired to /pause and /stop endpoints (Plan 03) -->
-        <div class="action-row">
-          <button class="btn btn-neutral"
-                  hx-post="/pause"
-                  hx-swap="none"
-                  :disabled="state !== 'running' && state !== 'paused'"
-                  x-text="state === 'paused' ? 'Resume' : 'Pause'"></button>
-          <button class="btn btn-destructive"
-                  hx-post="/stop"
-                  hx-swap="none"
-                  :disabled="state !== 'running' && state !== 'paused'">Stop</button>
-        </div>
+            <!-- Pause / Stop buttons — wired to /pause and /stop endpoints (Plan 03) -->
+            <div class="action-row">
+              <button class="btn btn-neutral"
+                      hx-post="/pause"
+                      hx-swap="none"
+                      :disabled="state !== 'running' && state !== 'paused'"
+                      x-text="state === 'paused' ? 'Resume' : 'Pause'"></button>
+              <button class="btn btn-destructive"
+                      hx-post="/stop"
+                      hx-swap="none"
+                      :disabled="state !== 'running' && state !== 'paused'">Stop</button>
+            </div>
 
-        <!-- Narration feed label -->
-        <div class="narration-label">Agent log</div>
+            <!-- Narration feed label -->
+            <div class="narration-label">Agent log</div>
 
-        <!-- Narration feed container — rows appended by Alpine handleNarration -->
-        <div id="narration-feed"
-             class="narration-feed"
-             role="log"
-             aria-live="polite"
-             aria-label="Agent narration"></div>
+            <!-- Narration feed container — rows appended by Alpine handleNarration -->
+            <div id="narration-feed"
+                 class="narration-feed"
+                 role="log"
+                 aria-live="polite"
+                 aria-label="Agent narration"></div>
 
-        <!--
-          SSE event bridges — hidden divs inside #sse-container so HTMX SSE extension
-          delivers events (RESEARCH Pitfall 3: sse-swap targets must be descendants).
-          Each div listens to a specific SSE event type and dispatches to Alpine handlers.
-          All SSE events carry JSON payload in event.detail.data (Plan 01 used data= not raw_data).
-        -->
-        <div style="display:none" sse-swap="state"      data-bridge="handleState"></div>
-        <div style="display:none" sse-swap="narration"  data-bridge="handleNarration"></div>
-        <div style="display:none" sse-swap="summary"    data-bridge="handleSummary"></div>
-        <div style="display:none" sse-swap="error_msg"  data-bridge="handleError"></div>
-        <div style="display:none" sse-swap="screenshot" data-bridge="handleScreenshot"></div>
-        <div style="display:none" sse-swap="progress"   data-bridge="handleProgress"></div>
+            <!--
+              SSE event bridges — hidden divs inside #sse-container so HTMX SSE extension
+              delivers events (RESEARCH Pitfall 3: sse-swap targets must be descendants).
+              Each div listens to a specific SSE event type and dispatches to Alpine handlers.
+              All SSE events carry JSON payload in event.detail.data (Plan 01 used data= not raw_data).
+            -->
+            <div style="display:none" sse-swap="state"      data-bridge="handleState"></div>
+            <div style="display:none" sse-swap="narration"  data-bridge="handleNarration"></div>
+            <div style="display:none" sse-swap="summary"    data-bridge="handleSummary"></div>
+            <div style="display:none" sse-swap="error_msg"  data-bridge="handleError"></div>
+            <div style="display:none" sse-swap="screenshot" data-bridge="handleScreenshot"></div>
+            <div style="display:none" sse-swap="progress"   data-bridge="handleProgress"></div>
 
-      </div><!-- /right column -->
-    </div><!-- /layout -->
+          </div><!-- /right column -->
+        </div><!-- /layout -->
 
-    <!-- Run history panel — fetched on load and after each run via SSE close event -->
-    <section id="run-history" class="run-history-section">
-      <h2 class="run-history-heading">Recent Runs</h2>
-      <div id="run-history-list"
-           hx-get="/runs"
-           hx-trigger="load, htmx:sseClose from:#sse-container"
-           hx-swap="innerHTML">
-      </div>
-    </section>
+        <!-- Run history panel — fetched on load and after each run via SSE close event -->
+        <section id="run-history" class="run-history-section">
+          <h2 class="run-history-heading">Recent Runs</h2>
+          <div id="run-history-list"
+               hx-get="/runs"
+               hx-trigger="load, htmx:sseClose from:#sse-container"
+               hx-swap="innerHTML">
+          </div>
+        </section>
 
-  </div><!-- /sse-container -->
+      </div><!-- /sse-container -->
+
+    </div><!-- /main UI shell -->
+
+  </div><!-- /disclaimer gate -->
 
   <script>
     function agentUI() {
