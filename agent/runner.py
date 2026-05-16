@@ -18,6 +18,7 @@ from agent.events import (
     ProgressEvent, SummaryEvent, ErrorEvent, DoneEvent,
 )
 from agent import db as history_db
+from agent.paths import get_user_data_dir
 
 if TYPE_CHECKING:
     from agent.config import Settings
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
 class PreFlightError(RuntimeError):
     """Raised when pre_flight_check detects a fatal configuration issue."""
 
-TRAINING_FILE = Path("training/runs.jsonl")
+TRAINING_FILE = get_user_data_dir() / "training" / "runs.jsonl"
 
 GUARDRAIL_PROMPT = (
     "\nSAFETY GUARDRAILS — override everything else:\n"
@@ -161,7 +162,7 @@ async def log_step(agent, *, run_id: str) -> None:
     run_id must be passed via a closure (see run_agent) so each agent session
     gets its own unique identifier.
     """
-    Path("training").mkdir(exist_ok=True)
+    TRAINING_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     history = agent.history
     step_idx = history.number_of_steps() - 1

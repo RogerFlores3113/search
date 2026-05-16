@@ -18,10 +18,16 @@ def monkeypatch_env(monkeypatch):
 
 @pytest.fixture
 def training_dir(tmp_path, monkeypatch):
-    """Yield a tmp Path for training/ and chdir so JSONL writes land there."""
+    """Yield a tmp Path for training/ and redirect runner.TRAINING_FILE there.
+
+    TRAINING_FILE is a module-level constant computed at import via get_user_data_dir().
+    Monkeypatching it ensures JSONL writes land in the test directory regardless of cwd.
+    """
     monkeypatch.chdir(tmp_path)
     training = tmp_path / "training"
     training.mkdir()
+    import agent.runner as runner_mod
+    monkeypatch.setattr(runner_mod, "TRAINING_FILE", training / "runs.jsonl")
     return training
 
 
