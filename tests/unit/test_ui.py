@@ -199,21 +199,209 @@ async def test_log_step_emits_narration_event(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# SummaryEvent emission (LOOP-10) — deferred to Plan 02
+# SummaryEvent emission (LOOP-10)
 # ---------------------------------------------------------------------------
 
 async def test_run_agent_emits_summary_event(monkeypatch):
     """run_agent must put SummaryEvent(text=final_result) on queue on success."""
-    pytest.skip(reason="Plan 02/03")
+    from agent.events import SummaryEvent, StateEvent
+    from agent.runner import run_agent
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    mock_browser = MagicMock()
+    mock_browser.kill = AsyncMock()
+    mock_browser.llm_screenshot_size = None
+    mock_history = _make_mock_history(final_result="Found article")
+    mock_agent = _make_mock_agent(history=mock_history)
+
+    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
+    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+
+    await run_agent("test task", queue=queue)
+
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+
+    summary_events = [e for e in events if isinstance(e, SummaryEvent)]
+    assert len(summary_events) >= 1, f"Expected SummaryEvent; got {[type(e).__name__ for e in events]}"
+    assert summary_events[0].text == "Found article"
+
+    # SummaryEvent must come before StateEvent("complete")
+    summary_idx = next(i for i, e in enumerate(events) if isinstance(e, SummaryEvent))
+    complete_idx = next(
+        i for i, e in enumerate(events)
+        if isinstance(e, StateEvent) and e.state == "complete"
+    )
+    assert summary_idx < complete_idx, "SummaryEvent must precede StateEvent('complete')"
+
+
+async def test_run_agent_omits_summary_when_no_final_result(monkeypatch):
+    """When history.final_result() returns None, NO SummaryEvent is emitted."""
+    from agent.events import SummaryEvent, StateEvent, DoneEvent
+    from agent.runner import run_agent
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    mock_browser = MagicMock()
+    mock_browser.kill = AsyncMock()
+    mock_browser.llm_screenshot_size = None
+    mock_history = _make_mock_history(final_result=None)
+    mock_agent = _make_mock_agent(history=mock_history)
+
+    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
+    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+
+    await run_agent("test task", queue=queue)
+
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+
+    # No SummaryEvent should be emitted
+    summary_events = [e for e in events if isinstance(e, SummaryEvent)]
+    assert len(summary_events) == 0, f"Expected no SummaryEvent; got {summary_events}"
+
+    # But StateEvent("complete") and DoneEvent must still be emitted
+    state_events = [e for e in events if isinstance(e, StateEvent)]
+    states = [e.state for e in state_events]
+    assert "complete" in states
+    assert isinstance(events[-1], DoneEvent)
 
 
 # ---------------------------------------------------------------------------
-# ScreenshotEvent emission (UI-02) — deferred to Plan 02
+# ScreenshotEvent emission (UI-02)
 # ---------------------------------------------------------------------------
 
 async def test_log_step_emits_screenshot_event(monkeypatch):
     """_log_step closure must put ScreenshotEvent(b64=...) on queue after each step."""
-    pytest.skip(reason="Plan 02/03")
+    from agent.events import ScreenshotEvent
+
+    queue: asyncio.Queue = asyncio.Queue()
+    fake_agent_instance = _make_fake_agent_instance()  # screenshots() returns ["iVBORw0KGgo="]
+
+    async def fake_run(max_steps, on_step_end):
+        await on_step_end(fake_agent_instance)
+        return _make_mock_history()
+
+    mock_browser = MagicMock()
+    mock_browser.kill = AsyncMock()
+    mock_browser.llm_screenshot_size = None
+    mock_agent = MagicMock()
+    mock_agent.run = fake_run
+
+    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
+    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+
+    from agent.runner import run_agent
+    await run_agent("test task", queue=queue)
+
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+
+    screenshot_events = [e for e in events if isinstance(e, ScreenshotEvent)]
+    assert len(screenshot_events) >= 1, f"Expected ScreenshotEvent; got {[type(e).__name__ for e in events]}"
+    assert screenshot_events[0].b64 == "iVBORw0KGgo=", f"Unexpected b64: {screenshot_events[0].b64!r}"
+
+
+async def test_log_step_emits_screenshot_event_empty_when_no_screenshots(monkeypatch):
+    """When screenshots() returns [] or [None], ScreenshotEvent is still emitted but b64==""."""
+    from agent.events import ScreenshotEvent
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    # Build fake agent with no screenshots
+    history = types.SimpleNamespace(
+        number_of_steps=lambda: 1,
+        model_actions=lambda: [{"action_type": "navigate", "action_target": "", "action_value": ""}],
+        screenshots=lambda: [],
+        has_errors=lambda: False,
+    )
+    fake_agent_instance = types.SimpleNamespace(
+        history=history,
+        state=types.SimpleNamespace(last_result=[]),
+    )
+
+    async def fake_run(max_steps, on_step_end):
+        await on_step_end(fake_agent_instance)
+        return _make_mock_history()
+
+    mock_browser = MagicMock()
+    mock_browser.kill = AsyncMock()
+    mock_browser.llm_screenshot_size = None
+    mock_agent = MagicMock()
+    mock_agent.run = fake_run
+
+    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
+    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+
+    from agent.runner import run_agent
+    await run_agent("test task", queue=queue)
+
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+
+    screenshot_events = [e for e in events if isinstance(e, ScreenshotEvent)]
+    assert len(screenshot_events) >= 1, f"Expected ScreenshotEvent even for empty screenshots; got {[type(e).__name__ for e in events]}"
+    assert screenshot_events[0].b64 == "", f"Expected empty b64; got {screenshot_events[0].b64!r}"
+
+
+async def test_log_step_emits_progress_event(monkeypatch):
+    """_log_step closure must emit ProgressEvent with step==step_idx+1 and max_steps==config.max_steps."""
+    from agent.events import ProgressEvent
+    from agent.config import config
+
+    queue: asyncio.Queue = asyncio.Queue()
+    fake_agent_instance = _make_fake_agent_instance()  # number_of_steps() returns 1
+
+    async def fake_run(max_steps, on_step_end):
+        await on_step_end(fake_agent_instance)
+        return _make_mock_history()
+
+    mock_browser = MagicMock()
+    mock_browser.kill = AsyncMock()
+    mock_browser.llm_screenshot_size = None
+    mock_agent = MagicMock()
+    mock_agent.run = fake_run
+
+    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
+    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+
+    from agent.runner import run_agent
+    await run_agent("test task", queue=queue)
+
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+
+    progress_events = [e for e in events if isinstance(e, ProgressEvent)]
+    assert len(progress_events) >= 1, f"Expected ProgressEvent; got {[type(e).__name__ for e in events]}"
+    # number_of_steps() returns 1, so step_idx = 0, step = 1
+    assert progress_events[0].step == 1, f"Expected step=1; got {progress_events[0].step}"
+    assert progress_events[0].max_steps == config.max_steps, f"Expected max_steps={config.max_steps}; got {progress_events[0].max_steps}"
 
 
 # ---------------------------------------------------------------------------
