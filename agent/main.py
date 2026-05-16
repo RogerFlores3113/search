@@ -27,9 +27,9 @@ async def lifespan(app: FastAPI):
     if task_ref is not None and not task_ref.done():
         task_ref.cancel()
         try:
-            await asyncio.wait_for(asyncio.shield(task_ref), timeout=2.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
+            await asyncio.wait_for(asyncio.gather(task_ref, return_exceptions=True), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass  # task outlived grace period; it will be garbage-collected
 
 
 app = FastAPI(lifespan=lifespan)
