@@ -1,20 +1,16 @@
 # local-browser-agent.spec — PyInstaller spec for macOS .app bundle
 #
 # Source: pyinstaller.org/en/stable/spec-files.html
-# Patterns: .planning/phases/04-distribution/04-RESEARCH.md Pattern 2 (Playwright driver),
-#           .planning/phases/04-distribution/04-RESEARCH.md Pattern 6 (spec structure)
+# Pattern: .planning/phases/04-distribution/04-RESEARCH.md Pattern 6 (spec structure)
 #
-# Open Question 2: Playwright v6 hook incompatibility on macOS
-#   The playwright docs note the hook is "not compatible with PyInstaller v6 on linux and macOS".
-#   This likely refers to bundled Chromium scenarios; we use channel="chrome" (system Chrome, no
-#   bundled Chromium) so this incompatibility may not apply. Verify in Task 6 checkpoint by
-#   checking `find dist/local-browser-agent.app -name "node" -path "*playwright*"` after build.
-#   If driver is missing, fall back to manual --add-data for the driver path.
+# NOTE: browser-use 0.12.6 dropped the playwright Python package entirely.
+# It uses cdp-use (pure Python CDP over WebSocket) to communicate with Chrome.
+# Chrome is launched via subprocess using the user's installed /Applications/Google Chrome.app.
+# There is NO Playwright Node.js driver to bundle — all browser communication is pure Python.
 #
 # upx=False: UPX is not installed by default on macOS runners and can break codesign.
 #   Explicitly disabled per anti-patterns guidance in 04-RESEARCH.md.
 
-from PyInstaller.utils.hooks import collect_data_files
 import sys
 
 block_cipher = None
@@ -24,10 +20,6 @@ a = Analysis(
     pathex=["."],
     binaries=[],
     datas=[
-        # Playwright driver (node binary + cli.js) — required even for channel="chrome"
-        # (Playwright needs its own Node.js subprocess to orchestrate CDP).
-        # See: 04-RESEARCH.md Pattern 2 + Pitfall 2
-        *collect_data_files("playwright"),
         # Jinja2 templates — served by FastAPI at runtime
         ("agent/templates", "agent/templates"),
         # Static files (CSS + any other static assets)
@@ -49,6 +41,15 @@ a = Analysis(
         "aiosqlite",
         # platformdirs — user data directory resolution
         "platformdirs",
+        # browser_use submodules (CDP-based, no playwright dependency)
+        "browser_use.browser.session",
+        "browser_use.browser.profile",
+        "browser_use.agent.service",
+        "browser_use.controller.service",
+        "browser_use.dom.service",
+        "cdp_use",
+        "cdp_use.client",
+        "cdp_use.cdp",
     ],
     hookspath=[],
     hooksconfig={},
