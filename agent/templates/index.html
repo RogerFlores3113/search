@@ -63,6 +63,7 @@
         <form hx-post="/run" hx-swap="none">
           <textarea name="task"
                     rows="3"
+                    maxlength="2000"
                     placeholder="Describe a task for the agent — e.g. find the Wikipedia page for the Eiffel Tower"
                     :readonly="state === 'running' || state === 'paused'"></textarea>
           <button type="submit"
@@ -144,8 +145,8 @@
     </div><!-- /layout -->
 
     <!-- Run history panel — fetched on load and after each run via SSE close event -->
-    <section id="run-history">
-      <h2>Recent Runs</h2>
+    <section id="run-history" class="run-history-section">
+      <h2 class="run-history-heading">Recent Runs</h2>
       <div id="run-history-list"
            hx-get="/runs"
            hx-trigger="load, htmx:sseClose from:#sse-container"
