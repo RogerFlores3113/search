@@ -611,3 +611,69 @@ async def test_get_index_returns_html(monkeypatch):
     assert 'hx-ext="sse"' in body, "Expected hx-ext=\"sse\" in index.html"
     assert 'sse-connect="/stream"' in body, "Expected sse-connect=\"/stream\" in index.html"
     assert 'name="task"' in body, "Expected textarea name=\"task\" in index.html"
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Alpine handlers + CSS wiring (UI-02, UI-05, UI-08, UI-09)
+# ---------------------------------------------------------------------------
+
+async def test_get_index_contains_alpine_handlers():
+    """GET / response body must contain all six Alpine handler names."""
+    from agent.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/")
+
+    body = resp.text
+    for handler in ("handleScreenshot", "handleProgress", "handleSummary",
+                    "handleError", "handleNarration", "handleState"):
+        assert handler in body, f"Missing Alpine handler: {handler}"
+
+
+async def test_get_index_has_result_area():
+    """GET / response body must contain #result-area with x-show='summary' and x-show='errorMsg'."""
+    from agent.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/")
+
+    body = resp.text
+    assert 'id="result-area"' in body, "Missing #result-area div"
+    assert 'x-show="summary"' in body, "Missing x-show='summary'"
+    assert 'x-show="errorMsg"' in body, "Missing x-show='errorMsg'"
+
+
+async def test_get_index_links_stylesheet():
+    """GET / response body must contain a link to /static/style.css."""
+    from agent.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/")
+
+    body = resp.text
+    assert '/static/style.css' in body, "Missing /static/style.css link in index.html"
+
+
+async def test_static_css_served():
+    """GET /static/style.css must return 200 with content-type text/css and contain --bg-dominant."""
+    from agent.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/static/style.css")
+
+    assert resp.status_code == 200, f"Expected 200; got {resp.status_code}"
+    assert "text/css" in resp.headers.get("content-type", ""), \
+        f"Expected text/css; got {resp.headers.get('content-type')}"
+    assert "--bg-dominant" in resp.text, "Missing --bg-dominant CSS custom property"
+
+
+async def test_index_no_unsafe_html():
+    """GET / response body must NOT contain '| safe' or 'innerHTML =' (XSS hygiene T-03-02)."""
+    from agent.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/")
+
+    body = resp.text
+    assert "| safe" not in body, "Found '| safe' Jinja2 escape bypass in index.html"
+    assert "innerHTML =" not in body, "Found 'innerHTML =' in index.html (XSS risk)"
