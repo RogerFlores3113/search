@@ -267,6 +267,12 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                     text=narration,
                     timestamp=datetime.now(timezone.utc).isoformat(),
                 ))
+                # ScreenshotEvent — emit after narration; empty b64 on missing screenshot
+                screenshots = agent_instance.history.screenshots()
+                b64 = screenshots[-1] if (screenshots and screenshots[-1]) else ""
+                queue.put_nowait(ScreenshotEvent(b64=b64))
+                # ProgressEvent — step counter for the UI progress display
+                queue.put_nowait(ProgressEvent(step=step_idx + 1, max_steps=config.max_steps))
 
         try:
             llm = build_llm(config)
