@@ -123,26 +123,110 @@ async def test_post_run_busy(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# POST /pause (LOOP-07) — deferred to Plan 03
+# POST /pause (LOOP-07)
 # ---------------------------------------------------------------------------
 
 async def test_post_pause_calls_agent_pause(monkeypatch):
-    """POST /pause must call agent.pause() when a run is active."""
-    pytest.skip(reason="Plan 02/03")
+    """POST /pause must call agent.pause() when agent is active and not paused."""
+    import agent.main as main_mod
+    from agent.main import app
+
+    mock_agent = _make_mock_agent()
+    mock_agent.state.paused = False
+    queue: asyncio.Queue = asyncio.Queue()
+
+    monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
+    monkeypatch.setattr(main_mod, "_active_queue", queue)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/pause")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "paused"
+    mock_agent.pause.assert_called_once()
+    # StateEvent("paused") must be on the queue
+    from agent.events import StateEvent
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    state_events = [e for e in events if isinstance(e, StateEvent)]
+    assert any(e.state == "paused" for e in state_events), f"Expected StateEvent('paused'); got {events}"
 
 
 async def test_post_pause_toggles_resume(monkeypatch):
     """POST /pause on a paused agent must call agent.resume() instead."""
-    pytest.skip(reason="Plan 02/03")
+    import agent.main as main_mod
+    from agent.main import app
+
+    mock_agent = _make_mock_agent()
+    mock_agent.state.paused = True
+    queue: asyncio.Queue = asyncio.Queue()
+
+    monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
+    monkeypatch.setattr(main_mod, "_active_queue", queue)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/pause")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "resumed"
+    mock_agent.resume.assert_called_once()
+    # StateEvent("running") must be on the queue
+    from agent.events import StateEvent
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    state_events = [e for e in events if isinstance(e, StateEvent)]
+    assert any(e.state == "running" for e in state_events), f"Expected StateEvent('running'); got {events}"
+
+
+async def test_post_pause_no_active_run(monkeypatch):
+    """POST /pause must return 400 when no agent is active."""
+    import agent.main as main_mod
+    from agent.main import app
+
+    monkeypatch.setattr(main_mod, "_active_agent", None)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/pause")
+
+    assert resp.status_code == 400
+    assert resp.json()["status"] == "no_active_run"
 
 
 # ---------------------------------------------------------------------------
-# POST /stop (LOOP-08) — deferred to Plan 03
+# POST /stop (LOOP-08)
 # ---------------------------------------------------------------------------
 
 async def test_post_stop_calls_agent_stop(monkeypatch):
     """POST /stop must call agent.stop() and return {"status": "stopped"}."""
-    pytest.skip(reason="Plan 02/03")
+    import agent.main as main_mod
+    from agent.main import app
+
+    mock_agent = _make_mock_agent()
+
+    monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/stop")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "stopped"
+    mock_agent.stop.assert_called_once()
+
+
+async def test_post_stop_no_active_run(monkeypatch):
+    """POST /stop must return 400 when no agent is active."""
+    import agent.main as main_mod
+    from agent.main import app
+
+    monkeypatch.setattr(main_mod, "_active_agent", None)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/stop")
+
+    assert resp.status_code == 400
+    assert resp.json()["status"] == "no_active_run"
 
 
 # ---------------------------------------------------------------------------
@@ -480,21 +564,165 @@ async def test_run_agent_emits_error_event_on_preflight(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# DB insert from runner finally (RUN-01) — deferred to Plan 03
+# DB insert from runner finally (RUN-01)
 # ---------------------------------------------------------------------------
 
-async def test_run_agent_inserts_run_to_db(monkeypatch):
-    """run_agent finally block must call history_db.insert_run with correct args."""
-    pytest.skip(reason="Plan 02/03")
+@pytest.fixture
+async def db_dir(tmp_path, monkeypatch):
+    """Yield a tmp path and chdir so data/history.db writes land there."""
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+async def test_run_agent_inserts_run_to_db(monkeypatch, db_dir):
+    """run_agent finally block must insert a row with task, status='complete', summary, and timestamps."""
+    from agent.runner import run_agent
+    from agent import db as history_db
+
+    await history_db.init_db()
+
+    mock_browser = MagicMock()
+    mock_browser.kill = AsyncMock()
+    mock_browser.llm_screenshot_size = None
+    mock_history = _make_mock_history(final_result="found it")
+    mock_agent = _make_mock_agent(history=mock_history)
+    mock_agent.state = MagicMock()
+    mock_agent.state.stopped = False
+
+    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
+    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+
+    await run_agent("test task")
+
+    runs = await history_db.list_runs(limit=10)
+    assert len(runs) >= 1, f"Expected a run to be inserted; got {runs}"
+    row = runs[0]
+    assert row["task"] == "test task", f"Expected task='test task'; got {row['task']!r}"
+    assert row["status"] == "complete", f"Expected status='complete'; got {row['status']!r}"
+    assert row["summary"] == "found it", f"Expected summary='found it'; got {row['summary']!r}"
+    assert row["started_at"] is not None
+    assert row["completed_at"] is not None
+
+
+async def test_run_agent_inserts_error_status_on_preflight(monkeypatch, db_dir):
+    """When PreFlightError occurs, runner inserts a row with status='error'."""
+    from agent.runner import run_agent, PreFlightError
+    from agent import db as history_db
+
+    await history_db.init_db()
+
+    async def fake_preflight(cfg):
+        raise PreFlightError("ollama not running")
+
+    monkeypatch.setattr("agent.runner.pre_flight_check", fake_preflight)
+
+    await run_agent("error task")
+
+    runs = await history_db.list_runs(limit=10)
+    assert len(runs) >= 1, f"Expected a row inserted; got {runs}"
+    assert runs[0]["status"] == "error", f"Expected status='error'; got {runs[0]['status']!r}"
+
+
+async def test_run_agent_inserts_stopped_status_when_agent_state_stopped(monkeypatch, db_dir):
+    """When agent.state.stopped is True after run(), status is 'stopped'."""
+    from agent.runner import run_agent
+    from agent import db as history_db
+
+    await history_db.init_db()
+
+    mock_browser = MagicMock()
+    mock_browser.kill = AsyncMock()
+    mock_browser.llm_screenshot_size = None
+    mock_history = _make_mock_history(final_result=None)
+    mock_agent = _make_mock_agent(history=mock_history)
+    mock_agent.state = MagicMock()
+    mock_agent.state.stopped = True  # user stopped the agent
+
+    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
+    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+
+    await run_agent("stopped task")
+
+    runs = await history_db.list_runs(limit=10)
+    assert len(runs) >= 1
+    assert runs[0]["status"] == "stopped", f"Expected status='stopped'; got {runs[0]['status']!r}"
+
+
+async def test_run_agent_clears_active_agent_in_finally(monkeypatch, db_dir):
+    """After run_agent returns, _active_agent and _active_queue are both None."""
+    import agent.main as main_mod
+    from agent.runner import run_agent
+    from agent import db as history_db
+
+    await history_db.init_db()
+
+    mock_browser = MagicMock()
+    mock_browser.kill = AsyncMock()
+    mock_browser.llm_screenshot_size = None
+    mock_history = _make_mock_history()
+    mock_agent = _make_mock_agent(history=mock_history)
+    mock_agent.state = MagicMock()
+    mock_agent.state.stopped = False
+
+    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
+    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+
+    queue: asyncio.Queue = asyncio.Queue()
+    monkeypatch.setattr(main_mod, "_active_queue", queue)
+
+    await run_agent("clear task", queue=queue)
+
+    assert main_mod._active_agent is None, f"Expected _active_agent=None; got {main_mod._active_agent}"
+    assert main_mod._active_queue is None, f"Expected _active_queue=None; got {main_mod._active_queue}"
 
 
 # ---------------------------------------------------------------------------
-# GET /runs history endpoint (RUN-02) — deferred to Plan 03
+# GET /runs history endpoint (RUN-02)
 # ---------------------------------------------------------------------------
 
-async def test_get_runs_returns_history(monkeypatch):
-    """GET /runs must return a list of run records from the database."""
-    pytest.skip(reason="Plan 02/03")
+async def test_get_runs_returns_history(monkeypatch, db_dir):
+    """GET /runs must return HTML with the most recent run records."""
+    from agent.main import app
+    from agent import db as history_db
+
+    await history_db.init_db()
+
+    # Insert 3 runs in order
+    await history_db.insert_run(
+        run_id="run-001", task="first task", status="complete",
+        summary=None, started_at="2026-05-16T10:00:00Z", completed_at="2026-05-16T10:01:00Z"
+    )
+    await history_db.insert_run(
+        run_id="run-002", task="second task", status="error",
+        summary=None, started_at="2026-05-16T11:00:00Z", completed_at="2026-05-16T11:01:00Z"
+    )
+    await history_db.insert_run(
+        run_id="run-003", task="third task", status="stopped",
+        summary=None, started_at="2026-05-16T12:00:00Z", completed_at="2026-05-16T12:01:00Z"
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/runs")
+
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", ""), \
+        f"Expected HTML; got {resp.headers.get('content-type')}"
+    body = resp.text
+    assert "first task" in body, "Expected 'first task' in response body"
+    assert "second task" in body, "Expected 'second task' in response body"
+    assert "third task" in body, "Expected 'third task' in response body"
 
 
 # ---------------------------------------------------------------------------
