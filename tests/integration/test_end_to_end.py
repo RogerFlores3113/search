@@ -127,11 +127,20 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
 
     MockBrowserProfile = MagicMock(return_value=MagicMock())
 
+    # Patch asyncio.to_thread to run synchronously inside the event loop.
+    # The lifespan cancels the background task after the HTTP response is sent,
+    # which can interrupt asyncio.to_thread mid-execution and leave the second
+    # JSONL write unreachable. Running _write_jsonl directly (no thread pool)
+    # eliminates this race condition while still exercising the real write logic.
+    async def _sync_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
     with patch("agent.runner.pre_flight_check", new=AsyncMock()), \
          patch("agent.runner.BrowserProfile", MockBrowserProfile), \
          patch("agent.runner.BrowserSession", MockBrowserSession), \
          patch("agent.runner.ChatOllama", MockChatOllama), \
-         patch("agent.runner.Agent", MockAgent):
+         patch("agent.runner.Agent", MockAgent), \
+         patch("asyncio.to_thread", side_effect=_sync_to_thread):
 
         with TestClient(app) as client:
             # One request to confirm the server is up; the event loop has already
