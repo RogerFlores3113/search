@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from agent.runner import run_agent
@@ -34,6 +35,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+_active_task: Optional[asyncio.Task] = None
+
 
 class RunRequest(BaseModel):
     task: str
@@ -41,6 +44,13 @@ class RunRequest(BaseModel):
 
 @app.post("/run")
 async def run_endpoint(request: RunRequest):
-    """Accept a task string and start the agent as a fire-and-forget asyncio task."""
-    asyncio.create_task(run_agent(request.task))
+    """Accept a task string and start the agent as a fire-and-forget asyncio task.
+
+    Returns HTTP 409 if an agent session is already running to prevent multiple
+    concurrent BrowserSession instances and interleaved JSONL writes.
+    """
+    global _active_task
+    if _active_task is not None and not _active_task.done():
+        return JSONResponse({"status": "busy"}, status_code=409)
+    _active_task = asyncio.create_task(run_agent(request.task))
     return {"status": "started"}
