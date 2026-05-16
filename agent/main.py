@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel
 
-from agent.events import DoneEvent
+from agent.events import DoneEvent, StateEvent
 from agent import db as history_db
 from agent.runner import run_agent
 
@@ -86,6 +86,56 @@ async def run_endpoint(request: RunRequest):
     _active_queue = queue
     _active_task = asyncio.create_task(run_agent(request.task, queue=queue))
     return JSONResponse({"status": "started"}, headers={"HX-Trigger": "streamStarted"})
+
+
+@app.post("/pause")
+async def pause_endpoint():
+    """Toggle pause/resume on the active agent.
+
+    If no agent is running, returns HTTP 400 with {"status": "no_active_run"}.
+    If agent.state.paused is True, calls agent.resume() (sync — RESEARCH Pattern 5).
+    Otherwise, calls agent.pause() (sync).
+    Emits StateEvent("paused" or "running") to _active_queue.
+    """
+    global _active_agent, _active_queue
+    if _active_agent is None:
+        return JSONResponse({"status": "no_active_run"}, status_code=400)
+    if _active_agent.state.paused:
+        _active_agent.resume()
+        if _active_queue is not None:
+            _active_queue.put_nowait(StateEvent(state="running"))
+        return JSONResponse({"status": "resumed"})
+    else:
+        _active_agent.pause()
+        if _active_queue is not None:
+            _active_queue.put_nowait(StateEvent(state="paused"))
+        return JSONResponse({"status": "paused"})
+
+
+@app.post("/stop")
+async def stop_endpoint():
+    """Stop the active agent.
+
+    If no agent is running, returns HTTP 400 with {"status": "no_active_run"}.
+    Calls agent.stop() (sync) — the runner finally block handles status="stopped" in DB.
+    """
+    global _active_agent
+    if _active_agent is None:
+        return JSONResponse({"status": "no_active_run"}, status_code=400)
+    _active_agent.stop()
+    return JSONResponse({"status": "stopped"})
+
+
+@app.get("/runs")
+async def runs_endpoint(request: Request):
+    """Return the last 10 run records as an HTML fragment.
+
+    Renders templates/runs_fragment.html with the run records list.
+    """
+    runs = await history_db.list_runs(limit=10)
+    return templates.TemplateResponse(
+        request=request, name="runs_fragment.html", context={"runs": runs}
+    )
 
 
 @app.get("/stream", response_class=EventSourceResponse)

@@ -87,18 +87,17 @@
                x-text="errorMsg + ' — check your config and try again.'"></div>
         </div>
 
-        <!-- Pause / Stop buttons (Plan 03 enables these; placeholders here) -->
+        <!-- Pause / Stop buttons — wired to /pause and /stop endpoints (Plan 03) -->
         <div class="action-row">
           <button class="btn btn-neutral"
+                  hx-post="/pause"
+                  hx-swap="none"
                   :disabled="state !== 'running' && state !== 'paused'"
-                  title="Pause/Resume (Plan 03)">
-            Pause
-          </button>
+                  x-text="state === 'paused' ? 'Resume' : 'Pause'"></button>
           <button class="btn btn-destructive"
-                  :disabled="state !== 'running' && state !== 'paused'"
-                  title="Stop (Plan 03)">
-            Stop
-          </button>
+                  hx-post="/stop"
+                  hx-swap="none"
+                  :disabled="state !== 'running' && state !== 'paused'">Stop</button>
         </div>
 
         <!-- Narration feed label -->
@@ -143,6 +142,17 @@
 
       </div><!-- /right column -->
     </div><!-- /layout -->
+
+    <!-- Run history panel — fetched on load and after each run via SSE close event -->
+    <section id="run-history">
+      <h2>Recent Runs</h2>
+      <div id="run-history-list"
+           hx-get="/runs"
+           hx-trigger="load, htmx:sseClose from:#sse-container"
+           hx-swap="innerHTML">
+      </div>
+    </section>
+
   </div><!-- /sse-container -->
 
   <script>
