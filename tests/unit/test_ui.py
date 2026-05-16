@@ -98,7 +98,7 @@ async def test_post_run_returns_started(monkeypatch):
     from agent.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post("/run", json={"task": "test task"})
+        resp = await client.post("/run", data={"task": "test task"})
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "started"
@@ -116,7 +116,7 @@ async def test_post_run_busy(monkeypatch):
     monkeypatch.setattr(main_mod, "_active_task", fake_task)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.post("/run", json={"task": "another task"})
+        resp = await client.post("/run", data={"task": "another task"})
 
     assert resp.status_code == 409
     assert resp.json()["status"] == "busy"

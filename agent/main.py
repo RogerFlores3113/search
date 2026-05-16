@@ -7,7 +7,7 @@ from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -58,10 +58,6 @@ _active_queue: Optional[asyncio.Queue] = None   # per-run SSE queue
 _active_agent = None                             # Agent ref for pause/stop (Plan 03)
 
 
-class RunRequest(BaseModel):
-    task: str
-
-
 @app.get("/")
 async def index(request: Request):
     """Render the HTMX+Alpine UI skeleton."""
@@ -69,8 +65,12 @@ async def index(request: Request):
 
 
 @app.post("/run")
-async def run_endpoint(request: RunRequest):
+async def run_endpoint(task: str = Form(..., max_length=2000)):
     """Accept a task string and start the agent as a fire-and-forget asyncio task.
+
+    Accepts application/x-www-form-urlencoded (the HTMX default for form submissions).
+    task is validated to a maximum of 2000 characters; FastAPI returns HTTP 422 if
+    exceeded.
 
     Returns HTTP 409 if an agent session is already running to prevent multiple
     concurrent BrowserSession instances and interleaved JSONL writes.
@@ -84,7 +84,7 @@ async def run_endpoint(request: RunRequest):
         return JSONResponse({"status": "busy"}, status_code=409)
     queue: asyncio.Queue = asyncio.Queue()
     _active_queue = queue
-    _active_task = asyncio.create_task(run_agent(request.task, queue=queue))
+    _active_task = asyncio.create_task(run_agent(task, queue=queue))
     return JSONResponse({"status": "started"}, headers={"HX-Trigger": "streamStarted"})
 
 
