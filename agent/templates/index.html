@@ -181,12 +181,17 @@
         handleState($event) {
           const d = JSON.parse($event.detail.data);
           this.state = d.state;
-          if (d.state === 'running' && this._elapsedTimer === null) {
-            this.runStartedAt = Date.now();
-            this.elapsed = 0;
-            this._elapsedTimer = setInterval(() => {
-              this.elapsed = Math.floor((Date.now() - this.runStartedAt) / 1000);
-            }, 1000);
+          if (d.state === 'running') {
+            // Clear results from the previous run so stale summary/error is not visible
+            this.summary = '';
+            this.errorMsg = '';
+            if (this._elapsedTimer === null) {
+              this.runStartedAt = Date.now();
+              this.elapsed = 0;
+              this._elapsedTimer = setInterval(() => {
+                this.elapsed = Math.floor((Date.now() - this.runStartedAt) / 1000);
+              }, 1000);
+            }
           }
           if (d.state === 'complete' || d.state === 'error' || d.state === 'idle') {
             if (this._elapsedTimer !== null) {
