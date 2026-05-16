@@ -734,6 +734,103 @@ async def test_get_runs_returns_history(monkeypatch, db_dir):
 
 
 # ---------------------------------------------------------------------------
+# Task 2: runs_fragment.html rendering + UI pause/stop buttons + history panel
+# ---------------------------------------------------------------------------
+
+def test_runs_fragment_renders_rows():
+    """runs_fragment.html must render each run's task, status, and started_at."""
+    from fastapi.templating import Jinja2Templates
+    t = Jinja2Templates(directory="agent/templates")
+    runs = [
+        {"task": "first task", "status": "complete", "summary": None,
+         "started_at": "2026-05-16T10:00:00Z", "completed_at": None, "run_id": "a"},
+        {"task": "second task", "status": "error", "summary": None,
+         "started_at": "2026-05-16T11:00:00Z", "completed_at": None, "run_id": "b"},
+        {"task": "third task", "status": "stopped", "summary": None,
+         "started_at": "2026-05-16T12:00:00Z", "completed_at": None, "run_id": "c"},
+    ]
+    rendered = t.get_template("runs_fragment.html").render(runs=runs)
+    assert "first task" in rendered
+    assert "second task" in rendered
+    assert "third task" in rendered
+    assert "complete" in rendered
+    assert "error" in rendered
+    assert "stopped" in rendered
+    assert "2026-05-16T10:00:00Z" in rendered
+
+
+def test_runs_fragment_empty_state():
+    """runs_fragment.html with empty runs must show 'No runs yet.' empty-state copy."""
+    from fastapi.templating import Jinja2Templates
+    t = Jinja2Templates(directory="agent/templates")
+    rendered = t.get_template("runs_fragment.html").render(runs=[])
+    assert "No runs yet. Enter a task above to start." in rendered
+
+
+def test_runs_fragment_escapes_task():
+    """runs_fragment.html must HTML-escape task strings (XSS mitigation T-03-02)."""
+    from fastapi.templating import Jinja2Templates
+    t = Jinja2Templates(directory="agent/templates")
+    runs = [{"task": "<script>alert(1)</script>", "status": "complete", "summary": None,
+             "started_at": "2026-05-16T00:00:00Z", "completed_at": None, "run_id": "abc"}]
+    rendered = t.get_template("runs_fragment.html").render(runs=runs)
+    assert "<script>" not in rendered, "XSS: raw <script> tag must not appear in output"
+    assert "&lt;script&gt;" in rendered, "Expected Jinja2 auto-escaped &lt;script&gt;"
+
+
+async def test_index_has_run_history_panel():
+    """GET / response body must contain <section id='run-history' and hx-get='/runs' with load trigger."""
+    from agent.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/")
+
+    body = resp.text
+    assert '<section id="run-history"' in body, "Missing <section id='run-history'>"
+    assert 'hx-get="/runs"' in body, "Missing hx-get='/runs' in index.html"
+    assert "load" in body, "Missing 'load' trigger in run history section"
+
+
+async def test_index_pause_button_enabled_per_state():
+    """Pause button must have hx-post='/pause' and Alpine :disabled binding for running/paused states."""
+    from agent.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/")
+
+    body = resp.text
+    assert 'hx-post="/pause"' in body, "Missing hx-post='/pause' on Pause button"
+    # The :disabled expression must evaluate to false when state in {running, paused}
+    assert "state !== 'running' && state !== 'paused'" in body, \
+        "Missing correct :disabled expression for Pause button"
+
+
+async def test_index_stop_button_enabled_per_state():
+    """Stop button must have hx-post='/stop' and Alpine :disabled binding for running/paused states."""
+    from agent.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/")
+
+    body = resp.text
+    assert 'hx-post="/stop"' in body, "Missing hx-post='/stop' on Stop button"
+    assert "state !== 'running' && state !== 'paused'" in body, \
+        "Missing correct :disabled expression for Stop button"
+
+
+async def test_index_pause_button_label_resume():
+    """Pause button must have Alpine x-text binding for Pause/Resume toggle."""
+    from agent.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/")
+
+    body = resp.text
+    assert "state === 'paused' ? 'Resume' : 'Pause'" in body, \
+        "Missing x-text='state === ...' Pause/Resume toggle on Pause button"
+
+
+# ---------------------------------------------------------------------------
 # DoneEvent always emitted (D-11)
 # ---------------------------------------------------------------------------
 
