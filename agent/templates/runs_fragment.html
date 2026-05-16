@@ -1,0 +1,13 @@
+{% if runs %}
+<ul class="runs-list">
+  {% for run in runs %}
+  <li class="runs-list-item">
+    <span class="task-text">{{ run.task[:60] }}</span>
+    <span class="badge badge-{{ run.status }}">{{ run.status }}</span>
+    <time class="timestamp" datetime="{{ run.started_at }}">{{ run.started_at }}</time>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="empty-state">No runs yet. Enter a task above to start.</p>
+{% endif %}

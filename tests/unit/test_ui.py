@@ -569,8 +569,16 @@ async def test_run_agent_emits_error_event_on_preflight(monkeypatch):
 
 @pytest.fixture
 async def db_dir(tmp_path, monkeypatch):
-    """Yield a tmp path and chdir so data/history.db writes land there."""
-    monkeypatch.chdir(tmp_path)
+    """Patch DB_PATH to a tmp location so data/history.db writes stay isolated.
+
+    Uses monkeypatch.setattr instead of chdir so the Jinja2 template directory
+    (relative path 'agent/templates') remains resolvable from the project root.
+    """
+    import agent.db as _db_mod
+    from pathlib import Path
+    db_path = tmp_path / "data" / "history.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(_db_mod, "DB_PATH", db_path)
     return tmp_path
 
 

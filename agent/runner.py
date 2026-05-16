@@ -283,6 +283,12 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                 extend_system_message=GUARDRAIL_PROMPT,
             )
 
+            # Set module-level ref so /pause and /stop can reach the active agent.
+            # Deferred import inside run_agent to avoid circular import at module load time
+            # (agent/main.py imports from agent/runner.py at module level).
+            from agent import main as _main_module  # noqa: PLC0415
+            _main_module._active_agent = agent
+
             try:
                 history = await asyncio.wait_for(
                     agent.run(max_steps=config.max_steps, on_step_end=_log_step),
@@ -311,3 +317,39 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                     queue.put_nowait(SummaryEvent(text=summary))
                 queue.put_nowait(StateEvent(state="complete"))
             queue.put_nowait(DoneEvent())
+
+        # Persist run record to history DB.
+        # Guard with try/except so a DB failure NEVER prevents cleanup below.
+        try:
+            if error_msg:
+                run_status = "error"
+            else:
+                try:
+                    _agent_stopped = (
+                        getattr(agent, "state", None) is not None
+                        and getattr(agent.state, "stopped", False)
+                    )
+                except NameError:
+                    _agent_stopped = False
+                run_status = "stopped" if _agent_stopped else "complete"
+
+            completed_at = datetime.now(timezone.utc).isoformat()
+            started_at_iso = started_at.isoformat()
+            await history_db.insert_run(
+                run_id=run_id,
+                task=task,
+                status=run_status,
+                summary=summary,
+                started_at=started_at_iso,
+                completed_at=completed_at,
+            )
+        except Exception:
+            pass  # DB failure must not surface — cleanup below must always run
+
+        # Clear module-level refs so stale SSE consumers detect run ended.
+        try:
+            from agent import main as _main_module  # noqa: PLC0415
+            _main_module._active_agent = None
+            _main_module._active_queue = None
+        except Exception:
+            pass
