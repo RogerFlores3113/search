@@ -13,6 +13,11 @@ from browser_use.browser.profile import BrowserProfile
 from browser_use.browser.session import BrowserSession
 
 from agent.config import config
+from agent.events import (
+    ScreenshotEvent, NarrationEvent, StateEvent,
+    ProgressEvent, SummaryEvent, ErrorEvent, DoneEvent,
+)
+from agent import db as history_db
 
 if TYPE_CHECKING:
     from agent.config import Settings
@@ -209,47 +214,94 @@ async def log_step(agent, *, run_id: str) -> None:
             break
 
 
-async def run_agent(task: str) -> None:
-    """Pre-flight, build BrowserSession+ChatOllama+Agent, asyncio.wait_for(agent.run(...), timeout).
+async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
+    """Pre-flight, build BrowserSession+Agent, asyncio.wait_for(agent.run(...), timeout).
 
-    Final: await browser.kill().
+    If `queue` is provided, emits SSE event dataclasses for the web UI bridge (D-11).
+    DoneEvent is always the final item put on the queue regardless of exit path —
+    this prevents the GET /stream endpoint from hanging forever.
+
+    The `browser` variable is initialized to None before the try block so the
+    finally handler can guard `await browser.kill()` against the PreFlightError path
+    (where BrowserSession is never constructed). See RESEARCH.md Pitfall 4.
     """
     run_id = str(uuid.uuid4())
+    started_at = datetime.now(timezone.utc)
+
+    if queue is not None:
+        queue.put_nowait(StateEvent(state="running"))
+
+    browser = None
+    summary = None
+    error_msg = None
 
     try:
         await pre_flight_check(config)
-    except PreFlightError:
-        return  # Error already printed; exit task cleanly without leaking SystemExit
-
-    profile = BrowserProfile(
-        prohibited_domains=config.blocked_domains,
-        channel="chrome",
-        headless=False,
-        keep_alive=False,
-        window_size={"width": config.browser_width, "height": config.browser_height},
-    )
-    browser = BrowserSession(browser_profile=profile)
-    browser.llm_screenshot_size = (config.llm_screenshot_width, config.llm_screenshot_height)
-
-    async def _log_step(agent_instance):
-        await log_step(agent_instance, run_id=run_id)
-
-    try:
-        llm = build_llm(config)
-        agent = Agent(
-            task=task,
-            llm=llm,
-            browser_session=browser,
-            extend_system_message=GUARDRAIL_PROMPT,
+    except PreFlightError as e:
+        error_msg = str(e)
+        # Fall through to finally — do not return here so DoneEvent is always emitted
+    else:
+        profile = BrowserProfile(
+            prohibited_domains=config.blocked_domains,
+            channel="chrome",
+            headless=False,
+            keep_alive=False,
+            window_size={"width": config.browser_width, "height": config.browser_height},
         )
+        browser = BrowserSession(browser_profile=profile)
+        browser.llm_screenshot_size = (config.llm_screenshot_width, config.llm_screenshot_height)
+
+        async def _log_step(agent_instance):
+            await log_step(agent_instance, run_id=run_id)
+            if queue is not None:
+                step_idx = agent_instance.history.number_of_steps() - 1
+                actions = agent_instance.history.model_actions()
+                last_action = actions[-1] if actions else {}
+                action_type = (
+                    last_action.get("action_type")
+                    or (list(last_action.keys())[0] if last_action else "unknown")
+                )
+                narration = f"Step {step_idx + 1}: {action_type}"
+                queue.put_nowait(NarrationEvent(
+                    step=step_idx + 1,
+                    text=narration,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                ))
 
         try:
-            history = await asyncio.wait_for(
-                agent.run(max_steps=config.max_steps, on_step_end=_log_step),
-                timeout=config.session_timeout,
+            llm = build_llm(config)
+            agent = Agent(
+                task=task,
+                llm=llm,
+                browser_session=browser,
+                extend_system_message=GUARDRAIL_PROMPT,
             )
-            print(f"Done: {history.final_result()}")
-        except asyncio.TimeoutError:
-            print(f"Session timeout reached ({config.session_timeout}s). Stopping.")
+
+            try:
+                history = await asyncio.wait_for(
+                    agent.run(max_steps=config.max_steps, on_step_end=_log_step),
+                    timeout=config.session_timeout,
+                )
+                summary = history.final_result()
+                print(f"Done: {summary}")
+            except asyncio.TimeoutError:
+                error_msg = f"Session timeout ({config.session_timeout}s)"
+                print(f"Session timeout reached ({config.session_timeout}s). Stopping.")
+        except Exception as e:
+            if not isinstance(e, asyncio.TimeoutError):
+                error_msg = str(e)
+                raise
+        finally:
+            if browser is not None:
+                await browser.kill()
+
     finally:
-        await browser.kill()
+        if queue is not None:
+            if error_msg:
+                queue.put_nowait(ErrorEvent(message=error_msg))
+                queue.put_nowait(StateEvent(state="error"))
+            else:
+                if summary:
+                    queue.put_nowait(SummaryEvent(text=summary))
+                queue.put_nowait(StateEvent(state="complete"))
+            queue.put_nowait(DoneEvent())
