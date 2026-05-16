@@ -302,7 +302,10 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
         except Exception as e:
             if not isinstance(e, asyncio.TimeoutError):
                 error_msg = str(e)
-                raise
+                # Do not re-raise: error_msg is sent to the queue in the outer finally block.
+                # A bare raise here propagates out of the asyncio.Task and produces a noisy
+                # "Task exception was never retrieved" warning with no additional benefit since
+                # the error is already captured and will be surfaced to the UI via ErrorEvent.
         finally:
             if browser is not None:
                 await browser.kill()
