@@ -1,23 +1,37 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import json
+from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel
 
+from agent.events import DoneEvent
+from agent import db as history_db
 from agent.runner import run_agent
+
+
+templates = Jinja2Templates(directory="agent/templates")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan hook.
 
-    On startup: if app.state.pending_task is set, create an asyncio task for run_agent.
+    On startup: initialise the runs DB table, then if app.state.pending_task is
+    set, create an asyncio task for run_agent.
     On shutdown: cancel the task if still running.
     """
+    await history_db.init_db()
+
     task_ref: Optional[asyncio.Task] = None
     pending = getattr(app.state, "pending_task", None)
     if pending:
@@ -35,11 +49,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Mount static files with check_dir=False so startup does not crash when the
+# agent/static directory has not yet been created (RESEARCH Anti-Patterns).
+app.mount("/static", StaticFiles(directory="agent/static", check_dir=False), name="static")
+
 _active_task: Optional[asyncio.Task] = None
+_active_queue: Optional[asyncio.Queue] = None   # per-run SSE queue
+_active_agent = None                             # Agent ref for pause/stop (Plan 03)
 
 
 class RunRequest(BaseModel):
     task: str
+
+
+@app.get("/")
+async def index(request: Request):
+    """Render the HTMX+Alpine UI skeleton."""
+    return templates.TemplateResponse(request=request, name="index.html", context={})
 
 
 @app.post("/run")
@@ -48,9 +74,44 @@ async def run_endpoint(request: RunRequest):
 
     Returns HTTP 409 if an agent session is already running to prevent multiple
     concurrent BrowserSession instances and interleaved JSONL writes.
+
+    On accept: creates an asyncio.Queue, assigns it to _active_queue, starts the
+    run_agent coroutine as an asyncio.Task with the queue wired in, and responds
+    with HX-Trigger: streamStarted so the HTMX SSE container activates.
     """
-    global _active_task
+    global _active_task, _active_queue
     if _active_task is not None and not _active_task.done():
         return JSONResponse({"status": "busy"}, status_code=409)
-    _active_task = asyncio.create_task(run_agent(request.task))
-    return {"status": "started"}
+    queue: asyncio.Queue = asyncio.Queue()
+    _active_queue = queue
+    _active_task = asyncio.create_task(run_agent(request.task, queue=queue))
+    return JSONResponse({"status": "started"}, headers={"HX-Trigger": "streamStarted"})
+
+
+@app.get("/stream", response_class=EventSourceResponse)
+async def stream_events() -> AsyncIterable[ServerSentEvent]:
+    """SSE endpoint that drains the active run queue until DoneEvent is received.
+
+    If no run is active, yields a single state:idle event and closes.
+    Each non-Done event is JSON-serialised via dataclasses.asdict() and sent with
+    the event's `type` field as the SSE event name (state, narration, etc.).
+    DoneEvent is sent with event="done" and empty data, then the generator returns,
+    which closes the SSE connection.
+
+    The local `queue` variable captures _active_queue at connection time so a new
+    run starting after the SSE connects does not cross-wire events (T-03-06).
+    """
+    global _active_queue
+    if _active_queue is None:
+        yield ServerSentEvent(raw_data='{"state":"idle"}', event="state")
+        return
+    queue = _active_queue
+    while True:
+        event = await queue.get()
+        if isinstance(event, DoneEvent):
+            yield ServerSentEvent(raw_data="", event="done")
+            break
+        yield ServerSentEvent(
+            data=json.dumps(dataclasses.asdict(event)),
+            event=event.type,
+        )

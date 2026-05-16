@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>local-browser-agent</title>
+  <!-- HTMX 2.0.10 + SSE extension -->
+  <script defer src="https://unpkg.com/htmx.org@2.0.10/dist/htmx.min.js"></script>
+  <script defer src="https://unpkg.com/htmx-ext-sse@2.2.4/sse.js"></script>
+  <!-- Alpine.js 3.15.12 -->
+  <script defer src="https://unpkg.com/alpinejs@3.15.12/dist/cdn.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #1a1d27;
+      --border: #2e3347;
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --accent: #6366f1;
+      --badge-gray: #64748b;
+      --badge-blue: #3b82f6;
+      --badge-yellow: #f59e0b;
+      --badge-green: #22c55e;
+      --badge-red: #ef4444;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px;
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 16px;
+      padding: 16px;
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    /* Screenshot area */
+    #screenshot-wrap {
+      position: relative;
+      min-height: 200px;
+    }
+
+    #screenshot-idle {
+      color: var(--text-muted);
+      padding: 60px 0;
+      text-align: center;
+    }
+
+    #screenshot-img {
+      display: block;
+      max-width: 800px;
+      width: 100%;
+      border-radius: 4px;
+    }
+
+    /* State badge */
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #fff;
+    }
+
+    .badge-gray   { background: var(--badge-gray); }
+    .badge-blue   { background: var(--badge-blue); }
+    .badge-yellow { background: var(--badge-yellow); }
+    .badge-green  { background: var(--badge-green); }
+    .badge-red    { background: var(--badge-red); }
+
+    /* Control panel */
+    .control-panel { display: flex; flex-direction: column; gap: 14px; }
+
+    .state-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    textarea {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 8px 10px;
+      resize: vertical;
+      font-family: inherit;
+      font-size: 13px;
+    }
+
+    textarea:focus { outline: none; border-color: var(--accent); }
+
+    button {
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: none;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .btn-run {
+      background: var(--accent);
+      color: #fff;
+      width: 100%;
+    }
+
+    .btn-action {
+      background: var(--border);
+      color: var(--text);
+      flex: 1;
+    }
+
+    .action-row { display: flex; gap: 8px; }
+
+    /* Narration feed */
+    #narration-feed {
+      max-height: 300px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .narration-row {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* Error / Summary inline banners (D-10 — no modals) */
+    .banner {
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    .banner-error   { background: #3f1515; border: 1px solid var(--badge-red); color: #fca5a5; }
+    .banner-success { background: #0d2b1d; border: 1px solid var(--badge-green); color: #86efac; }
+  </style>
+</head>
+<body>
+  <header>local-browser-agent</header>
+
+  <!--
+    Outer SSE container — hx-ext="sse" activates HTMX SSE extension.
+    sse-connect="/stream" opens the SSE connection.
+    sse-close="done" tells HTMX to close the connection when event:done arrives.
+    x-data="agentUI()" binds the Alpine reactive component.
+  -->
+  <div id="sse-container"
+       hx-ext="sse"
+       sse-connect="/stream"
+       sse-close="done"
+       x-data="agentUI()">
+
+    <div class="layout">
+
+      <!-- Left column: screenshot viewport -->
+      <div class="panel">
+        <div id="screenshot-wrap">
+          <div id="screenshot-idle" x-show="state === 'idle'">
+            Waiting for agent&hellip;
+          </div>
+          <img id="screenshot-img"
+               src=""
+               alt="Agent viewport"
+               style="max-width:800px;width:100%"
+               x-show="state !== 'idle'">
+        </div>
+      </div>
+
+      <!-- Right column: control panel -->
+      <div class="panel control-panel">
+
+        <!-- State badge -->
+        <div class="state-row">
+          Status:&nbsp;
+          <span class="badge"
+                role="status"
+                aria-live="polite"
+                x-text="state"
+                :class="badgeClass()"></span>
+        </div>
+
+        <!-- Task form -->
+        <form hx-post="/run" hx-swap="none">
+          <textarea name="task"
+                    rows="3"
+                    placeholder="Describe a task for the agent — e.g. find the Wikipedia page for the Eiffel Tower"></textarea>
+          <button type="submit"
+                  class="btn-run"
+                  style="margin-top:8px"
+                  :disabled="state !== 'idle' && state !== 'complete' && state !== 'error'">
+            Run
+          </button>
+        </form>
+
+        <!-- Error/summary banners (D-10 inline display — no modals) -->
+        <div class="banner banner-error" x-show="errorMsg" x-cloak>
+          <strong>Error:</strong>&nbsp;<span x-text="errorMsg"></span>
+        </div>
+        <div class="banner banner-success" x-show="summary" x-cloak>
+          <strong>Done:</strong>&nbsp;<span x-text="summary"></span>
+        </div>
+
+        <!-- Pause / Stop buttons (rendered disabled in Plan 01; wired in Plan 03) -->
+        <div class="action-row">
+          <button class="btn-action" disabled title="Available in Plan 03">
+            Pause
+          </button>
+          <button class="btn-action" disabled title="Available in Plan 03">
+            Stop
+          </button>
+        </div>
+
+        <!-- Narration feed label -->
+        <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.6px">
+          Agent log
+        </div>
+
+        <!-- Narration feed container — rows appended by Alpine handleNarration -->
+        <div id="narration-feed"
+             role="log"
+             aria-live="polite"
+             aria-label="Agent narration"></div>
+
+        <!--
+          SSE event bridges — hidden divs that listen to specific SSE event names and
+          dispatch to Alpine handlers via hx-on:htmx:sse-message.
+          All SSE events arrive as JSON; Alpine parses and updates reactive state.
+        -->
+        <div style="display:none"
+             hx-on:htmx:sse-message="if(event.detail.type==='state') $dispatch('agent-state', event.detail)"
+             @agent-state.window="handleState($event)"></div>
+
+        <div style="display:none"
+             hx-on:htmx:sse-message="if(event.detail.type==='narration') $dispatch('agent-narration', event.detail)"
+             @agent-narration.window="handleNarration($event)"></div>
+
+        <div style="display:none"
+             hx-on:htmx:sse-message="if(event.detail.type==='summary') $dispatch('agent-summary', event.detail)"
+             @agent-summary.window="handleSummary($event)"></div>
+
+        <div style="display:none"
+             hx-on:htmx:sse-message="if(event.detail.type==='error_msg') $dispatch('agent-error', event.detail)"
+             @agent-error.window="handleError($event)"></div>
+
+        <div style="display:none"
+             hx-on:htmx:sse-message="if(event.detail.type==='screenshot') $dispatch('agent-screenshot', event.detail)"
+             @agent-screenshot.window="handleScreenshot($event)"></div>
+
+      </div><!-- /right column -->
+    </div><!-- /layout -->
+  </div><!-- /sse-container -->
+
+  <script>
+    function agentUI() {
+      return {
+        state: 'idle',
+        summary: '',
+        errorMsg: '',
+
+        badgeClass() {
+          return {
+            'badge-gray':   this.state === 'idle',
+            'badge-blue':   this.state === 'running',
+            'badge-yellow': this.state === 'paused',
+            'badge-green':  this.state === 'complete',
+            'badge-red':    this.state === 'error',
+          };
+        },
+
+        handleState(event) {
+          const d = JSON.parse(event.detail.data);
+          this.state = d.state;
+        },
+
+        handleNarration(event) {
+          const d = JSON.parse(event.detail.data);
+          const feed = document.getElementById('narration-feed');
+          if (!feed) return;
+          const row = document.createElement('div');
+          row.className = 'narration-row';
+          // Use textContent to prevent XSS — never innerHTML for user-derived text (T-03-02)
+          row.textContent = d.text;
+          feed.appendChild(row);
+          feed.scrollTop = feed.scrollHeight;
+        },
+
+        handleSummary(event) {
+          const d = JSON.parse(event.detail.data);
+          this.summary = d.text;
+        },
+
+        handleError(event) {
+          const d = JSON.parse(event.detail.data);
+          // Use textContent binding (x-text) in template — never innerHTML (T-03-02)
+          this.errorMsg = d.message;
+        },
+
+        handleScreenshot(event) {
+          const d = JSON.parse(event.detail.data);
+          const img = document.getElementById('screenshot-img');
+          if (img && d.b64) {
+            // Set src via property assignment — not innerHTML (T-03-02)
+            img.src = 'data:image/png;base64,' + d.b64;
+          }
+        },
+
+        handleProgress(event) {
+          // Progress event handler stub — UI counter wired in Plan 02
+          // (ProgressEvent deferred to Plan 02 emission in runner._log_step)
+        },
+      };
+    }
+  </script>
+</body>
+</html>
