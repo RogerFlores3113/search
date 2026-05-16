@@ -138,6 +138,12 @@ async def pre_flight_check(cfg: "Settings") -> None:
             raise PreFlightError("OpenAI API unreachable")
 
 
+def _write_jsonl(path: Path, record: dict) -> None:
+    """Write a single JSONL record to path (append mode). Called via asyncio.to_thread."""
+    with open(path, "a") as f:
+        f.write(json.dumps(record) + "\n")
+
+
 async def log_step(agent, *, run_id: str) -> None:
     """on_step_end callback. Writes one JSONL record to training/runs.jsonl.
 
@@ -183,8 +189,7 @@ async def log_step(agent, *, run_id: str) -> None:
         "step_success": not history.has_errors(),
     }
 
-    with open(TRAINING_FILE, "a") as f:
-        f.write(json.dumps(record) + "\n")
+    await asyncio.to_thread(_write_jsonl, TRAINING_FILE, record)
 
     print(f"[step {step_idx + 1}] {record['narration']}")
 
