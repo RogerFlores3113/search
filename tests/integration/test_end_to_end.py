@@ -233,7 +233,7 @@ def test_post_run_endpoint_starts_agent(monkeypatch, tmp_path):
          patch("agent.runner.Agent", MockAgent):
 
         with TestClient(app) as client:
-            response = client.post("/run", json={"task": "another task"})
+            response = client.post("/run", data={"task": "another task"})
             assert response.status_code == 200
             assert response.json() == {"status": "started"}
 

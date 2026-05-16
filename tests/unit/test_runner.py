@@ -234,7 +234,16 @@ async def test_run_agent_calls_browser_kill_on_timeout(monkeypatch):
 # ---------------------------------------------------------------------------
 
 async def test_run_agent_calls_browser_kill_on_exception(monkeypatch):
-    """run_agent must await browser.kill() on RuntimeError; exception must propagate."""
+    """run_agent must await browser.kill() on RuntimeError and capture error in queue.
+
+    WR-03: the RuntimeError must NOT propagate out of run_agent — it is already
+    captured in error_msg and emitted as an ErrorEvent via the queue's finally
+    block. Re-raising would produce noisy 'Task exception was never retrieved'
+    warnings when run_agent is launched via asyncio.create_task().
+    """
+    import asyncio
+    from agent.events import ErrorEvent, DoneEvent
+
     mock_browser = _make_mock_browser()
     MockBrowserSession = MagicMock(return_value=mock_browser)
     MockChatOllama = MagicMock()
@@ -245,14 +254,25 @@ async def test_run_agent_calls_browser_kill_on_exception(monkeypatch):
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
 
+    queue: asyncio.Queue = asyncio.Queue()
+
     with patch("agent.runner.BrowserSession", MockBrowserSession), \
          patch("agent.runner.ChatOllama", MockChatOllama), \
          patch("agent.runner.Agent", MockAgent):
         from agent.runner import run_agent
-        with pytest.raises(RuntimeError, match="agent error"):
-            await run_agent("test task")
+        # run_agent must complete without raising — error is surfaced via queue
+        await run_agent("test task", queue=queue)
 
     mock_browser.kill.assert_awaited_once()
+
+    # Error must be captured and sent to the queue, not re-raised
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    error_events = [e for e in events if isinstance(e, ErrorEvent)]
+    assert len(error_events) >= 1, f"Expected ErrorEvent in queue; got {[type(e).__name__ for e in events]}"
+    assert "agent error" in error_events[0].message
+    assert isinstance(events[-1], DoneEvent), f"Last event must be DoneEvent; got {events[-1]}"
 
 
 # ---------------------------------------------------------------------------
