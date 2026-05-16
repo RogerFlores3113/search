@@ -1,0 +1,59 @@
+name: Release macOS App
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies (frozen lockfile)
+        run: uv sync --frozen --all-groups
+
+      - name: Verify core runtime imports
+        run: python -c "import cdp_use; import browser_use; import agent.paths; print('core imports ok')"
+
+      - name: Build .app bundle
+        run: uv run pyinstaller --clean --noconfirm local-browser-agent.spec
+
+      - name: Ad-hoc sign the bundle
+        run: bash build_scripts/sign.sh dist/local-browser-agent.app
+
+      - name: Smoke test - verify bundle binary present
+        run: |
+          python -c "
+          import pathlib
+          p = pathlib.Path('dist/local-browser-agent.app/Contents/MacOS/local-browser-agent')
+          assert p.exists(), 'bundle binary missing: ' + str(p)
+          print('bundle binary present')
+          "
+
+      - name: Zip the .app for release upload
+        run: cd dist && zip -r9 "local-browser-agent-${{ github.ref_name }}-mac.zip" local-browser-agent.app
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/local-browser-agent-${{ github.ref_name }}-mac.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: "${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
