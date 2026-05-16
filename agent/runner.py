@@ -91,9 +91,11 @@ async def pre_flight_check(cfg: "Settings") -> None:
             )
             raise PreFlightError("Ollama unreachable")
 
-        # Base-name substring match: "qwen3-vl" matches "qwen3-vl:8b", "qwen3-vl:latest", etc.
+        # Exact base-name match: split both sides on ":" to avoid substring false positives.
+        # e.g. "qwen3-vl" must not match "old-qwen3-vl-7b" or "qwen3" matching "qwen3-vl".
         model_base = cfg.ollama_model.split(":")[0]
-        if not any(model_base in m for m in models):
+        pulled_bases = [m.split(":")[0] for m in models]
+        if model_base not in pulled_bases:
             print(
                 f"ERROR: Model '{cfg.ollama_model}' is not pulled.\n"
                 f"  Pull it with: ollama pull {cfg.ollama_model}"
