@@ -1,59 +1,43 @@
-name: Release macOS App
+name: CI
 
-on:
+"on":
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
 
 jobs:
-  build-macos:
-    runs-on: macos-latest
-    timeout-minutes: 20
-    permissions:
-      contents: write
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - uses: actions/checkout@v4
 
       - name: Install uv
-        run: pip install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
 
-      - name: Install dependencies (frozen lockfile)
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
         run: uv sync --frozen --all-groups
 
-      - name: Verify core runtime imports
-        run: python -c "import cdp_use; import browser_use; import agent.paths; print('core imports ok')"
+      - name: Run tests
+        run: uv run pytest tests/ -q --tb=short
 
-      - name: Build .app bundle
-        run: uv run pyinstaller --clean --noconfirm local-browser-agent.spec
+      - name: Verify launch script syntax (Linux)
+        if: runner.os == 'Linux'
+        run: bash -n launch.sh && echo "launch.sh syntax ok"
 
-      - name: Ad-hoc sign the bundle
-        run: bash build_scripts/sign.sh dist/local-browser-agent.app
-
-      - name: Smoke test - verify bundle binary present
-        run: |
-          python -c "
-          import pathlib
-          p = pathlib.Path('dist/local-browser-agent.app/Contents/MacOS/local-browser-agent')
-          assert p.exists(), 'bundle binary missing: ' + str(p)
-          print('bundle binary present')
-          "
-
-      - name: Zip the .app for release upload
-        run: cd dist && zip -r9 "local-browser-agent-${{ github.ref_name }}-mac.zip" local-browser-agent.app
-
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/local-browser-agent-${{ github.ref_name }}-mac.zip
-          generate_release_notes: true
-          draft: false
-          prerelease: "${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify agent imports on Windows
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: uv run python -c "import agent; print('agent importable on Windows')"

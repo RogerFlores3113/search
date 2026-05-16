@@ -1,127 +1,99 @@
 # local-browser-agent
 
-A consumer-grade local AI browser agent — download, double-click, done. The app drives your own Chrome from your machine using your residential IP. Type any natural language task; the agent completes it on any site. No Python, no terminal, no cloud required.
+A local AI browser agent — type any natural language task, the agent drives your Chrome and completes it. Streams every step live to a localhost web UI. All data stays on your machine.
 
 ## Features
 
-- Natural language task input — "find me a 2BR apartment under $2k in Austin" and the agent does it
+- Natural language task input — type what you want, the agent does it
 - Streams every step live to a localhost web UI
 - Uses your installed Google Chrome (no bundled browser)
 - All data stays local — API keys never leave your machine except for LLM calls
-- Runs on your machine at your IP — not flagged as a bot
+- Runs at your IP — not flagged as a bot
 
 ---
 
-## Installing on macOS
+## Getting Started (Linux / WSL2 / Windows)
 
 ### Prerequisites
 
-1. **Google Chrome** must be installed. Download it at [google.com/chrome](https://www.google.com/chrome/) if you don't have it.
+1. **[uv](https://docs.astral.sh/uv/)** — the only thing you need to install manually.
 
-2. **A local or cloud LLM** — for local inference, install [Ollama](https://ollama.com) and pull the recommended model:
+   ```bash
+   # Linux / WSL2 / macOS
+   curl -LsSf https://astral.sh/uv/install.sh | sh
 
+   # Windows (PowerShell)
+   powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
    ```
+
+2. **Google Chrome** — [download here](https://www.google.com/chrome/) if you don't have it.
+
+3. **A local or cloud LLM.** For local inference, install [Ollama](https://ollama.com) and pull the recommended model:
+
+   ```bash
    ollama pull qwen2.5vl:7b
    ```
 
-   For API-based models (OpenAI, Anthropic, Gemini), you'll enter your API key in the UI.
+   For API-based models (OpenAI, Anthropic, Gemini), you'll enter your key in the UI.
 
 ---
 
-### Download and Install
+### Launch
 
-1. Go to the [GitHub Releases page](https://github.com/rflores3113/local-browser-agent/releases) and download `local-browser-agent-vX.Y.Z-mac.zip`.
+```bash
+# Clone
+git clone https://github.com/rflores3113/local-browser-agent.git
+cd local-browser-agent
 
-2. Double-click the `.zip` to unzip it. You'll get `local-browser-agent.app`.
+# Linux / WSL2 / macOS
+bash launch.sh
 
-3. Optionally, drag `local-browser-agent.app` to your `/Applications` folder.
+# Windows
+launch.bat
+```
 
----
-
-### First Launch: macOS Gatekeeper (Sequoia and later)
-
-Because the app is not signed with an Apple Developer certificate, macOS Gatekeeper will block it on the first launch. This is expected — follow these steps **once per install**:
-
-1. **Double-click** `local-browser-agent.app`. macOS will show a dialog:
-   > "Apple could not verify 'local-browser-agent' is free of malware that may harm your Mac or compromise your privacy."
-
-   Click **Done** (do not click "Move to Trash").
-
-2. Open **System Settings** (the gear icon in your Dock or Apple menu → System Settings).
-
-3. Click **Privacy & Security** in the sidebar.
-
-4. Scroll down to the **Security** section. You will see:
-   > "local-browser-agent was blocked to protect your Mac."
-
-   Click **Open Anyway**.
-
-5. Authenticate with **Touch ID** or your password when prompted.
-
-6. macOS shows a final confirmation dialog — click **Open**.
-
-7. The app launches and your default browser automatically opens to **http://127.0.0.1:8080** within a few seconds.
-
-**You only need to do this once.** Subsequent launches work with a normal double-click.
-
-#### Older macOS (Sonoma and earlier)
-
-On older macOS versions, the right-click → "Open" shortcut used to bypass Gatekeeper for unsigned apps. **This no longer works reliably on modern macOS.** Use the System Settings path above on any macOS version.
+On first run, `uv` downloads all dependencies automatically. Subsequent launches start in seconds. Your browser opens to **http://127.0.0.1:8080**.
 
 ---
 
-### What You'll See
+### First-time Safety Disclaimer
 
-On first launch, a **disclaimer modal** appears explaining what the agent can and cannot do:
+On first launch, a disclaimer modal explains what the agent can and cannot do:
 
 - It **will**: click, type, scroll, and navigate on any site you specify
-- It **will not**: make purchases, submit payment information, or visit its blocklist sites
+- It **will not**: make purchases, submit payment information, or visit blocked domains
 
-Click **"I understand — let's go"** to accept and unlock the task prompt. This disclaimer only appears once per browser profile.
+Click **"I understand — let's go"** to unlock the task prompt. The modal only appears once per browser profile.
 
 ---
 
 ### Where Your Data Lives
 
-All app data is stored in:
+| Platform | Path |
+|----------|------|
+| Linux / WSL2 | `~/.local/share/local-browser-agent/` |
+| Windows | `C:\Users\<you>\AppData\Local\local-browser-agent\local-browser-agent\` |
+| macOS | `~/Library/Application Support/local-browser-agent/` |
 
-```
-~/Library/Application Support/local-browser-agent/
-```
-
-That folder contains:
-
-| File | Contents |
-|------|----------|
-| `history.db` | Session history and results |
-| `training/runs.jsonl` | Agent run logs (opt-in training data) |
-| `app.log` | Application startup and error log |
-
-**To fully reset the app:** delete `~/Library/Application Support/local-browser-agent/` and clear `localStorage` in your browser (DevTools → Application → Local Storage → delete `disclaimer_accepted`).
+Each folder contains `history.db` (session history), `training/runs.jsonl` (agent run logs), and `app.log` (startup/error log).
 
 ---
 
 ## Development
 
-The project uses [uv](https://docs.astral.sh/uv/) for dependency management.
-
 ```bash
-# Clone and set up
-git clone https://github.com/rflores3113/local-browser-agent.git
-cd local-browser-agent
+# Set up
 uv sync
 
-# Run in development mode
+# Run
 uv run python -m agent
 
-# Run tests
+# Tests
 uv run pytest tests/ -q
 ```
 
-### Building the macOS App Locally
+---
 
-```bash
-# One-liner: builds, signs, and zips the .app
-bash build_scripts/build_mac.sh
-# Output: dist/local-browser-agent-dev-mac.zip
-```
+## macOS .app Bundle (planned)
+
+A double-click `.app` bundle for macOS is planned for a future release. For now, macOS users can use `bash launch.sh` (requires uv).
