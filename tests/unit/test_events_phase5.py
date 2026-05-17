@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.events import TokenEvent, ModelInfoEvent, NarrationEvent, StateEvent
+from agent.events import TokenEvent, ModelInfoEvent, ActionDetailEvent, StateEvent
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ def _make_fake_agent_with_tokens(prompt_tokens=100, completion_tokens=50, cost=0
     )
     history = types.SimpleNamespace(
         number_of_steps=lambda: 1,
-        model_actions=lambda: [{"action_type": "click", "action_target": "#btn", "action_value": ""}],
+        model_actions=lambda: [{"click_element": {"index": 5}, "interacted_element": None}],
         screenshots=lambda: ["iVBORw0KGgo="],
         has_errors=lambda: False,
     )
@@ -48,7 +48,7 @@ def _make_fake_agent_ollama():
     )
     history = types.SimpleNamespace(
         number_of_steps=lambda: 1,
-        model_actions=lambda: [{"action_type": "click", "action_target": "#btn", "action_value": ""}],
+        model_actions=lambda: [{"click_element": {"index": 5}, "interacted_element": None}],
         screenshots=lambda: ["iVBORw0KGgo="],
         has_errors=lambda: False,
     )
@@ -60,11 +60,11 @@ def _make_fake_agent_ollama():
 # PERF-01: step_duration_ms on NarrationEvent
 # ---------------------------------------------------------------------------
 
-async def test_narration_event_has_step_duration_ms(training_dir, monkeypatch_env):
-    """NarrationEvent emitted by _log_step must carry step_duration_ms as a non-negative int.
+async def test_action_detail_event_emitted_per_step(training_dir, monkeypatch_env):
+    """ActionDetailEvent must be emitted by _log_step once per step with correct action_type and step.
 
-    This test is RED until Plan 02 adds step_duration_ms= to the NarrationEvent
-    constructor call inside _log_step.
+    NarrationEvent was replaced by ActionDetailEvent in Phase 6 Plan 02 (D-05).
+    ActionDetailEvent carries structured action metadata instead of a text narration.
     """
     from agent.runner import run_agent
 
@@ -94,24 +94,26 @@ async def test_narration_event_has_step_duration_ms(training_dir, monkeypatch_en
     while not queue.empty():
         events.append(queue.get_nowait())
 
-    narration_events = [e for e in events if isinstance(e, NarrationEvent)]
-    assert len(narration_events) >= 1, f"Expected at least one NarrationEvent; got {[type(e).__name__ for e in events]}"
-    narration = narration_events[0]
-    assert isinstance(narration.step_duration_ms, int), (
-        f"step_duration_ms must be int, got {type(narration.step_duration_ms)}"
+    action_detail_events = [e for e in events if isinstance(e, ActionDetailEvent)]
+    assert len(action_detail_events) >= 1, (
+        f"Expected at least one ActionDetailEvent; got {[type(e).__name__ for e in events]}"
     )
-    assert narration.step_duration_ms >= 0, (
-        f"step_duration_ms must be >= 0, got {narration.step_duration_ms}"
+    assert action_detail_events[0].step == 1, (
+        f"ActionDetailEvent.step must be 1; got {action_detail_events[0].step}"
+    )
+    assert action_detail_events[0].action_type == "click_element", (
+        f"ActionDetailEvent.action_type must be 'click_element'; got {action_detail_events[0].action_type!r}"
     )
 
 
-async def test_step_duration_ms_is_nonzero(training_dir, monkeypatch_env):
-    """step_duration_ms must reflect real elapsed time from run start — not hardcoded zero.
+async def test_log_step_timing_closure_executes(training_dir, monkeypatch_env):
+    """Timing closure in _log_step must execute and run completes with ActionDetailEvent emitted.
 
-    This test is RED until Plan 02 wires time.monotonic() into the closure.
-    We use asyncio.sleep to ensure measurable elapsed time.
+    step_duration_ms is computed internally in _log_step but is no longer surfaced on any
+    SSE event (NarrationEvent was removed in Phase 6 Plan 02 D-05). This test guards against
+    regression in the surrounding closure structure by confirming the run completes and
+    ActionDetailEvent is emitted even after a sleep delay.
     """
-    import time
     from agent.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -122,7 +124,7 @@ async def test_step_duration_ms_is_nonzero(training_dir, monkeypatch_env):
             self._fake = fake_agent
 
         async def run(self, max_steps, on_step_end):
-            # Sleep 10ms to ensure monotonic delta is nonzero
+            # Sleep 10ms to ensure timing closure executes across measurable elapsed time
             await asyncio.sleep(0.010)
             await on_step_end(self._fake)
             result = MagicMock()
@@ -142,10 +144,10 @@ async def test_step_duration_ms_is_nonzero(training_dir, monkeypatch_env):
     while not queue.empty():
         events.append(queue.get_nowait())
 
-    narration_events = [e for e in events if isinstance(e, NarrationEvent)]
-    assert len(narration_events) >= 1, "Expected at least one NarrationEvent"
-    assert narration_events[0].step_duration_ms > 0, (
-        f"step_duration_ms must be > 0 after 10ms sleep; got {narration_events[0].step_duration_ms}"
+    action_detail_events = [e for e in events if isinstance(e, ActionDetailEvent)]
+    assert len(action_detail_events) >= 1, (
+        f"Expected at least one ActionDetailEvent after timing closure; "
+        f"got {[type(e).__name__ for e in events]}"
     )
 
 
