@@ -253,11 +253,20 @@ def test_post_run_endpoint_starts_agent(monkeypatch, tmp_path):
             assert response.status_code == 200
             assert response.json() == {"status": "started"}
 
-    # Agent was instantiated with task="another task" and guardrail prompt
+    # Agent was instantiated with task="another task", guardrail prompt, and Phase 6 kwargs
+    import inspect
+    from unittest.mock import ANY
     from agent.runner import GUARDRAIL_PROMPT
     MockAgent.assert_called_once_with(
         task="another task",
         llm=MockChatOllama.return_value,
         browser_session=MockBrowserSession.return_value,
         extend_system_message=GUARDRAIL_PROMPT,
+        calculate_cost=True,
+        register_new_step_callback=ANY,
+    )
+    # Verify the callback is an async coroutine function (_pre_step)
+    callback = MockAgent.call_args.kwargs.get("register_new_step_callback")
+    assert inspect.iscoroutinefunction(callback), (
+        f"register_new_step_callback must be a coroutine function; got {type(callback)}"
     )
