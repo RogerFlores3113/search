@@ -102,7 +102,7 @@ async def run_endpoint(task: str = Form(..., max_length=2000)):
     global _active_task, _active_queue
     if _active_task is not None and not _active_task.done():
         return JSONResponse({"status": "busy"}, status_code=409)
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=50)
     _active_queue = queue
     _active_task = asyncio.create_task(run_agent(task, queue=queue))
     return JSONResponse({"status": "started"}, headers={"HX-Trigger": "streamStarted"})
