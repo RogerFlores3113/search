@@ -23,15 +23,46 @@ User types any natural language task, the agent opens Chrome and completes it �
 - ✓ Mac .app distribution: double-click launch, no dependencies, drives user's Chrome — v0.1.0
 - ✓ Safety disclaimer on first launch (Alpine.js + localStorage gate) — v0.1.0
 - ✓ GitHub Actions release pipeline: tag push → build → codesign → GitHub Releases — v0.1.0
+- ✓ Per-step latency timing + token counting + cost estimation (PERF-01, PERF-02, PERF-04) — Phase 5
+- ✓ ThoughtEvent + ActionDetailEvent SSE events via register_new_step_callback (TRANS-01, TRANS-02, TRANS-03) — Phase 6
+
+## Current Milestone: v0.2.0 Foundations
+
+**Goal:** Harden the core loop — instrument performance, surface model transparency, fix screenshot lag, and build the training data pipeline before expanding features.
+
+**Target features:**
+- Per-step latency instrumentation + token counting + cost estimation
+- Surface LLM thought text and richer action labels in the UI
+- Near real-time screenshot streaming (background capture loop + lag fix)
+- Training data capture for API providers (Claude/OpenAI) — enriched JSONL with thought, tokens, cost, duration
+- LoRA training scaffold: data converter + unsloth training script ready to run
+- Frontend polish: action type badges, expandable run history with cost/duration
 
 ### Active (v0.2.0)
 
-- [ ] Windows .exe distribution (PLAT-01) — GitHub Actions scaffold exists; macOS is the validated path
+- [x] Per-step latency timing (PERF-01) — Phase 5
+- [x] Token counting + cost estimation per run (PERF-02) — Phase 5
+- [ ] UI: step timer, token/cost ticker display (PERF-03)
+- [x] Surface LLM thought text in narration feed (TRANS-01) — Phase 6
+- [x] Richer action labels: target, value summary, result indicator (TRANS-02) — Phase 6
+- [x] Step counter + current goal display (TRANS-03) — Phase 6
+- [ ] Background screenshot capture loop (~500ms during action) (SCR-01)
+- [ ] Fix screenshot queue backpressure / delivery lag (SCR-02)
+- [ ] Enriched JSONL: step_duration_ms, tokens_used, cost_usd, model_thought, provider, model_name (TRAIN-01)
+- [ ] API-provider-only capture mode (Claude/OpenAI; skip Ollama) (TRAIN-02)
+- [ ] LoRA scaffold: JSONL → training format converter + unsloth training script (TRAIN-03)
+- [ ] Narration feed: action type color badges + result indicators (UI-01)
+- [ ] Run history: expandable detail (step count, cost, duration) (UI-02)
+
+### Deferred (post-v0.2.0)
+
+- [ ] Windows .exe distribution — GitHub Actions scaffold exists; macOS is the validated path
 - [ ] Full Apple notarization (vs ad-hoc codesign) — required for Gatekeeper auto-pass on all Macs
-- [ ] Manual smoke test verification (01-03 Task 2) — requires human with Chrome + Ollama to verify 5 live scenarios
-- [ ] Structured task presets: apartment, job, lead search (PRESET-01 through PRESET-03)
-- [ ] Authenticated sessions: saved credential sets, session cookie persistence (AUTH-01 through AUTH-03)
-- [ ] Excel/CSV export of structured run results (OUT-02, OUT-03)
+- [ ] Manual smoke test verification — requires human with Chrome + Ollama to verify 5 live scenarios
+- [ ] Structured task presets: apartment, job, lead search
+- [ ] Authenticated sessions: saved credential sets, session cookie persistence
+- [ ] Excel/CSV export of structured run results
+- [ ] LoRA training run + evaluation (v0.3.0 — needs 1,000+ quality steps and benchmark suite)
 
 ### Out of Scope
 
@@ -117,4 +148,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-16 after v0.1.0 milestone*
+*Last updated: 2026-05-17 — Phase 6 complete: ThoughtEvent + ActionDetailEvent wired, 133 tests GREEN*
