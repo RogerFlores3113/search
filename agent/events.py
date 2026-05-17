@@ -63,3 +63,24 @@ class ModelInfoEvent:
     type: Literal["model_info"] = "model_info"
     provider: str = ""
     model_name: str = ""
+
+
+@dataclass
+class ThoughtEvent:
+    type: Literal["thought"] = "thought"
+    step: int = 0
+    thinking: Optional[str] = None
+    evaluation_previous_goal: Optional[str] = None
+    next_goal: Optional[str] = None
+    memory: Optional[str] = None
+
+
+@dataclass
+class ActionDetailEvent:
+    type: Literal["action_detail"] = "action_detail"
+    step: int = 0
+    action_type: str = "unknown"
+    target: Optional[str] = None
+    value: Optional[str] = None
+    url: Optional[str] = None
+    success: Optional[bool] = None

@@ -17,7 +17,7 @@ from agent.config import config
 from agent.events import (
     ScreenshotEvent, NarrationEvent, StateEvent,
     ProgressEvent, SummaryEvent, ErrorEvent, DoneEvent,
-    TokenEvent, ModelInfoEvent,
+    TokenEvent, ModelInfoEvent, ThoughtEvent, ActionDetailEvent,
 )
 from agent import db as history_db
 from agent.paths import get_user_data_dir
@@ -288,6 +288,23 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
         browser = BrowserSession(browser_profile=profile)
         browser.llm_screenshot_size = (config.llm_screenshot_width, config.llm_screenshot_height)
 
+        async def _pre_step(browser_state, agent_output, step_num: int) -> None:
+            """Pre-action callback fired via register_new_step_callback before each step.
+
+            Puts a ThoughtEvent on the queue carrying the model's reasoning fields.
+            When queue is None (CLI path), returns immediately without side effects.
+            Empty string fields are normalized to None via 'or None' guard (RESEARCH.md Pitfall 2).
+            """
+            if queue is None:
+                return
+            queue.put_nowait(ThoughtEvent(
+                step=step_num,
+                thinking=agent_output.thinking or None,
+                evaluation_previous_goal=agent_output.evaluation_previous_goal or None,
+                next_goal=agent_output.next_goal or None,
+                memory=agent_output.memory or None,
+            ))
+
         async def _log_step(agent_instance):
             nonlocal step_start
             duration_ms = int((time.monotonic() - step_start) * 1000)
@@ -296,18 +313,25 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                 step_idx = agent_instance.history.number_of_steps() - 1
                 actions = agent_instance.history.model_actions()
                 last_action = actions[-1] if actions else {}
-                action_type = (
-                    last_action.get("action_type")
-                    or (list(last_action.keys())[0] if last_action else "unknown")
+                # action_type: first key that is NOT 'interacted_element' (RESEARCH.md Pitfall 4)
+                action_type = next(
+                    (k for k in last_action if k != "interacted_element"), "unknown"
                 )
-                narration = f"Step {step_idx + 1}: {action_type}"
-                queue.put_nowait(NarrationEvent(
+                # Extract action params — inner dict keyed by action_type
+                params = last_action.get(action_type) if isinstance(last_action.get(action_type), dict) else {}
+                target = str(params["index"]) if "index" in params else None
+                value = params.get("text") or params.get("query") or params.get("keys") or None
+                url = params.get("url") or None
+                # ActionDetailEvent replaces NarrationEvent (D-05)
+                queue.put_nowait(ActionDetailEvent(
                     step=step_idx + 1,
-                    text=narration,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                    step_duration_ms=duration_ms,
+                    action_type=action_type,
+                    target=target,
+                    value=value,
+                    url=url,
+                    success=None,
                 ))
-                # ScreenshotEvent — emit after narration; empty b64 on missing screenshot
+                # ScreenshotEvent — emit after action detail; empty b64 on missing screenshot
                 screenshots = agent_instance.history.screenshots()
                 b64 = screenshots[-1] if (screenshots and screenshots[-1]) else ""
                 queue.put_nowait(ScreenshotEvent(b64=b64))
@@ -325,6 +349,7 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                 browser_session=browser,
                 extend_system_message=GUARDRAIL_PROMPT,
                 calculate_cost=True,
+                register_new_step_callback=_pre_step,
             )
 
             # Set module-level ref so /pause and /stop can reach the active agent.

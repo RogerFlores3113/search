@@ -38,15 +38,21 @@ def _make_mock_agent(history=None):
 
 def _make_fake_agent_instance():
     """Build a minimal fake browser-use agent instance for queue emission tests."""
+    from unittest.mock import AsyncMock as _AsyncMock
     history = types.SimpleNamespace(
         number_of_steps=lambda: 1,
-        model_actions=lambda: [{"action_type": "navigate", "action_target": "", "action_value": ""}],
+        model_actions=lambda: [{"navigate": {"url": "https://example.com"}, "interacted_element": None}],
         screenshots=lambda: ["iVBORw0KGgo="],
         has_errors=lambda: False,
+    )
+    token_cost_service = types.SimpleNamespace(
+        usage_history=[],
+        calculate_cost=_AsyncMock(return_value=None),
     )
     return types.SimpleNamespace(
         history=history,
         state=types.SimpleNamespace(last_result=[]),
+        token_cost_service=token_cost_service,
     )
 
 
@@ -230,29 +236,30 @@ async def test_post_stop_no_active_run(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# NarrationEvent emission from _log_step (LOOP-09)
+# ActionDetailEvent emission from _log_step (LOOP-09, updated Phase 6 D-05)
 # ---------------------------------------------------------------------------
 
 async def test_log_step_emits_narration_event(monkeypatch):
-    """run_agent's _log_step closure must put NarrationEvent on queue after log_step runs."""
-    from agent.events import NarrationEvent, StateEvent
+    """run_agent's _log_step closure must put ActionDetailEvent on queue after log_step runs.
+
+    NarrationEvent was replaced by ActionDetailEvent in Phase 6 Plan 02 (D-05).
+    ActionDetailEvent carries structured action metadata (action_type, target, url, value)
+    instead of a plain text narration string.
+    """
+    from agent.events import ActionDetailEvent, StateEvent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent_instance = _make_fake_agent_instance()
 
     # Patch log_step (the JSONL writer) to be a no-op so test stays unit-level
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
-    # Patch pre_flight_check to raise PreFlightError immediately so we can test
-    # NarrationEvent emission independently via _log_step directly
-    # Instead, invoke run_agent with a mock that calls on_step_end exactly once
-    from agent.runner import PreFlightError
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
     mock_browser.llm_screenshot_size = None
 
     captured_on_step_end = {}
 
-    async def fake_run(max_steps, on_step_end):
+    async def fake_run(max_steps, on_step_end, **kwargs):
         captured_on_step_end["fn"] = on_step_end
         await on_step_end(fake_agent_instance)
         return _make_mock_history()
@@ -275,11 +282,13 @@ async def test_log_step_emits_narration_event(monkeypatch):
         events.append(queue.get_nowait())
 
     event_types = [type(e).__name__ for e in events]
-    assert "NarrationEvent" in event_types, f"Expected NarrationEvent; got {event_types}"
+    assert "ActionDetailEvent" in event_types, f"Expected ActionDetailEvent; got {event_types}"
 
-    narration_events = [e for e in events if isinstance(e, NarrationEvent)]
-    assert len(narration_events) >= 1
-    assert "navigate" in narration_events[0].text or "Step" in narration_events[0].text
+    action_detail_events = [e for e in events if isinstance(e, ActionDetailEvent)]
+    assert len(action_detail_events) >= 1
+    assert action_detail_events[0].action_type == "navigate", (
+        f"action_type must be 'navigate'; got {action_detail_events[0].action_type!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
