@@ -313,18 +313,25 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                 step_idx = agent_instance.history.number_of_steps() - 1
                 actions = agent_instance.history.model_actions()
                 last_action = actions[-1] if actions else {}
-                action_type = (
-                    last_action.get("action_type")
-                    or (list(last_action.keys())[0] if last_action else "unknown")
+                # action_type: first key that is NOT 'interacted_element' (RESEARCH.md Pitfall 4)
+                action_type = next(
+                    (k for k in last_action if k != "interacted_element"), "unknown"
                 )
-                narration = f"Step {step_idx + 1}: {action_type}"
-                queue.put_nowait(NarrationEvent(
+                # Extract action params — inner dict keyed by action_type
+                params = last_action.get(action_type) if isinstance(last_action.get(action_type), dict) else {}
+                target = str(params["index"]) if "index" in params else None
+                value = params.get("text") or params.get("query") or params.get("keys") or None
+                url = params.get("url") or None
+                # ActionDetailEvent replaces NarrationEvent (D-05)
+                queue.put_nowait(ActionDetailEvent(
                     step=step_idx + 1,
-                    text=narration,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                    step_duration_ms=duration_ms,
+                    action_type=action_type,
+                    target=target,
+                    value=value,
+                    url=url,
+                    success=None,
                 ))
-                # ScreenshotEvent — emit after narration; empty b64 on missing screenshot
+                # ScreenshotEvent — emit after action detail; empty b64 on missing screenshot
                 screenshots = agent_instance.history.screenshots()
                 b64 = screenshots[-1] if (screenshots and screenshots[-1]) else ""
                 queue.put_nowait(ScreenshotEvent(b64=b64))
