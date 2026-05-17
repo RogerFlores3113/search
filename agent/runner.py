@@ -17,7 +17,7 @@ from agent.config import config
 from agent.events import (
     ScreenshotEvent, NarrationEvent, StateEvent,
     ProgressEvent, SummaryEvent, ErrorEvent, DoneEvent,
-    TokenEvent, ModelInfoEvent,
+    TokenEvent, ModelInfoEvent, ThoughtEvent, ActionDetailEvent,
 )
 from agent import db as history_db
 from agent.paths import get_user_data_dir
@@ -288,6 +288,23 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
         browser = BrowserSession(browser_profile=profile)
         browser.llm_screenshot_size = (config.llm_screenshot_width, config.llm_screenshot_height)
 
+        async def _pre_step(browser_state, agent_output, step_num: int) -> None:
+            """Pre-action callback fired via register_new_step_callback before each step.
+
+            Puts a ThoughtEvent on the queue carrying the model's reasoning fields.
+            When queue is None (CLI path), returns immediately without side effects.
+            Empty string fields are normalized to None via 'or None' guard (RESEARCH.md Pitfall 2).
+            """
+            if queue is None:
+                return
+            queue.put_nowait(ThoughtEvent(
+                step=step_num,
+                thinking=agent_output.thinking or None,
+                evaluation_previous_goal=agent_output.evaluation_previous_goal or None,
+                next_goal=agent_output.next_goal or None,
+                memory=agent_output.memory or None,
+            ))
+
         async def _log_step(agent_instance):
             nonlocal step_start
             duration_ms = int((time.monotonic() - step_start) * 1000)
@@ -325,6 +342,7 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                 browser_session=browser,
                 extend_system_message=GUARDRAIL_PROMPT,
                 calculate_cost=True,
+                register_new_step_callback=_pre_step,
             )
 
             # Set module-level ref so /pause and /stop can reach the active agent.
