@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ from agent.config import config
 from agent.events import (
     ScreenshotEvent, NarrationEvent, StateEvent,
     ProgressEvent, SummaryEvent, ErrorEvent, DoneEvent,
+    TokenEvent, ModelInfoEvent,
 )
 from agent import db as history_db
 from agent.paths import get_user_data_dir
@@ -72,6 +74,18 @@ def build_llm(cfg: "Settings"):
         )
     else:
         raise ValueError(f"Unknown provider: {provider!r}")
+
+
+def _resolve_model_name(cfg: "Settings") -> str:
+    """Return the configured model name string for the active provider."""
+    provider = cfg.provider.lower()
+    if provider == "ollama":
+        return cfg.ollama_model
+    elif provider == "anthropic":
+        return cfg.anthropic_model
+    elif provider == "openai":
+        return cfg.openai_model
+    return "unknown"
 
 
 async def pre_flight_check(cfg: "Settings") -> None:
@@ -228,9 +242,11 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
     """
     run_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc)
+    step_start = time.monotonic()
 
     if queue is not None:
         queue.put_nowait(StateEvent(state="running"))
+        queue.put_nowait(ModelInfoEvent(provider=config.provider, model_name=_resolve_model_name(config)))
 
     browser = None
     summary = None
@@ -282,6 +298,7 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                 llm=llm,
                 browser_session=browser,
                 extend_system_message=GUARDRAIL_PROMPT,
+                calculate_cost=True,
             )
 
             # Set module-level ref so /pause and /stop can reach the active agent.
