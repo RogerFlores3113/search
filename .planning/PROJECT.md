@@ -12,19 +12,26 @@ User types any natural language task, the agent opens Chrome and completes it �
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ General-purpose agentic loop: screenshot → LLM decision → browser action → repeat (any site, any task) — v0.1.0
+- ✓ LLM has full browser control: click, type, scroll, navigate — no per-domain logic — v0.1.0
+- ✓ browser-use as the loop engine (Python-native, MIT, validated over raw Playwright) — v0.1.0
+- ✓ BYOM: Ollama (local, Qwen2.5-VL:7b recommended), Anthropic (Claude), OpenAI (GPT-4o) — v0.1.0
+- ✓ Guardrails: CDP domain blocklist + action system-prompt (no payment CTAs, no credential submission) — v0.1.0
+- ✓ Localhost web UI: prompt box, live screenshot stream, narration feed, state/progress, pause/stop — v0.1.0
+- ✓ Run history: task, status, timestamp saved locally; recent runs viewable — v0.1.0
+- ✓ Training JSONL: every step logged with screenshot, action, narration — v0.1.0
+- ✓ Mac .app distribution: double-click launch, no dependencies, drives user's Chrome — v0.1.0
+- ✓ Safety disclaimer on first launch (Alpine.js + localStorage gate) — v0.1.0
+- ✓ GitHub Actions release pipeline: tag push → build → codesign → GitHub Releases — v0.1.0
 
-### Active
+### Active (v0.2.0)
 
-- [ ] General-purpose agentic loop: screenshot → LLM decision → browser action → repeat (any site, any task)
-- [ ] LLM has full browser control: click, type, scroll, navigate — no per-domain logic
-- [ ] browser-use as the loop engine (Python-native, MIT, validated over raw Playwright)
-- [ ] BYOM: Ollama (local, Qwen2.5-VL:7b recommended), Anthropic (Claude), OpenAI (GPT-4o)
-- [ ] Guardrails: global domain blocklist + action system-prompt instructions (no payment CTAs, no credential submission outside user-directed sites)
-- [ ] Localhost web UI: prompt box, live screenshot stream, narration feed, state/progress, pause/stop
-- [ ] Run history: task, status, timestamp saved locally; recent runs viewable
-- [ ] Mac .app distribution: double-click launch, no dependencies, drives user's Chrome
-- [ ] Safety disclaimer on first launch
+- [ ] Windows .exe distribution (PLAT-01) — GitHub Actions scaffold exists; macOS is the validated path
+- [ ] Full Apple notarization (vs ad-hoc codesign) — required for Gatekeeper auto-pass on all Macs
+- [ ] Manual smoke test verification (01-03 Task 2) — requires human with Chrome + Ollama to verify 5 live scenarios
+- [ ] Structured task presets: apartment, job, lead search (PRESET-01 through PRESET-03)
+- [ ] Authenticated sessions: saved credential sets, session cookie persistence (AUTH-01 through AUTH-03)
+- [ ] Excel/CSV export of structured run results (OUT-02, OUT-03)
 
 ### Out of Scope
 
@@ -64,16 +71,33 @@ User types any natural language task, the agent opens Chrome and completes it �
 - **Security**: No cloud component; user's API keys stay local; no data leaves the machine except LLM API calls
 - **Scope**: v1 is the general-purpose loop — prove it works on any site before building structured presets
 
+## Context
+
+**v0.1.0 shipped 2026-05-16.** 4 phases, 10 plans, 68 commits, 4 days. 7,120 lines Python (source + tests). 35/35 v1 requirements complete.
+
+**Stack confirmed:** browser-use 0.12.6 + cdp-use (replaces Playwright in distribution), FastAPI + HTMX + SSE, PyInstaller for .app. LiteLLM >=1.83.0 hard-pinned (supply chain backdoor neutralized).
+
+**Validated learnings:**
+- browser-use is the right loop engine — Stagehand is TypeScript-only; raw Playwright would be months of custom loop work
+- asyncio.Queue as SSE bridge is sound — decouples agent from HTTP layer cleanly
+- PyInstaller .app works — cdp-use (not Playwright) is the bundled browser driver; Playwright cannot bundle cleanly
+- Ad-hoc codesign is sufficient for v1 distribution; Apple notarization is v2
+
+**Next milestone focus:** Windows distribution, full notarization, manual smoke test sign-off, and first structured preset (apartment search).
+
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Local-first (no cloud deployment) | Datacenter IPs blocked by target sites; residential IP is functionally required | — Pending |
-| BYOM via LiteLLM | Single abstraction for Ollama + all major API providers; user brings their own key | — Pending |
-| browser-use as loop engine (to validate) | Avoid building agentic loop from scratch; research to confirm it's the right foundation | — Pending |
-| General-purpose loop as v1 (no presets) | LLM vision handles arbitrary domains — per-domain scrapers are pre-LLM thinking; prove the loop first | — Pending |
-| Localhost UI (no Electron) | Simpler distribution; system browser is sufficient; lower resource overhead | — Pending |
-| Native bundled app (.app / .exe) | Consumer app target — zero dependencies, double-click launch; uses user's Chrome via `channel="chrome"` | — Pending |
+| Local-first (no cloud deployment) | Datacenter IPs blocked by target sites; residential IP is functionally required | ✓ Good — confirmed during Phase 4 UAT planning |
+| BYOM via LiteLLM + ChatOllama | Single abstraction for API providers; ChatOllama direct for local models | ✓ Good — 31 unit tests green, all 3 providers wired |
+| browser-use as loop engine | Avoid building agentic loop from scratch; MIT, Python-native, active development | ✓ Good — Stagehand confirmed TypeScript-only; raw Playwright is months of work |
+| General-purpose loop as v1 (no presets) | LLM vision handles arbitrary domains — per-domain scrapers are pre-LLM thinking | ✓ Good — loop works; presets are clean v2 additions |
+| FastAPI + HTMX + SSE for UI | Zero build step, 30-40KB JS, EventSourceResponse native in FastAPI | ✓ Good — worked cleanly; live screenshot + narration stream both implemented |
+| asyncio.Queue as agent-to-SSE bridge | Decouples agent callbacks from HTTP layer; single event loop | ✓ Good — critical architecture that enabled clean pause/stop without threading hacks |
+| PyInstaller for .app distribution | Consumer target — zero dependencies, double-click launch | ✓ Good — cdp-use is bundled driver (not Playwright); ad-hoc codesign works |
+| macOS first for v1 distribution | Smallest blast radius for validating PyInstaller + codesign + CI pipeline | ✓ Good — Windows CI scaffold exists for v0.2.0 |
+| litellm>=1.83.0 hard pin | Supply chain backdoor in 1.82.7/1.82.8 | ✓ Good — neutralized from day 1 |
 
 ## Evolution
 
@@ -93,4 +117,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-13 after initialization*
+*Last updated: 2026-05-16 after v0.1.0 milestone*

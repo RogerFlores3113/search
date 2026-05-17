@@ -1,10 +1,10 @@
 ---
 gsd_state_version: 1.0
 milestone: v0.1.0
-milestone_name: milestone
-status: executing
-stopped_at: context exhaustion at 75% (2026-05-16)
-last_updated: "2026-05-16T19:41:24.982Z"
+milestone_name: MVP
+status: complete
+stopped_at: milestone archived 2026-05-16
+last_updated: "2026-05-16"
 last_activity: 2026-05-16
 progress:
   total_phases: 4
@@ -18,16 +18,15 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-05-13)
+See: .planning/PROJECT.md (updated 2026-05-16)
 
-**Core value:** User types any natural language task, the agent opens Chrome and completes it — general-purpose loop proven on arbitrary sites before structured presets are built.
-**Current focus:** Phase 03 — full-web-ui
+**Core value:** User types any natural language task, the agent opens Chrome and completes it — general-purpose loop proven end-to-end, distributed as Mac .app.
+**Current focus:** Planning next milestone (v0.2.0) — start with `/gsd-new-milestone`
 
 ## Current Position
 
-Phase: 03 (full-web-ui) — EXECUTING
-Plan: 2 of 3
-Status: Ready to execute
+Milestone v0.1.0 — COMPLETE AND ARCHIVED
+All 4 phases, 10 plans complete.
 Last activity: 2026-05-16
 
 Progress: [██████████] 100%
