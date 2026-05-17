@@ -424,9 +424,14 @@ async def test_log_step_emits_screenshot_event_empty_when_no_screenshots(monkeyp
         screenshots=lambda: [],
         has_errors=lambda: False,
     )
+    token_cost_service = types.SimpleNamespace(
+        usage_history=[],
+        calculate_cost=AsyncMock(return_value=None),
+    )
     fake_agent_instance = types.SimpleNamespace(
         history=history,
         state=types.SimpleNamespace(last_result=[]),
+        token_cost_service=token_cost_service,
     )
 
     async def fake_run(max_steps, on_step_end):
@@ -914,15 +919,15 @@ async def test_done_event_always_emitted(monkeypatch):
 # ---------------------------------------------------------------------------
 
 async def test_sse_stream_yields_until_done(monkeypatch):
-    """GET /stream must yield state+narration events then close on DoneEvent."""
+    """GET /stream must yield state+action_detail events then close on DoneEvent."""
     import agent.main as main_mod
-    from agent.events import StateEvent, NarrationEvent, DoneEvent
+    from agent.events import StateEvent, ActionDetailEvent, DoneEvent
     from agent.main import app
 
     # Pre-populate _active_queue with known events
     queue: asyncio.Queue = asyncio.Queue()
     queue.put_nowait(StateEvent(state="running"))
-    queue.put_nowait(NarrationEvent(step=1, text="Step 1: navigate"))
+    queue.put_nowait(ActionDetailEvent(step=1, action_type="navigate", url="https://example.com"))
     queue.put_nowait(DoneEvent())
 
     monkeypatch.setattr(main_mod, "_active_queue", queue)
@@ -932,7 +937,7 @@ async def test_sse_stream_yields_until_done(monkeypatch):
 
     body = resp.text
     assert "event: state" in body, f"Expected 'event: state' in SSE body; got:\n{body}"
-    assert "event: narration" in body, f"Expected 'event: narration' in SSE body; got:\n{body}"
+    assert "event: action_detail" in body, f"Expected 'event: action_detail' in SSE body; got:\n{body}"
     assert "event: done" in body, f"Expected 'event: done' in SSE body; got:\n{body}"
 
 
