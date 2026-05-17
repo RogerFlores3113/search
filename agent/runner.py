@@ -166,7 +166,7 @@ def _write_jsonl(path: Path, record: dict) -> None:
         f.write(json.dumps(record) + "\n")
 
 
-async def log_step(agent, *, run_id: str) -> None:
+async def log_step(agent, *, run_id: str) -> dict:
     """on_step_end callback. Writes one JSONL record to training/runs.jsonl.
 
     Callback signature: async def log_step(agent: Agent) -> None
@@ -228,6 +228,26 @@ async def log_step(agent, *, run_id: str) -> None:
             agent.pause()
             break
 
+    # Token delta extraction — Phase 5 (PERF-02)
+    # Use a fresh Settings() instance so tests can override PROVIDER via env vars.
+    from agent.config import Settings as _Settings  # noqa: PLC0415
+    provider = _Settings().provider.lower()
+    token_data: dict = {"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}
+
+    if provider in ("anthropic", "openai"):
+        history = agent.token_cost_service.usage_history
+        if history:
+            entry = history[-1]
+            token_data["prompt_tokens"] = entry.usage.prompt_tokens
+            token_data["completion_tokens"] = entry.usage.completion_tokens
+            cost_calc = await agent.token_cost_service.calculate_cost(
+                entry.model, entry.usage
+            )
+            if cost_calc is not None:
+                token_data["cost_usd"] = round(cost_calc.total_cost, 6)
+
+    return token_data
+
 
 async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
     """Pre-flight, build BrowserSession+Agent, asyncio.wait_for(agent.run(...), timeout).
@@ -269,7 +289,9 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
         browser.llm_screenshot_size = (config.llm_screenshot_width, config.llm_screenshot_height)
 
         async def _log_step(agent_instance):
-            await log_step(agent_instance, run_id=run_id)
+            nonlocal step_start
+            duration_ms = int((time.monotonic() - step_start) * 1000)
+            token_data = await log_step(agent_instance, run_id=run_id)
             if queue is not None:
                 step_idx = agent_instance.history.number_of_steps() - 1
                 actions = agent_instance.history.model_actions()
@@ -283,6 +305,7 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                     step=step_idx + 1,
                     text=narration,
                     timestamp=datetime.now(timezone.utc).isoformat(),
+                    step_duration_ms=duration_ms,
                 ))
                 # ScreenshotEvent — emit after narration; empty b64 on missing screenshot
                 screenshots = agent_instance.history.screenshots()
@@ -290,6 +313,9 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                 queue.put_nowait(ScreenshotEvent(b64=b64))
                 # ProgressEvent — step counter for the UI progress display
                 queue.put_nowait(ProgressEvent(step=step_idx + 1, max_steps=config.max_steps))
+                # TokenEvent — one per step (PERF-02)
+                queue.put_nowait(TokenEvent(step=step_idx + 1, **token_data))
+            step_start = time.monotonic()
 
         try:
             llm = build_llm(config)
