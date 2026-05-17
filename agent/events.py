@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 
 @dataclass
@@ -16,6 +16,7 @@ class NarrationEvent:
     step: int = 0
     text: str = ""
     timestamp: str = ""
+    step_duration_ms: int = 0
 
 
 @dataclass
@@ -46,3 +47,19 @@ class ErrorEvent:
 @dataclass
 class DoneEvent:
     type: Literal["done"] = "done"
+
+
+@dataclass
+class TokenEvent:
+    type: Literal["token"] = "token"
+    step: int = 0
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    cost_usd: Optional[float] = None
+
+
+@dataclass
+class ModelInfoEvent:
+    type: Literal["model_info"] = "model_info"
+    provider: str = ""
+    model_name: str = ""
