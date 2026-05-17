@@ -162,11 +162,11 @@ async def pre_flight_check(cfg: "Settings") -> None:
 
 def _write_jsonl(path: Path, record: dict) -> None:
     """Write a single JSONL record to path (append mode). Called via asyncio.to_thread."""
-    with open(path, "a") as f:
+    with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
 
-async def log_step(agent, *, run_id: str) -> dict:
+async def log_step(agent, *, run_id: str, provider: str) -> dict:
     """on_step_end callback. Writes one JSONL record to training/runs.jsonl.
 
     Callback signature: async def log_step(agent: Agent) -> None
@@ -175,6 +175,8 @@ async def log_step(agent, *, run_id: str) -> dict:
       agent.history (AgentHistoryList) is populated incrementally during run().
     run_id must be passed via a closure (see run_agent) so each agent session
     gets its own unique identifier.
+    provider must be passed from the call site (config.provider.lower()) so the
+    Settings object is not re-instantiated on every step.
     """
     TRAINING_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -195,7 +197,10 @@ async def log_step(agent, *, run_id: str) -> dict:
     # The test fake uses .get("action_type"), .get("action_target"), .get("action_value")
     # which return the stub values from _make_fake_agent(). In production these will be
     # the first key of the dumped action dict; we extract a best-effort representation.
-    action_type = last_action.get("action_type") or (list(last_action.keys())[0] if last_action else "unknown")
+    action_type = next(
+        (k for k in last_action if k != "interacted_element"),
+        "unknown",
+    ) if last_action else "unknown"
     action_target = last_action.get("action_target", last_action.get("index", ""))
     action_value = last_action.get("action_value", last_action.get("text", ""))
 
@@ -229,15 +234,13 @@ async def log_step(agent, *, run_id: str) -> dict:
             break
 
     # Token delta extraction — Phase 5 (PERF-02)
-    # Use a fresh Settings() instance so tests can override PROVIDER via env vars.
-    from agent.config import Settings as _Settings  # noqa: PLC0415
-    provider = _Settings().provider.lower()
+    # provider is passed in from run_agent (config.provider.lower()) — not re-read each step.
     token_data: dict = {"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}
 
     if provider in ("anthropic", "openai"):
-        history = agent.token_cost_service.usage_history
-        if history:
-            entry = history[-1]
+        token_history = agent.token_cost_service.usage_history
+        if token_history:
+            entry = token_history[-1]
             token_data["prompt_tokens"] = entry.usage.prompt_tokens
             token_data["completion_tokens"] = entry.usage.completion_tokens
             cost_calc = await agent.token_cost_service.calculate_cost(
@@ -308,7 +311,7 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
         async def _log_step(agent_instance):
             nonlocal step_start
             duration_ms = int((time.monotonic() - step_start) * 1000)
-            token_data = await log_step(agent_instance, run_id=run_id)
+            token_data = await log_step(agent_instance, run_id=run_id, provider=config.provider.lower())
             if queue is not None:
                 step_idx = agent_instance.history.number_of_steps() - 1
                 actions = agent_instance.history.model_actions()

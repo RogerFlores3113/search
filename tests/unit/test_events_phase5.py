@@ -245,6 +245,12 @@ async def test_api_token_event_has_integer_counts(training_dir, monkeypatch_env)
     monkeypatch_env.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
 
     from agent.runner import run_agent
+    import agent.runner as runner_mod
+
+    # Patch config.provider on the module-level singleton so config.provider.lower()
+    # returns "anthropic" inside _log_step. The module-level config singleton does not
+    # pick up env var changes set after import.
+    monkeypatch_env.setattr(runner_mod.config, "provider", "anthropic")
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_with_tokens(prompt_tokens=150, completion_tokens=75, cost=0.000456)
@@ -396,7 +402,7 @@ async def test_log_step_returns_token_dict(training_dir, monkeypatch_env):
     from agent.runner import log_step
 
     fake_agent = _make_fake_agent_with_tokens()
-    result = await log_step(fake_agent, run_id="test-run-id")
+    result = await log_step(fake_agent, run_id="test-run-id", provider="anthropic")
 
     assert isinstance(result, dict), (
         f"log_step must return dict; got {type(result)}"

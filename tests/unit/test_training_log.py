@@ -29,7 +29,7 @@ async def test_log_step_writes_jsonl_line(training_dir):
     from agent.runner import log_step
 
     fake_agent = _make_fake_agent()
-    await log_step(fake_agent, run_id="test-run-id")
+    await log_step(fake_agent, run_id="test-run-id", provider="ollama")
 
     jsonl_file = training_dir / "runs.jsonl"
     assert jsonl_file.exists(), "training/runs.jsonl must be created by log_step"
@@ -62,7 +62,7 @@ async def test_log_step_creates_training_dir(training_dir):
     assert not training_dir.exists()
 
     fake_agent = _make_fake_agent()
-    await log_step(fake_agent, run_id="test-run-id")
+    await log_step(fake_agent, run_id="test-run-id", provider="ollama")
 
     assert training_dir.exists(), "log_step must create training/ dir if missing"
     assert (training_dir / "runs.jsonl").exists()
@@ -73,8 +73,8 @@ async def test_log_step_appends_not_overwrites(training_dir):
     from agent.runner import log_step
 
     fake_agent = _make_fake_agent()
-    await log_step(fake_agent, run_id="test-run-id")
-    await log_step(fake_agent, run_id="test-run-id")
+    await log_step(fake_agent, run_id="test-run-id", provider="ollama")
+    await log_step(fake_agent, run_id="test-run-id", provider="ollama")
 
     jsonl_file = training_dir / "runs.jsonl"
     lines = jsonl_file.read_text().strip().splitlines()

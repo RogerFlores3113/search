@@ -465,7 +465,7 @@ async def test_captcha_keyword_triggers_pause(training_dir):
         state=types.SimpleNamespace(last_result=[result_stub]),
         pause=MagicMock(),
     )
-    await log_step(agent, run_id="test-run-id")
+    await log_step(agent, run_id="test-run-id", provider="ollama")
     agent.pause.assert_called_once()
 
 
@@ -486,7 +486,7 @@ async def test_captcha_notification_printed_to_stdout(training_dir, capsys):
         state=types.SimpleNamespace(last_result=[result_stub]),
         pause=MagicMock(),
     )
-    await log_step(agent, run_id="test-run-id")
+    await log_step(agent, run_id="test-run-id", provider="ollama")
     captured = capsys.readouterr()
     assert "CAPTCHA" in captured.out
 
@@ -508,5 +508,5 @@ async def test_no_captcha_no_pause_when_error_text_clean(training_dir):
         state=types.SimpleNamespace(last_result=[result_stub]),
         pause=MagicMock(),
     )
-    await log_step(agent, run_id="test-run-id")
+    await log_step(agent, run_id="test-run-id", provider="ollama")
     agent.pause.assert_not_called()
