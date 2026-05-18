@@ -14,11 +14,50 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.sse import EventSourceResponse, ServerSentEvent
+from itsdangerous import BadSignature, URLSafeSerializer
 from pydantic import BaseModel
 
 from agent.events import DoneEvent, StateEvent
 from agent import db as history_db
+from agent.paths import get_secret_key
 from agent.runner import run_agent
+
+
+DISCLAIMER_COOKIE_NAME = "lba_disclaimer"
+DISCLAIMER_COOKIE_VALUE = "1"
+# 1 year persistence — disclaimer acceptance is a "did the user ever click
+# the modal" record, not a session marker. Re-prompting every browser
+# restart would train users to dismiss it without reading.
+DISCLAIMER_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
+
+
+def _disclaimer_serializer() -> URLSafeSerializer:
+    """Sign/verify the disclaimer cookie with the per-install secret.
+
+    Lazy lookup of the secret key so tests that monkeypatch the data dir
+    do not write to the real user_data_dir on import.
+    """
+    return URLSafeSerializer(get_secret_key(), salt="disclaimer")
+
+
+def _disclaimer_accepted(request: Request) -> bool:
+    """True iff the request carries a valid signed disclaimer cookie.
+
+    Plain `?=1` without a valid signature is rejected so a stray cookie set
+    by another local site/extension cannot pass the gate.
+    """
+    raw = request.cookies.get(DISCLAIMER_COOKIE_NAME)
+    if not raw:
+        return False
+    try:
+        value = _disclaimer_serializer().loads(raw)
+    except BadSignature:
+        return False
+    return value == DISCLAIMER_COOKIE_VALUE
+
+
+def _disclaimer_required_response() -> JSONResponse:
+    return JSONResponse({"status": "disclaimer_required"}, status_code=403)
 
 
 def _resource_path(relative: str) -> str:
@@ -90,14 +129,43 @@ _active_agent = None                             # Agent ref for pause/stop (Pla
 
 @app.get("/")
 async def index(request: Request):
-    """Render the HTMX+Alpine UI skeleton, or Chrome-missing page if Chrome not found."""
+    """Render the HTMX+Alpine UI skeleton, or Chrome-missing page if Chrome not found.
+
+    Passes `disclaimer_accepted` from the cookie so the modal only renders
+    when truly unaccepted — eliminates the brief flash where the modal
+    appears for a user who has already clicked through on a previous visit.
+    """
     if getattr(request.app.state, "chrome_missing", False):
         return templates.TemplateResponse(request=request, name="no_chrome.html", context={})
-    return templates.TemplateResponse(request=request, name="index.html", context={})
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={"disclaimer_accepted": _disclaimer_accepted(request)},
+    )
+
+
+@app.post("/accept-disclaimer")
+async def accept_disclaimer_endpoint(request: Request):
+    """Record the user's acceptance of the safety disclaimer.
+
+    Sets a signed `httponly`, `SameSite=strict` cookie so neither another
+    local site nor a cross-site form submission can pass the gate without
+    the user clicking through the modal in this app.
+    """
+    signed = _disclaimer_serializer().dumps(DISCLAIMER_COOKIE_VALUE)
+    response = JSONResponse({"status": "accepted"})
+    response.set_cookie(
+        DISCLAIMER_COOKIE_NAME,
+        signed,
+        httponly=True,
+        samesite="strict",
+        max_age=DISCLAIMER_COOKIE_MAX_AGE,
+    )
+    return response
 
 
 @app.post("/run")
-async def run_endpoint(task: str = Form(..., max_length=2000)):
+async def run_endpoint(request: Request, task: str = Form(..., max_length=2000)):
     """Accept a task string and start the agent as a fire-and-forget asyncio task.
 
     Accepts application/x-www-form-urlencoded (the HTMX default for form submissions).
@@ -112,6 +180,8 @@ async def run_endpoint(task: str = Form(..., max_length=2000)):
     with HX-Trigger: streamStarted so the HTMX SSE container activates.
     """
     global _active_task, _active_queue, _active_control_queue
+    if not _disclaimer_accepted(request):
+        return _disclaimer_required_response()
     if _active_task is not None and not _active_task.done():
         return JSONResponse({"status": "busy"}, status_code=409)
     data_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
@@ -125,7 +195,7 @@ async def run_endpoint(task: str = Form(..., max_length=2000)):
 
 
 @app.post("/pause")
-async def pause_endpoint():
+async def pause_endpoint(request: Request):
     """Toggle pause/resume on the active agent.
 
     If no agent is running, returns HTTP 400 with {"status": "no_active_run"}.
@@ -134,6 +204,8 @@ async def pause_endpoint():
     Emits StateEvent("paused" or "running") to _active_queue.
     """
     global _active_agent, _active_queue, _active_control_queue
+    if not _disclaimer_accepted(request):
+        return _disclaimer_required_response()
     if _active_agent is None:
         return JSONResponse({"status": "no_active_run"}, status_code=400)
     # State transitions ride on the control queue (lifecycle), falling back
@@ -152,13 +224,15 @@ async def pause_endpoint():
 
 
 @app.post("/stop")
-async def stop_endpoint():
+async def stop_endpoint(request: Request):
     """Stop the active agent.
 
     If no agent is running, returns HTTP 400 with {"status": "no_active_run"}.
     Calls agent.stop() (sync) — the runner finally block handles status="stopped" in DB.
     """
     global _active_agent
+    if not _disclaimer_accepted(request):
+        return _disclaimer_required_response()
     if _active_agent is None:
         return JSONResponse({"status": "no_active_run"}, status_code=400)
     _active_agent.stop()

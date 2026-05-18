@@ -14,17 +14,28 @@
 </head>
 <body>
   <!--
-    Outer Alpine component gate — checks localStorage to determine whether the
-    one-time safety disclaimer has been accepted (DIST-04).
-    Pattern 5: .planning/phases/04-distribution/04-RESEARCH.md
+    Outer Alpine component gate — disclaimer acceptance is tracked by a signed,
+    httpOnly cookie (set via POST /accept-disclaimer). Initial state is rendered
+    by the server from the cookie (eliminates the modal flash on repeat visits).
+    The cookie is the SECURITY gate enforced on /run, /pause, /stop; this UI
+    is the user-facing surface.
   -->
-  <div x-data="{ disclaimerAccepted: localStorage.getItem('disclaimer_accepted') === '1' }">
+  <div x-data="{
+    disclaimerAccepted: {{ 'true' if disclaimer_accepted else 'false' }},
+    async accept() {
+      const r = await fetch('/accept-disclaimer', {method: 'POST'});
+      if (r.ok) this.disclaimerAccepted = true;
+    }
+  }">
 
-    <!-- Disclaimer modal overlay — shown only on first visit -->
+    <!-- Disclaimer modal overlay — shown only when the server-side cookie is absent -->
     <div x-show="!disclaimerAccepted"
+         role="dialog"
+         aria-modal="true"
+         aria-labelledby="disclaimer-title"
          style="position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:100;display:flex;align-items:center;justify-content:center;">
       <div style="background:#1e1e1e;padding:2rem;border-radius:8px;max-width:480px;border:1px solid #2e2e2e;">
-        <h2 style="margin:0 0 1rem;font-size:1.25rem;color:#f5f5f5;">Before You Begin</h2>
+        <h2 id="disclaimer-title" style="margin:0 0 1rem;font-size:1.25rem;color:#f5f5f5;">Before You Begin</h2>
         <p style="margin:0 0 0.75rem;color:#c0c0c0;line-height:1.6;">
           This app controls your Chrome browser to complete tasks on your behalf.
           It can click, type, and navigate on any website you ask it to visit.
@@ -38,14 +49,19 @@
         </p>
         <button
           style="background:#2563eb;color:#fff;border:none;padding:0.65rem 1.5rem;border-radius:6px;font-size:0.95rem;font-weight:500;cursor:pointer;"
-          @click="disclaimerAccepted = true; localStorage.setItem('disclaimer_accepted', '1')">
+          x-init="$el.focus()"
+          @click="accept()">
           I understand &mdash; let's go
         </button>
       </div>
     </div>
 
-    <!-- Main UI shell — always rendered but visually gated behind modal when disclaimer not accepted -->
-    <div :style="disclaimerAccepted ? '' : 'pointer-events:none;filter:blur(4px)'">
+    <!-- Main UI shell — `inert` removes the underlying form from focus, pointer
+         events, and the accessibility tree while the modal is open. Replaces
+         the prior pointer-events:none + filter:blur hack which was keyboard-
+         bypassable (Tab through the blur, submit the form, agent ran). -->
+    <div :inert="!disclaimerAccepted"
+         :style="disclaimerAccepted ? '' : 'filter:blur(4px)'">
 
       <!--
         Outer SSE container — hx-ext="sse" activates HTMX SSE extension.

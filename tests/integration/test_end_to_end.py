@@ -249,6 +249,11 @@ def test_post_run_endpoint_starts_agent(monkeypatch, tmp_path):
          patch("agent.runner.Agent", MockAgent):
 
         with TestClient(app) as client:
+            # Acquire the disclaimer cookie before posting /run (Issue #5 gate).
+            from agent.main import DISCLAIMER_COOKIE_NAME, _disclaimer_serializer
+            client.cookies.set(
+                DISCLAIMER_COOKIE_NAME, _disclaimer_serializer().dumps("1"),
+            )
             response = client.post("/run", data={"task": "another task"})
             assert response.status_code == 200
             assert response.json() == {"status": "started"}

@@ -19,6 +19,17 @@ from httpx import AsyncClient, ASGITransport
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _disclaimer_cookies() -> dict[str, str]:
+    """Return a cookie dict carrying a valid signed disclaimer cookie.
+
+    The /run, /pause, /stop endpoints gate on this cookie (Issue #5). Tests
+    that exercise those endpoints set it directly rather than POSTing
+    /accept-disclaimer first so each test stays self-contained.
+    """
+    from agent.main import DISCLAIMER_COOKIE_NAME, _disclaimer_serializer
+    return {DISCLAIMER_COOKIE_NAME: _disclaimer_serializer().dumps("1")}
+
+
 def _make_mock_history(final_result="task complete"):
     history = MagicMock()
     history.final_result.return_value = final_result
@@ -103,7 +114,8 @@ async def test_post_run_returns_started(monkeypatch):
 
     from agent.main import app
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/run", data={"task": "test task"})
 
     assert resp.status_code == 200
@@ -121,7 +133,8 @@ async def test_post_run_busy(monkeypatch):
     fake_task.done.return_value = False
     monkeypatch.setattr(main_mod, "_active_task", fake_task)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/run", data={"task": "another task"})
 
     assert resp.status_code == 409
@@ -145,7 +158,8 @@ async def test_post_pause_calls_agent_pause(monkeypatch):
     monkeypatch.setattr(main_mod, "_active_queue", queue)
     monkeypatch.setattr(main_mod, "_active_control_queue", queue)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/pause")
 
     assert resp.status_code == 200
@@ -173,7 +187,8 @@ async def test_post_pause_toggles_resume(monkeypatch):
     monkeypatch.setattr(main_mod, "_active_queue", queue)
     monkeypatch.setattr(main_mod, "_active_control_queue", queue)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/pause")
 
     assert resp.status_code == 200
@@ -195,7 +210,8 @@ async def test_post_pause_no_active_run(monkeypatch):
 
     monkeypatch.setattr(main_mod, "_active_agent", None)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/pause")
 
     assert resp.status_code == 400
@@ -215,7 +231,8 @@ async def test_post_stop_calls_agent_stop(monkeypatch):
 
     monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/stop")
 
     assert resp.status_code == 200
@@ -230,7 +247,8 @@ async def test_post_stop_no_active_run(monkeypatch):
 
     monkeypatch.setattr(main_mod, "_active_agent", None)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/stop")
 
     assert resp.status_code == 400
@@ -994,7 +1012,8 @@ async def test_pause_routes_state_event_to_control_queue(monkeypatch):
     monkeypatch.setattr(main_mod, "_active_queue", data_q)
     monkeypatch.setattr(main_mod, "_active_control_queue", ctrl_q)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/pause")
 
     assert resp.status_code == 200
