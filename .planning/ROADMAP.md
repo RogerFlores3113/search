@@ -66,7 +66,9 @@ See archive: `.planning/milestones/v0.1.0-ROADMAP.md`
   2. The screenshot queue is bounded (`maxsize=50`); overflow frames are dropped with `put_nowait` rather than blocking the agent loop
   3. The screenshot task is cancelled before `browser.kill()` — no `TargetClosedError` hangs the `DoneEvent`
   4. Under a 20-step test run, the displayed screenshot is never more than one step behind the agent's actual browser state
-**Plans**: TBD
+**Plans:** 2 plans
+- [x] 07-01-PLAN.md — Author Phase 7 RED test suite (12 tests for SCR-01/SCR-02: 500ms loop, JPEG q=75, QueueFull drop, exception/timeout continuation, cancel-before-kill ordering, _log_step ScreenshotEvent removal, Queue(maxsize=50))
+- [x] 07-02-PLAN.md — Implement _screenshot_loop closure + task lifecycle in agent/runner.py; bound queue in agent/main.py; remove step-end ScreenshotEvent; turn the RED suite GREEN
 **UI hint**: yes
 
 ### Phase 8: Training Data Enrichment
@@ -105,6 +107,6 @@ See archive: `.planning/milestones/v0.1.0-ROADMAP.md`
 | 4. Distribution | v0.1.0 | 2/2 | Complete | 2026-05-16 |
 | 5. Token Counting + Timing | v0.2.0 | 0/2 | Not started | — |
 | 6. Model Transparency | v0.2.0 | 0/2 | Not started | — |
-| 7. Screenshot Streaming | v0.2.0 | 0/? | Not started | — |
+| 7. Screenshot Streaming | v0.2.0 | 0/2 | Not started | — |
 | 8. Training Data Enrichment | v0.2.0 | 0/? | Not started | — |
 | 9. Frontend Polish | v0.2.0 | 0/? | Not started | — |
