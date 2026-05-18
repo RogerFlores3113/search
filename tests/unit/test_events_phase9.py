@@ -307,3 +307,143 @@ def test_runs_fragment_missing_data():
         assert forbidden not in html, (
             f"Fragment must never render {forbidden!r}; got:\n{html}"
         )
+
+
+# ===========================================================================
+# PERF-03 / UI-01: index.html header ticker + new SSE bridges (D-01..D-04, D-22)
+# ===========================================================================
+
+
+def test_index_has_header_ticker():
+    """D-01 / D-04: `<span class="header-ticker">` with `aria-live="polite"`
+    is present inside `agent/templates/index.html`.
+    """
+    html = Path("agent/templates/index.html").read_text()
+    assert 'class="header-ticker"' in html, (
+        "index.html must include a `<span class=\"header-ticker\">` (D-01)"
+    )
+    assert 'aria-live="polite"' in html, (
+        "index.html must include `aria-live=\"polite\"` on the ticker (D-04)"
+    )
+
+
+def test_index_has_token_handlers():
+    """D-22: Alpine `agentUI()` declares `handleToken` and `handleModelInfo`
+    methods for the new SSE bridges.
+    """
+    html = Path("agent/templates/index.html").read_text()
+    assert "handleToken" in html, (
+        "index.html must declare a `handleToken` method on agentUI() (D-22)"
+    )
+    assert "handleModelInfo" in html, (
+        "index.html must declare a `handleModelInfo` method on agentUI() (D-22)"
+    )
+
+
+def test_action_badge_assets_present():
+    """D-22 / D-11: Alpine `agentUI()` declares `handleActionDetail` and
+    `handleThought`; narration rows carry `data-step` for badge-race lookup.
+    """
+    html = Path("agent/templates/index.html").read_text()
+    assert "handleActionDetail" in html, (
+        "index.html must declare `handleActionDetail` (D-22)"
+    )
+    assert "handleThought" in html, (
+        "index.html must declare `handleThought` (D-22)"
+    )
+    assert "data-step" in html, (
+        "narration rows must carry `data-step` for badge race injection (D-11)"
+    )
+
+
+def test_new_sse_bridges_inside_container():
+    """D-22 + Phase 3 D-11: four new `sse-swap` bridges (`token`, `model_info`,
+    `thought`, `action_detail`) are descendants of `#sse-container`.
+    """
+    html = Path("agent/templates/index.html").read_text()
+
+    # Locate the #sse-container opening tag. Phase 3 D-11 locks bridge
+    # placement: `htmx-ext-sse` only delivers to descendants.
+    container_match = re.search(r'id\s*=\s*"sse-container"', html)
+    assert container_match is not None, (
+        "index.html must contain an `id=\"sse-container\"` element (Phase 3 D-11)"
+    )
+    container_start = container_match.start()
+
+    required_bridges = ("token", "model_info", "thought", "action_detail")
+    for ev in required_bridges:
+        pattern = f'sse-swap="{ev}"'
+        idx = html.find(pattern, container_start)
+        assert idx != -1, (
+            f"sse-swap=\"{ev}\" bridge missing or not after `#sse-container` (D-22)"
+        )
+
+
+# ===========================================================================
+# UI-01 / UI-02: action-badge palette + summary marker reset (D-12, D-14)
+# ===========================================================================
+
+
+def test_action_badge_palette_hex():
+    """D-12: `.action-badge-*` CSS rules reuse the four locked palette hex
+    values (no new hues): navigate=#1d4ed8, click=#14532d, type=#92400e,
+    scroll=#374151. The `action-badge-` class prefix must also be present.
+    """
+    css = Path("agent/static/style.css").read_text()
+    for hex_val in ("#1d4ed8", "#14532d", "#92400e", "#374151"):
+        assert hex_val in css, (
+            f"style.css must contain locked palette hex {hex_val} (D-12)"
+        )
+    assert "action-badge-" in css, (
+        "style.css must define `.action-badge-*` classes (D-12)"
+    )
+
+
+def test_summary_marker_reset_present():
+    """D-14 / Pitfall 1: CSS must reset the disclosure triangle so the existing
+    flex layout for run-history rows survives the `<details>` wrap. Requires
+    BOTH `list-style: none` AND `::-webkit-details-marker` + `display: none`.
+    """
+    css = Path("agent/static/style.css").read_text()
+    assert "list-style: none" in css, (
+        "style.css must include `list-style: none` for summary reset (D-14)"
+    )
+    assert "::-webkit-details-marker" in css, (
+        "style.css must include `::-webkit-details-marker` reset (D-14)"
+    )
+    assert "display: none" in css, (
+        "style.css must include `display: none` for marker reset (D-14)"
+    )
+
+
+# ===========================================================================
+# Screenshot Blob lifecycle (D-18..D-21)
+# ===========================================================================
+
+
+def test_no_data_url_in_index():
+    """D-19: the old `data:image/png;base64,` assignment must be DELETED from
+    index.html as part of the Blob lifecycle rewrite.
+    """
+    html = Path("agent/templates/index.html").read_text()
+    assert "data:image/png;base64," not in html, (
+        "index.html must NOT contain `data:image/png;base64,` after D-19 rewrite"
+    )
+
+
+def test_handle_screenshot_blob_lifecycle():
+    """D-18..D-21: rewritten `handleScreenshot` constructs a Blob, uses
+    `URL.createObjectURL` + `URL.revokeObjectURL`, and the MIME is `image/jpeg`
+    (Phase 7 emits JPEG q=75, not PNG — D-21 fixes the prior misassumption).
+    """
+    html = Path("agent/templates/index.html").read_text()
+    for needle in (
+        "URL.createObjectURL",
+        "URL.revokeObjectURL",
+        "image/jpeg",
+        "new Blob(",
+        "atob(",
+    ):
+        assert needle in html, (
+            f"index.html `handleScreenshot` must use {needle!r} (D-18..D-21)"
+        )
