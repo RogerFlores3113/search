@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import time
 import uuid
@@ -15,7 +16,7 @@ from browser_use.browser.session import BrowserSession
 
 from agent.config import config
 from agent.events import (
-    ScreenshotEvent, NarrationEvent, StateEvent,
+    ScreenshotEvent, StateEvent,
     ProgressEvent, SummaryEvent, ErrorEvent, DoneEvent,
     TokenEvent, ModelInfoEvent, ThoughtEvent, ActionDetailEvent,
 )
@@ -160,6 +161,14 @@ async def pre_flight_check(cfg: "Settings") -> None:
             raise PreFlightError("OpenAI API unreachable")
 
 
+def _put_nowait(queue: asyncio.Queue, event: object) -> None:
+    """Put event on queue, silently dropping if full."""
+    try:
+        queue.put_nowait(event)
+    except asyncio.QueueFull:
+        pass
+
+
 def _write_jsonl(path: Path, record: dict) -> None:
     """Write a single JSONL record to path (append mode). Called via asyncio.to_thread."""
     with open(path, "a", encoding="utf-8") as f:
@@ -268,10 +277,11 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
     step_start = time.monotonic()
 
     if queue is not None:
-        queue.put_nowait(StateEvent(state="running"))
-        queue.put_nowait(ModelInfoEvent(provider=config.provider, model_name=_resolve_model_name(config)))
+        _put_nowait(queue, StateEvent(state="running"))
+        _put_nowait(queue, ModelInfoEvent(provider=config.provider, model_name=_resolve_model_name(config)))
 
     browser = None
+    screenshot_task = None
     summary = None
     error_msg = None
 
@@ -300,7 +310,7 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
             """
             if queue is None:
                 return
-            queue.put_nowait(ThoughtEvent(
+            _put_nowait(queue, ThoughtEvent(
                 step=step_num,
                 thinking=agent_output.thinking or None,
                 evaluation_previous_goal=agent_output.evaluation_previous_goal or None,
@@ -326,7 +336,7 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                 value = params.get("text") or params.get("query") or params.get("keys") or None
                 url = params.get("url") or None
                 # ActionDetailEvent replaces NarrationEvent (D-05)
-                queue.put_nowait(ActionDetailEvent(
+                _put_nowait(queue, ActionDetailEvent(
                     step=step_idx + 1,
                     action_type=action_type,
                     target=target,
@@ -334,15 +344,28 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                     url=url,
                     success=None,
                 ))
-                # ScreenshotEvent — emit after action detail; empty b64 on missing screenshot
-                screenshots = agent_instance.history.screenshots()
-                b64 = screenshots[-1] if (screenshots and screenshots[-1]) else ""
-                queue.put_nowait(ScreenshotEvent(b64=b64))
                 # ProgressEvent — step counter for the UI progress display
-                queue.put_nowait(ProgressEvent(step=step_idx + 1, max_steps=config.max_steps))
+                _put_nowait(queue, ProgressEvent(step=step_idx + 1, max_steps=config.max_steps))
                 # TokenEvent — one per step (PERF-02)
-                queue.put_nowait(TokenEvent(step=step_idx + 1, **token_data))
+                _put_nowait(queue, TokenEvent(step=step_idx + 1, **token_data))
             step_start = time.monotonic()
+
+        async def _screenshot_loop() -> None:
+            while True:
+                captured = False
+                try:
+                    data = await asyncio.wait_for(
+                        browser.take_screenshot(format='jpeg', quality=75),
+                        timeout=3.0,
+                    )
+                    b64 = base64.b64encode(data).decode()
+                    _put_nowait(queue, ScreenshotEvent(b64=b64))
+                    captured = True
+                except asyncio.TimeoutError:
+                    pass
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5 if captured else 0)
 
         try:
             llm = build_llm(config)
@@ -360,6 +383,9 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
             # (agent/main.py imports from agent/runner.py at module level).
             from agent import main as _main_module  # noqa: PLC0415
             _main_module._active_agent = agent
+
+            if queue is not None:
+                screenshot_task = asyncio.create_task(_screenshot_loop())
 
             try:
                 history = await asyncio.wait_for(
@@ -379,19 +405,22 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                 # "Task exception was never retrieved" warning with no additional benefit since
                 # the error is already captured and will be surfaced to the UI via ErrorEvent.
         finally:
+            if screenshot_task is not None:
+                screenshot_task.cancel()
+                await asyncio.gather(screenshot_task, return_exceptions=True)
             if browser is not None:
                 await browser.kill()
 
     finally:
         if queue is not None:
             if error_msg:
-                queue.put_nowait(ErrorEvent(message=error_msg))
-                queue.put_nowait(StateEvent(state="error"))
+                _put_nowait(queue, ErrorEvent(message=error_msg))
+                _put_nowait(queue, StateEvent(state="error"))
             else:
                 if summary:
-                    queue.put_nowait(SummaryEvent(text=summary))
-                queue.put_nowait(StateEvent(state="complete"))
-            queue.put_nowait(DoneEvent())
+                    _put_nowait(queue, SummaryEvent(text=summary))
+                _put_nowait(queue, StateEvent(state="complete"))
+            _put_nowait(queue, DoneEvent())
 
         # Persist run record to history DB.
         # Guard with try/except so a DB failure NEVER prevents cleanup below.

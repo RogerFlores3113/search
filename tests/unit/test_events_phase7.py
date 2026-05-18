@@ -134,7 +134,9 @@ async def test_screenshot_loop_first_capture_immediate(training_dir, monkeypatch
     """
     from agent.runner import run_agent
 
-    queue: asyncio.Queue = asyncio.Queue()
+    # Bounded queue: production uses maxsize=50; mirror that here so the loop
+    # cannot accumulate ScreenshotEvents without limit if cancel is delayed.
+    queue: asyncio.Queue = asyncio.Queue(maxsize=50)
     sequence: list[str] = []
     fake_agent = _make_fake_agent_history()
     mock_browser = _make_mock_browser()
@@ -149,9 +151,25 @@ async def test_screenshot_loop_first_capture_immediate(training_dir, monkeypatch
 
     real_sleep = asyncio.sleep
 
+    # Iteration cap: the loop's only production pacing is real CDP latency
+    # inside take_screenshot. With take_screenshot mocked to return instantly
+    # AND asyncio.sleep patched to sleep(0), the loop becomes a pure busy-yield
+    # gated only by the cancel() in run_agent's finally — which only fires once
+    # FakeAgentClass.run resolves. To prove "first action is shot, not sleep"
+    # we need a handful of iterations, not thousands. Raise CancelledError from
+    # the patched sleep after a small budget; that propagates out of the loop
+    # (CancelledError is BaseException; the loop's `except Exception` does not
+    # swallow it) and the outer finally block still runs cleanly.
+    _MAX_LOOP_ITERATIONS = 5
+    _sleep_calls = 0
+
     async def _patched_sleep(delay):
+        nonlocal _sleep_calls
         if delay == 0.5:
             sequence.append("sleep")
+        _sleep_calls += 1
+        if _sleep_calls >= _MAX_LOOP_ITERATIONS:
+            raise asyncio.CancelledError()
         await real_sleep(0)  # don't actually sleep in tests
 
     FakeAgentClass = _make_fake_agent_class(fake_agent)
@@ -240,17 +258,27 @@ async def test_screenshot_loop_exception_continues(training_dir, monkeypatch_env
     """
     from agent.runner import run_agent
 
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=50)
     fake_agent = _make_fake_agent_history()
     mock_browser = _make_mock_browser()
 
-    # Alternate: exception then success then exception then success
-    mock_browser.take_screenshot.side_effect = [
+    # Scripted exceptions then JPEG bytes FOREVER. A finite list would exhaust
+    # under `while True` and raise StopIteration (→ RuntimeError in a coroutine)
+    # that the loop's `except Exception` swallows, producing an unpaced busy-spin
+    # that accumulates calls in mock_browser.take_screenshot.call_args_list until
+    # the test process OOMs.
+    _script = iter([
         ConnectionError("Client is stopping"),
-        b'\xff\xd8\xff\xe0\x00\x10JFIF\x00',
         ConnectionError("WebSocket connection closed"),
-        b'\xff\xd8\xff\xe0\x00\x10JFIF\x00',
-    ]
+    ])
+
+    async def _take_screenshot_side_effect(**kwargs):
+        try:
+            raise next(_script)
+        except StopIteration:
+            return b'\xff\xd8\xff\xe0\x00\x10JFIF\x00'
+
+    mock_browser.take_screenshot.side_effect = _take_screenshot_side_effect
 
     FakeAgentClass = _make_fake_agent_class(fake_agent)
 
@@ -281,15 +309,23 @@ async def test_screenshot_loop_timeout_continues(training_dir, monkeypatch_env):
     """
     from agent.runner import run_agent
 
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=50)
     fake_agent = _make_fake_agent_history()
     mock_browser = _make_mock_browser()
 
-    # First call times out, second succeeds
-    mock_browser.take_screenshot.side_effect = [
-        asyncio.TimeoutError(),
-        b'\xff\xd8\xff\xe0\x00\x10JFIF\x00',
-    ]
+    # First call times out; every subsequent call returns JPEG bytes FOREVER.
+    # A finite side_effect list would exhaust under `while True` and busy-spin
+    # via the swallowed StopIteration (see test_screenshot_loop_exception_continues).
+    _timed_out_once = False
+
+    async def _take_screenshot_side_effect(**kwargs):
+        nonlocal _timed_out_once
+        if not _timed_out_once:
+            _timed_out_once = True
+            raise asyncio.TimeoutError()
+        return b'\xff\xd8\xff\xe0\x00\x10JFIF\x00'
+
+    mock_browser.take_screenshot.side_effect = _take_screenshot_side_effect
 
     FakeAgentClass = _make_fake_agent_class(fake_agent)
 

@@ -375,12 +375,12 @@ async def test_run_agent_omits_summary_when_no_final_result(monkeypatch):
 # ScreenshotEvent emission (UI-02)
 # ---------------------------------------------------------------------------
 
-async def test_log_step_emits_screenshot_event(monkeypatch):
-    """_log_step closure must put ScreenshotEvent(b64=...) on queue after each step."""
+async def test_log_step_does_not_emit_screenshot_event(monkeypatch):
+    """_log_step must NOT emit ScreenshotEvent — Phase 7 D-05/D-06 moved this to _screenshot_loop."""
     from agent.events import ScreenshotEvent
 
     queue: asyncio.Queue = asyncio.Queue()
-    fake_agent_instance = _make_fake_agent_instance()  # screenshots() returns ["iVBORw0KGgo="]
+    fake_agent_instance = _make_fake_agent_instance()
 
     async def fake_run(max_steps, on_step_end):
         await on_step_end(fake_agent_instance)
@@ -388,6 +388,7 @@ async def test_log_step_emits_screenshot_event(monkeypatch):
 
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
+    mock_browser.take_screenshot = AsyncMock(return_value=b'\xff\xd8\xff\xe0\x00\x10JFIF\x00')
     mock_browser.llm_screenshot_size = None
     mock_agent = MagicMock()
     mock_agent.run = fake_run
@@ -400,67 +401,22 @@ async def test_log_step_emits_screenshot_event(monkeypatch):
     monkeypatch.setattr("agent.runner.log_step", AsyncMock())
 
     from agent.runner import run_agent
-    await run_agent("test task", queue=queue)
-
-    events = []
-    while not queue.empty():
-        events.append(queue.get_nowait())
-
-    screenshot_events = [e for e in events if isinstance(e, ScreenshotEvent)]
-    assert len(screenshot_events) >= 1, f"Expected ScreenshotEvent; got {[type(e).__name__ for e in events]}"
-    assert screenshot_events[0].b64 == "iVBORw0KGgo=", f"Unexpected b64: {screenshot_events[0].b64!r}"
-
-
-async def test_log_step_emits_screenshot_event_empty_when_no_screenshots(monkeypatch):
-    """When screenshots() returns [] or [None], ScreenshotEvent is still emitted but b64==""."""
-    from agent.events import ScreenshotEvent
-
-    queue: asyncio.Queue = asyncio.Queue()
-
-    # Build fake agent with no screenshots
-    history = types.SimpleNamespace(
-        number_of_steps=lambda: 1,
-        model_actions=lambda: [{"action_type": "navigate", "action_target": "", "action_value": ""}],
-        screenshots=lambda: [],
-        has_errors=lambda: False,
-    )
-    token_cost_service = types.SimpleNamespace(
-        usage_history=[],
-        calculate_cost=AsyncMock(return_value=None),
-    )
-    fake_agent_instance = types.SimpleNamespace(
-        history=history,
-        state=types.SimpleNamespace(last_result=[]),
-        token_cost_service=token_cost_service,
+    import inspect
+    source = inspect.getsource(run_agent)
+    assert "history.screenshots()" not in source, (
+        "_log_step must not contain history.screenshots() — removed in Phase 7 D-05/D-06"
     )
 
-    async def fake_run(max_steps, on_step_end):
-        await on_step_end(fake_agent_instance)
-        return _make_mock_history()
 
-    mock_browser = MagicMock()
-    mock_browser.kill = AsyncMock()
-    mock_browser.llm_screenshot_size = None
-    mock_agent = MagicMock()
-    mock_agent.run = fake_run
-
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
-
+async def test_log_step_does_not_read_history_screenshots(monkeypatch):
+    """_log_step must not call history.screenshots() — Phase 7 D-06 removed that code path."""
     from agent.runner import run_agent
-    await run_agent("test task", queue=queue)
-
-    events = []
-    while not queue.empty():
-        events.append(queue.get_nowait())
-
-    screenshot_events = [e for e in events if isinstance(e, ScreenshotEvent)]
-    assert len(screenshot_events) >= 1, f"Expected ScreenshotEvent even for empty screenshots; got {[type(e).__name__ for e in events]}"
-    assert screenshot_events[0].b64 == "", f"Expected empty b64; got {screenshot_events[0].b64!r}"
+    import inspect
+    source = inspect.getsource(run_agent)
+    assert "history.screenshots()" not in source, (
+        "run_agent must not contain history.screenshots() inside run_agent — "
+        "removed in Phase 7 D-06. ScreenshotEvent is now emitted by _screenshot_loop."
+    )
 
 
 async def test_log_step_emits_progress_event(monkeypatch):
