@@ -25,6 +25,7 @@ User types any natural language task, the agent opens Chrome and completes it �
 - ✓ GitHub Actions release pipeline: tag push → build → codesign → GitHub Releases — v0.1.0
 - ✓ Per-step latency timing + token counting + cost estimation (PERF-01, PERF-02, PERF-04) — Phase 5
 - ✓ ThoughtEvent + ActionDetailEvent SSE events via register_new_step_callback (TRANS-01, TRANS-02, TRANS-03) — Phase 6
+- ✓ Continuous JPEG screenshot streaming via background asyncio task, queue bounded at maxsize=50 (SCR-01, SCR-02) — Phase 7
 
 ## Current Milestone: v0.2.0 Foundations
 
@@ -46,8 +47,8 @@ User types any natural language task, the agent opens Chrome and completes it �
 - [x] Surface LLM thought text in narration feed (TRANS-01) — Phase 6
 - [x] Richer action labels: target, value summary, result indicator (TRANS-02) — Phase 6
 - [x] Step counter + current goal display (TRANS-03) — Phase 6
-- [ ] Background screenshot capture loop (~500ms during action) (SCR-01)
-- [ ] Fix screenshot queue backpressure / delivery lag (SCR-02)
+- [x] Background screenshot capture loop (~500ms during action) (SCR-01) — Phase 7
+- [x] Fix screenshot queue backpressure / delivery lag (SCR-02) — Phase 7
 - [ ] Enriched JSONL: step_duration_ms, tokens_used, cost_usd, model_thought, provider, model_name (TRAIN-01)
 - [ ] API-provider-only capture mode (Claude/OpenAI; skip Ollama) (TRAIN-02)
 - [ ] LoRA scaffold: JSONL → training format converter + unsloth training script (TRAIN-03)
