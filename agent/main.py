@@ -228,27 +228,40 @@ async def stream_events() -> AsyncIterable[ServerSentEvent]:
     pending: set[asyncio.Task] = {control_task, data_task}
     try:
         while True:
-            done, pending = await asyncio.wait(
+            completed, pending = await asyncio.wait(
                 pending, return_when=asyncio.FIRST_COMPLETED
             )
-            for task in done:
+            # Pre-scan: if DoneEvent is among the completed tasks, do NOT
+            # re-arm any waiter — re-arming a queue.get() task on a queue
+            # that already has items immediately consumes one of those
+            # items into the new task's result, and that result is lost
+            # when we cancel pending tasks on exit (the race that ate the
+            # tail TokenEvent in test_stream_drains_data_queue_before_done).
+            done_event_seen = any(
+                isinstance(t.result(), DoneEvent) for t in completed
+            )
+            for task in completed:
                 event = task.result()
                 if isinstance(event, DoneEvent):
-                    while True:
-                        try:
-                            tail = data_q.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                        yield _serialize_event(tail)
-                    yield ServerSentEvent(raw_data="", event="done")
-                    return
+                    continue
                 yield _serialize_event(event)
+                if done_event_seen:
+                    continue
                 if task is control_task:
                     control_task = asyncio.create_task(ctrl_q.get())
                     pending.add(control_task)
                 else:
                     data_task = asyncio.create_task(data_q.get())
                     pending.add(data_task)
+            if done_event_seen:
+                while True:
+                    try:
+                        tail = data_q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    yield _serialize_event(tail)
+                yield ServerSentEvent(raw_data="", event="done")
+                return
     finally:
         for t in pending:
             t.cancel()
