@@ -143,6 +143,7 @@ async def test_post_pause_calls_agent_pause(monkeypatch):
 
     monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
     monkeypatch.setattr(main_mod, "_active_queue", queue)
+    monkeypatch.setattr(main_mod, "_active_control_queue", queue)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/pause")
@@ -170,6 +171,7 @@ async def test_post_pause_toggles_resume(monkeypatch):
 
     monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
     monkeypatch.setattr(main_mod, "_active_queue", queue)
+    monkeypatch.setattr(main_mod, "_active_control_queue", queue)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/pause")
@@ -852,16 +854,19 @@ async def test_done_event_always_emitted(monkeypatch):
     mock_browser2.llm_screenshot_size = None
     mock_agent2 = MagicMock()
 
-    async def raise_timeout(coro, timeout=None):
-        coro.close()
+    # Simulate agent.run() taking too long: have it raise TimeoutError, which
+    # propagates through asyncio.wait_for the same way a real timeout would.
+    # Narrower than patching asyncio.wait_for globally — leaves _put_control's
+    # internal timeout untouched.
+    async def agent_run_times_out(*args, **kwargs):
         raise asyncio.TimeoutError()
+    mock_agent2.run = agent_run_times_out
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
     monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser2))
     monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
     monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent2))
     monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.asyncio.wait_for", raise_timeout)
 
     await run_agent("timeout task", queue=queue3)
     events3 = []
@@ -895,6 +900,111 @@ async def test_sse_stream_yields_until_done(monkeypatch):
     assert "event: state" in body, f"Expected 'event: state' in SSE body; got:\n{body}"
     assert "event: action_detail" in body, f"Expected 'event: action_detail' in SSE body; got:\n{body}"
     assert "event: done" in body, f"Expected 'event: done' in SSE body; got:\n{body}"
+
+
+# ---------------------------------------------------------------------------
+# Two-queue path: DoneEvent must arrive even when the data queue is full
+# (Issue #2 — DoneEvent dropped on QueueFull caused SSE hang)
+# ---------------------------------------------------------------------------
+
+async def test_done_event_delivered_when_data_queue_full(monkeypatch):
+    """With the two-queue split, DoneEvent rides the control queue and
+    reaches the consumer even if the data queue is saturated. Before the
+    fix, _put_nowait(DoneEvent) on a full single queue dropped silently.
+    """
+    import agent.main as main_mod
+    from agent.events import DoneEvent, ScreenshotEvent, StateEvent
+    from agent.main import app
+
+    data_q: asyncio.Queue = asyncio.Queue(maxsize=3)
+    ctrl_q: asyncio.Queue = asyncio.Queue(maxsize=16)
+    # Saturate the data queue.
+    for _ in range(3):
+        data_q.put_nowait(ScreenshotEvent(b64="x"))
+    # Control queue has the lifecycle terminator.
+    ctrl_q.put_nowait(StateEvent(state="complete"))
+    ctrl_q.put_nowait(DoneEvent())
+
+    monkeypatch.setattr(main_mod, "_active_queue", data_q)
+    monkeypatch.setattr(main_mod, "_active_control_queue", ctrl_q)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/stream")
+
+    body = resp.text
+    assert "event: done" in body, (
+        "DoneEvent must reach SSE consumer even when data queue is full; got:\n" + body
+    )
+    assert "event: state" in body, "control-queue StateEvent must also pass through"
+
+
+async def test_stream_drains_data_queue_before_done(monkeypatch):
+    """When DoneEvent arrives on the control queue, /stream must drain any
+    remaining items from the data queue (the tail of the run — final
+    screenshot, final token update) BEFORE yielding the done frame, so the
+    user sees a complete sequence.
+    """
+    import agent.main as main_mod
+    from agent.events import (
+        DoneEvent, ScreenshotEvent, TokenEvent, StateEvent,
+    )
+    from agent.main import app
+
+    data_q: asyncio.Queue = asyncio.Queue(maxsize=10)
+    ctrl_q: asyncio.Queue = asyncio.Queue(maxsize=16)
+    data_q.put_nowait(ScreenshotEvent(b64="frame-A"))
+    data_q.put_nowait(TokenEvent(step=1, prompt_tokens=10, completion_tokens=5))
+    data_q.put_nowait(ScreenshotEvent(b64="frame-B"))
+    ctrl_q.put_nowait(StateEvent(state="complete"))
+    ctrl_q.put_nowait(DoneEvent())
+
+    monkeypatch.setattr(main_mod, "_active_queue", data_q)
+    monkeypatch.setattr(main_mod, "_active_control_queue", ctrl_q)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/stream")
+
+    body = resp.text
+    # All tail data events must appear before the terminator.
+    done_pos = body.find("event: done")
+    assert done_pos != -1, "Expected event: done frame"
+    for tail_marker in ("frame-A", "frame-B", '"prompt_tokens": 10'):
+        pos = body.find(tail_marker)
+        assert pos != -1, f"Expected tail marker {tail_marker!r} in body:\n{body}"
+        assert pos < done_pos, (
+            f"Tail marker {tail_marker!r} appeared after done — drain failed"
+        )
+
+
+async def test_pause_routes_state_event_to_control_queue(monkeypatch):
+    """When both queues are wired, /pause emits StateEvent on the control
+    queue (not the data queue) so the pause indicator can't be dropped by a
+    saturated screenshot stream.
+    """
+    import agent.main as main_mod
+    from agent.events import StateEvent
+    from agent.main import app
+
+    mock_agent = _make_mock_agent()
+    mock_agent.state.paused = False
+    data_q: asyncio.Queue = asyncio.Queue()
+    ctrl_q: asyncio.Queue = asyncio.Queue()
+
+    monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
+    monkeypatch.setattr(main_mod, "_active_queue", data_q)
+    monkeypatch.setattr(main_mod, "_active_control_queue", ctrl_q)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/pause")
+
+    assert resp.status_code == 200
+    assert data_q.empty(), "StateEvent must not land on the data queue"
+    events = []
+    while not ctrl_q.empty():
+        events.append(ctrl_q.get_nowait())
+    assert any(isinstance(e, StateEvent) and e.state == "paused" for e in events), (
+        f"Expected StateEvent('paused') on control queue; got {events}"
+    )
 
 
 # ---------------------------------------------------------------------------

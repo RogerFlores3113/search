@@ -79,7 +79,12 @@ app.state.chrome_missing = False
 app.mount("/static", StaticFiles(directory=_resource_path("agent/static"), check_dir=False), name="static")
 
 _active_task: Optional[asyncio.Task] = None
-_active_queue: Optional[asyncio.Queue] = None   # per-run SSE queue
+# Per-run SSE queues. Data queue (bounded, drop-on-overflow) carries
+# screenshots and per-step updates; control queue (small, blocking puts)
+# carries lifecycle events (state, model_info, summary, error, done) that
+# the UI cannot recover from if dropped. `/stream` multiplexes both.
+_active_queue: Optional[asyncio.Queue] = None
+_active_control_queue: Optional[asyncio.Queue] = None
 _active_agent = None                             # Agent ref for pause/stop (Plan 03)
 
 
@@ -106,12 +111,16 @@ async def run_endpoint(task: str = Form(..., max_length=2000)):
     run_agent coroutine as an asyncio.Task with the queue wired in, and responds
     with HX-Trigger: streamStarted so the HTMX SSE container activates.
     """
-    global _active_task, _active_queue
+    global _active_task, _active_queue, _active_control_queue
     if _active_task is not None and not _active_task.done():
         return JSONResponse({"status": "busy"}, status_code=409)
-    queue: asyncio.Queue = asyncio.Queue(maxsize=50)
-    _active_queue = queue
-    _active_task = asyncio.create_task(run_agent(task, queue=queue))
+    data_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+    control_queue: asyncio.Queue = asyncio.Queue(maxsize=16)
+    _active_queue = data_queue
+    _active_control_queue = control_queue
+    _active_task = asyncio.create_task(
+        run_agent(task, queue=data_queue, control_queue=control_queue)
+    )
     return JSONResponse({"status": "started"}, headers={"HX-Trigger": "streamStarted"})
 
 
@@ -124,18 +133,21 @@ async def pause_endpoint():
     Otherwise, calls agent.pause() (sync).
     Emits StateEvent("paused" or "running") to _active_queue.
     """
-    global _active_agent, _active_queue
+    global _active_agent, _active_queue, _active_control_queue
     if _active_agent is None:
         return JSONResponse({"status": "no_active_run"}, status_code=400)
+    # State transitions ride on the control queue (lifecycle), falling back
+    # to the data queue for back-compat in test paths that wired only one.
+    target = _active_control_queue if _active_control_queue is not None else _active_queue
     if _active_agent.state.paused:
         _active_agent.resume()
-        if _active_queue is not None:
-            _active_queue.put_nowait(StateEvent(state="running"))
+        if target is not None:
+            target.put_nowait(StateEvent(state="running"))
         return JSONResponse({"status": "resumed"})
     else:
         _active_agent.pause()
-        if _active_queue is not None:
-            _active_queue.put_nowait(StateEvent(state="paused"))
+        if target is not None:
+            target.put_nowait(StateEvent(state="paused"))
         return JSONResponse({"status": "paused"})
 
 
@@ -168,31 +180,75 @@ async def runs_endpoint(request: Request):
     )
 
 
+def _serialize_event(event: object) -> ServerSentEvent:
+    return ServerSentEvent(
+        raw_data=json.dumps(dataclasses.asdict(event)),
+        event=event.type,
+    )
+
+
 @app.get("/stream", response_class=EventSourceResponse)
 async def stream_events() -> AsyncIterable[ServerSentEvent]:
-    """SSE endpoint that drains the active run queue until DoneEvent is received.
+    """SSE endpoint that drains the active run queues until DoneEvent.
 
-    If no run is active, yields a single state:idle event and closes.
-    Each non-Done event is JSON-serialised via dataclasses.asdict() and sent with
-    the event's `type` field as the SSE event name (state, narration, etc.).
-    DoneEvent is sent with event="done" and empty data, then the generator returns,
-    which closes the SSE connection.
+    Two-queue path (production): multiplexes the bounded data queue and the
+    control queue via asyncio.wait. When DoneEvent arrives on the control
+    queue, drains any remaining items off the data queue (the producers are
+    quiesced by then — the screenshot loop is cancelled before run_agent's
+    finally emits DoneEvent) and yields them before signaling done. This
+    preserves the final frame and tail token updates the user expects to see.
 
-    The local `queue` variable captures _active_queue at connection time so a new
-    run starting after the SSE connects does not cross-wire events (T-03-06).
+    Single-queue path: back-compat for test code paths that wired one queue
+    only — behaves exactly like the original loop.
+
+    Idle path: no active run — yield a state:idle frame and close.
+
+    Local queue refs are captured at connection time so a new run starting
+    after the SSE connects does not cross-wire events (T-03-06).
     """
-    global _active_queue
+    global _active_queue, _active_control_queue
     if _active_queue is None:
         yield ServerSentEvent(raw_data='{"state":"idle"}', event="state")
         yield ServerSentEvent(raw_data="", event="done")
         return
-    queue = _active_queue
-    while True:
-        event = await queue.get()
-        if isinstance(event, DoneEvent):
-            yield ServerSentEvent(raw_data="", event="done")
-            break
-        yield ServerSentEvent(
-            raw_data=json.dumps(dataclasses.asdict(event)),
-            event=event.type,
-        )
+
+    data_q = _active_queue
+    ctrl_q = _active_control_queue
+
+    if ctrl_q is None or ctrl_q is data_q:
+        while True:
+            event = await data_q.get()
+            if isinstance(event, DoneEvent):
+                yield ServerSentEvent(raw_data="", event="done")
+                return
+            yield _serialize_event(event)
+
+    control_task = asyncio.create_task(ctrl_q.get())
+    data_task = asyncio.create_task(data_q.get())
+    pending: set[asyncio.Task] = {control_task, data_task}
+    try:
+        while True:
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                event = task.result()
+                if isinstance(event, DoneEvent):
+                    while True:
+                        try:
+                            tail = data_q.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        yield _serialize_event(tail)
+                    yield ServerSentEvent(raw_data="", event="done")
+                    return
+                yield _serialize_event(event)
+                if task is control_task:
+                    control_task = asyncio.create_task(ctrl_q.get())
+                    pending.add(control_task)
+                else:
+                    data_task = asyncio.create_task(data_q.get())
+                    pending.add(data_task)
+    finally:
+        for t in pending:
+            t.cancel()

@@ -162,10 +162,31 @@ async def pre_flight_check(cfg: "Settings") -> None:
 
 
 def _put_nowait(queue: asyncio.Queue, event: object) -> None:
-    """Put event on queue, silently dropping if full."""
+    """Put event on queue, silently dropping if full.
+
+    Used for high-volume data events (screenshots, per-step token/thought
+    updates) where a dropped frame is acceptable — the next one arrives in
+    a few hundred ms.
+    """
     try:
         queue.put_nowait(event)
     except asyncio.QueueFull:
+        pass
+
+
+async def _put_control(queue: asyncio.Queue, event: object) -> None:
+    """Block (with 2s timeout) until event is delivered to a control queue.
+
+    Control events carry lifecycle transitions (state, summary, error, done)
+    that the UI cannot recover from if dropped — a dropped DoneEvent strands
+    the SSE consumer forever waiting for a terminator that never arrives.
+    The control queue is bounded but low-rate (a handful of puts per run),
+    so the put is essentially instant in practice. The timeout exists only
+    so a disconnected SSE consumer with a full queue cannot hang teardown.
+    """
+    try:
+        await asyncio.wait_for(queue.put(event), timeout=2.0)
+    except asyncio.TimeoutError:
         pass
 
 
@@ -333,17 +354,30 @@ async def log_step(agent, *, run_id: str, provider: str, duration_ms: int, thoug
     return token_data
 
 
-async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
+async def run_agent(
+    task: str,
+    queue: asyncio.Queue | None = None,
+    control_queue: asyncio.Queue | None = None,
+) -> None:
     """Pre-flight, build BrowserSession+Agent, asyncio.wait_for(agent.run(...), timeout).
 
-    If `queue` is provided, emits SSE event dataclasses for the web UI bridge (D-11).
-    DoneEvent is always the final item put on the queue regardless of exit path —
-    this prevents the GET /stream endpoint from hanging forever.
+    Event routing:
+      * `queue` carries high-volume data events (screenshots, thought, action,
+        progress, token) on a bounded queue with drop-on-overflow semantics.
+      * `control_queue` carries lifecycle events (state, model_info, summary,
+        error, done) that MUST deliver — the UI cannot recover from a dropped
+        DoneEvent. Producers block (with timeout) rather than drop.
+
+    Back-compat: when `control_queue` is None, control events fall back to
+    `queue` — keeps existing single-queue callers (most tests) working without
+    modification. Production wires both queues so a backed-up data channel can
+    never drop DoneEvent (Issue #2 fix).
 
     The `browser` variable is initialized to None before the try block so the
-    finally handler can guard `await browser.kill()` against the PreFlightError path
-    (where BrowserSession is never constructed). See RESEARCH.md Pitfall 4.
+    finally handler can guard `await browser.kill()` against the PreFlightError
+    path (where BrowserSession is never constructed). See RESEARCH.md Pitfall 4.
     """
+    ctrl_q = control_queue if control_queue is not None else queue
     run_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc)
     step_start = time.monotonic()
@@ -360,8 +394,8 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
     run_cost_is_null_for_ollama = False
 
     if queue is not None:
-        _put_nowait(queue, StateEvent(state="running"))
-        _put_nowait(queue, ModelInfoEvent(provider=config.provider, model_name=_resolve_model_name(config)))
+        await _put_control(ctrl_q, StateEvent(state="running"))
+        await _put_control(ctrl_q, ModelInfoEvent(provider=config.provider, model_name=_resolve_model_name(config)))
 
     browser = None
     screenshot_task = None
@@ -518,13 +552,13 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
     finally:
         if queue is not None:
             if error_msg:
-                _put_nowait(queue, ErrorEvent(message=error_msg))
-                _put_nowait(queue, StateEvent(state="error"))
+                await _put_control(ctrl_q, ErrorEvent(message=error_msg))
+                await _put_control(ctrl_q, StateEvent(state="error"))
             else:
                 if summary:
-                    _put_nowait(queue, SummaryEvent(text=summary))
-                _put_nowait(queue, StateEvent(state="complete"))
-            _put_nowait(queue, DoneEvent())
+                    await _put_control(ctrl_q, SummaryEvent(text=summary))
+                await _put_control(ctrl_q, StateEvent(state="complete"))
+            await _put_control(ctrl_q, DoneEvent())
 
         # Persist run record to history DB.
         # Guard with try/except so a DB failure NEVER prevents cleanup below.
@@ -573,5 +607,6 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
             from agent import main as _main_module  # noqa: PLC0415
             _main_module._active_agent = None
             _main_module._active_queue = None
+            _main_module._active_control_queue = None
         except Exception:
             pass
