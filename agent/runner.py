@@ -232,6 +232,47 @@ def _put_nowait(queue: asyncio.Queue, event: object) -> None:
         pass
 
 
+_SCREENSHOT_INTERVAL_S = 0.5
+_SCREENSHOT_BACKOFF_CAP_S = 4.0
+_SCREENSHOT_TIMEOUT_S = 3.0
+
+
+async def _screenshot_loop(browser, queue: asyncio.Queue) -> None:
+    """Capture a JPEG screenshot every ~500ms and push it onto `queue`.
+
+    Sleeps unconditionally after every iteration, success or failure.
+    On consecutive `take_screenshot` failures, sleep grows exponentially
+    (0.5s → 1s → 2s → 4s, capped) so a dead/navigating browser cannot
+    CPU-spin the event loop. A successful capture resets the back-off
+    counter so the next failure starts again at 0.5s.
+
+    asyncio.CancelledError is NOT caught — when the parent run_agent's
+    `finally` block cancels this task, the cancel propagates cleanly,
+    preserving Phase 7's locked cancel-before-`browser.kill()` ordering.
+    """
+    consecutive_failures = 0
+    while True:
+        try:
+            data = await asyncio.wait_for(
+                browser.take_screenshot(format='jpeg', quality=75),
+                timeout=_SCREENSHOT_TIMEOUT_S,
+            )
+            b64 = base64.b64encode(data).decode()
+            _put_nowait(queue, ScreenshotEvent(b64=b64))
+            consecutive_failures = 0
+            await asyncio.sleep(_SCREENSHOT_INTERVAL_S)
+        except Exception:
+            # Includes asyncio.TimeoutError (Exception subclass). Does NOT
+            # catch CancelledError (BaseException) — task teardown stays
+            # responsive to the parent's cancel() call.
+            consecutive_failures += 1
+            backoff = min(
+                _SCREENSHOT_INTERVAL_S * (2 ** (consecutive_failures - 1)),
+                _SCREENSHOT_BACKOFF_CAP_S,
+            )
+            await asyncio.sleep(backoff)
+
+
 async def _put_control(queue: asyncio.Queue, event: object) -> None:
     """Block (with 2s timeout) until event is delivered to a control queue.
 
@@ -550,23 +591,6 @@ async def run_agent(
                 _put_nowait(queue, TokenEvent(step=step_idx + 1, **token_data))
             step_start = time.monotonic()
 
-        async def _screenshot_loop() -> None:
-            while True:
-                captured = False
-                try:
-                    data = await asyncio.wait_for(
-                        browser.take_screenshot(format='jpeg', quality=75),
-                        timeout=3.0,
-                    )
-                    b64 = base64.b64encode(data).decode()
-                    _put_nowait(queue, ScreenshotEvent(b64=b64))
-                    captured = True
-                except asyncio.TimeoutError:
-                    pass
-                except Exception:
-                    pass
-                await asyncio.sleep(0.5 if captured else 0)
-
         try:
             llm = build_llm(config)
             agent = Agent(
@@ -585,7 +609,7 @@ async def run_agent(
             _main_module._active_agent = agent
 
             if queue is not None:
-                screenshot_task = asyncio.create_task(_screenshot_loop())
+                screenshot_task = asyncio.create_task(_screenshot_loop(browser, queue))
 
             try:
                 history = await asyncio.wait_for(

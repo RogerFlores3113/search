@@ -255,37 +255,54 @@ async def test_screenshot_loop_exception_continues(training_dir, monkeypatch_env
 
     SCR-01: CDP WebSocket can disconnect mid-capture; loop must survive and retry.
     After a ConnectionError, the loop must attempt take_screenshot again.
+
+    Loop termination is enforced by the side_effect script — call 5 raises
+    asyncio.CancelledError (BaseException, NOT caught by the loop's
+    `except Exception`), so the loop exits deterministically after exactly
+    4 real take_screenshot calls. asyncio.sleep stays real; FakeAgent.run()
+    awaits an Event set by the script so the run_agent finally does not
+    cancel the screenshot task before the script completes (~2s wall time).
     """
     from agent.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=50)
     fake_agent = _make_fake_agent_history()
     mock_browser = _make_mock_browser()
+    _done_event = asyncio.Event()
+    _call_count = 0
 
-    # Scripted exceptions then JPEG bytes FOREVER. A finite list would exhaust
-    # under `while True` and raise StopIteration (→ RuntimeError in a coroutine)
-    # that the loop's `except Exception` swallows, producing an unpaced busy-spin
-    # that accumulates calls in mock_browser.take_screenshot.call_args_list until
-    # the test process OOMs.
-    _script = iter([
-        ConnectionError("Client is stopping"),
-        ConnectionError("WebSocket connection closed"),
-    ])
-
-    async def _take_screenshot_side_effect(**kwargs):
-        try:
-            raise next(_script)
-        except StopIteration:
+    async def _bounded_side_effect(**kwargs):
+        nonlocal _call_count
+        _call_count += 1
+        if _call_count == 1:
+            raise ConnectionError("Client is stopping")
+        elif _call_count == 2:
             return b'\xff\xd8\xff\xe0\x00\x10JFIF\x00'
+        elif _call_count == 3:
+            raise ConnectionError("WebSocket connection closed")
+        elif _call_count == 4:
+            return b'\xff\xd8\xff\xe0\x00\x10JFIF\x00'
+        else:
+            _done_event.set()
+            raise asyncio.CancelledError()
 
-    mock_browser.take_screenshot.side_effect = _take_screenshot_side_effect
+    mock_browser.take_screenshot.side_effect = _bounded_side_effect
 
-    FakeAgentClass = _make_fake_agent_class(fake_agent)
+    class _WaitingFakeAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        async def run(self, max_steps, on_step_end):
+            await on_step_end(fake_agent)
+            await _done_event.wait()
+            result = MagicMock()
+            result.final_result.return_value = "done"
+            return result
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
          patch("agent.runner.BrowserSession", return_value=mock_browser), \
          patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+         patch("agent.runner.Agent", _WaitingFakeAgent):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -306,33 +323,52 @@ async def test_screenshot_loop_timeout_continues(training_dir, monkeypatch_env):
     """_screenshot_loop must continue after asyncio.TimeoutError from asyncio.wait_for.
 
     SCR-01: slow screenshot (>3s) triggers timeout; loop must retry, not crash.
+
+    Same bounded-script pattern as test_screenshot_loop_exception_continues:
+    call 5 raises CancelledError to terminate the loop deterministically;
+    asyncio.sleep stays real; FakeAgent.run() awaits an Event set by the
+    script so run_agent's finally does not cancel before the script ends.
     """
     from agent.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=50)
     fake_agent = _make_fake_agent_history()
     mock_browser = _make_mock_browser()
+    _done_event = asyncio.Event()
+    _call_count = 0
 
-    # First call times out; every subsequent call returns JPEG bytes FOREVER.
-    # A finite side_effect list would exhaust under `while True` and busy-spin
-    # via the swallowed StopIteration (see test_screenshot_loop_exception_continues).
-    _timed_out_once = False
-
-    async def _take_screenshot_side_effect(**kwargs):
-        nonlocal _timed_out_once
-        if not _timed_out_once:
-            _timed_out_once = True
+    async def _bounded_side_effect(**kwargs):
+        nonlocal _call_count
+        _call_count += 1
+        if _call_count == 1:
             raise asyncio.TimeoutError()
-        return b'\xff\xd8\xff\xe0\x00\x10JFIF\x00'
+        elif _call_count == 2:
+            return b'\xff\xd8\xff\xe0\x00\x10JFIF\x00'
+        elif _call_count == 3:
+            raise asyncio.TimeoutError()
+        elif _call_count == 4:
+            return b'\xff\xd8\xff\xe0\x00\x10JFIF\x00'
+        else:
+            _done_event.set()
+            raise asyncio.CancelledError()
 
-    mock_browser.take_screenshot.side_effect = _take_screenshot_side_effect
+    mock_browser.take_screenshot.side_effect = _bounded_side_effect
 
-    FakeAgentClass = _make_fake_agent_class(fake_agent)
+    class _WaitingFakeAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        async def run(self, max_steps, on_step_end):
+            await on_step_end(fake_agent)
+            await _done_event.wait()
+            result = MagicMock()
+            result.final_result.return_value = "done"
+            return result
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
          patch("agent.runner.BrowserSession", return_value=mock_browser), \
          patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+         patch("agent.runner.Agent", _WaitingFakeAgent):
         await run_agent("test task", queue=queue)
 
     assert mock_browser.take_screenshot.await_count >= 2, (
@@ -520,3 +556,95 @@ async def test_screenshot_event_b64_is_valid(training_dir, monkeypatch_env):
             f"ScreenshotEvent.b64 must decode to bytes starting with JPEG SOI marker "
             f"(0xFF 0xD8 0xFF); got {decoded[:3].hex()}"
         )
+
+
+# ---------------------------------------------------------------------------
+# _screenshot_loop back-off + cadence (Issue #4)
+# ---------------------------------------------------------------------------
+
+async def test_screenshot_loop_sleeps_after_success():
+    """Every successful capture is followed by a 0.5s sleep — the loop
+    NEVER yields with sleep(0) on the success path (the old behavior
+    would tight-loop on failure because of `sleep(0.5 if captured else 0)`).
+    Loop is bounded by injecting CancelledError after 2 successes.
+    """
+    from agent.runner import _screenshot_loop
+
+    browser = MagicMock()
+    browser.take_screenshot = AsyncMock(side_effect=[
+        b'\xff\xd8\xff',
+        b'\xff\xd8\xff',
+        asyncio.CancelledError(),
+    ])
+    queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+    sleeps: list[float] = []
+    async def _record_sleep(seconds):
+        sleeps.append(seconds)
+
+    with patch("agent.runner.asyncio.sleep", _record_sleep):
+        with pytest.raises(asyncio.CancelledError):
+            await _screenshot_loop(browser, queue)
+
+    assert sleeps == [0.5, 0.5], (
+        f"Each success must be followed by a 0.5s sleep; got {sleeps}"
+    )
+
+
+async def test_screenshot_loop_backs_off_on_consecutive_failures():
+    """Consecutive `take_screenshot` failures grow the sleep exponentially:
+    0.5 → 1.0 → 2.0 → 4.0 → 4.0 (capped). Without this, the loop spins as
+    fast as the event loop can schedule it (the original bug — sleep(0)
+    when `captured` was False).
+    """
+    from agent.runner import _screenshot_loop
+
+    browser = MagicMock()
+    browser.take_screenshot = AsyncMock(side_effect=[
+        ConnectionError("WebSocket closed"),
+        ConnectionError("WebSocket closed"),
+        ConnectionError("WebSocket closed"),
+        ConnectionError("WebSocket closed"),
+        ConnectionError("WebSocket closed"),
+        asyncio.CancelledError(),
+    ])
+    queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+    sleeps: list[float] = []
+    async def _record_sleep(seconds):
+        sleeps.append(seconds)
+
+    with patch("agent.runner.asyncio.sleep", _record_sleep):
+        with pytest.raises(asyncio.CancelledError):
+            await _screenshot_loop(browser, queue)
+
+    assert sleeps == [0.5, 1.0, 2.0, 4.0, 4.0], (
+        f"Expected exponential back-off capped at 4.0s; got {sleeps}"
+    )
+
+
+async def test_screenshot_loop_backoff_resets_on_success():
+    """A successful capture between failures resets the back-off counter,
+    so the next failure starts again at 0.5s instead of continuing the
+    exponential ladder.
+    """
+    from agent.runner import _screenshot_loop
+
+    browser = MagicMock()
+    browser.take_screenshot = AsyncMock(side_effect=[
+        ConnectionError("fail"),          # back-off 0.5
+        ConnectionError("fail"),          # back-off 1.0
+        b'\xff\xd8\xff',                  # success → reset; sleep 0.5
+        ConnectionError("fail"),          # back-off 0.5 (NOT 2.0)
+        asyncio.CancelledError(),
+    ])
+    queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+    sleeps: list[float] = []
+    async def _record_sleep(seconds):
+        sleeps.append(seconds)
+
+    with patch("agent.runner.asyncio.sleep", _record_sleep):
+        with pytest.raises(asyncio.CancelledError):
+            await _screenshot_loop(browser, queue)
+
+    assert sleeps == [0.5, 1.0, 0.5, 0.5], (
+        f"Successful capture must reset back-off; got {sleeps}"
+    )
