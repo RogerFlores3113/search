@@ -29,50 +29,12 @@ Test-name authority: every `def test_*` here is enumerated in
 """
 from __future__ import annotations
 
-import asyncio
-import json
 import re
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from jinja2 import Environment, FileSystemLoader
-
-import agent.runner  # noqa: F401  (kept for parity with phase-8 preamble)
-
-
-# ---------------------------------------------------------------------------
-# Shared helpers — lifted verbatim shape from tests/unit/test_events_phase8.py
-# ---------------------------------------------------------------------------
-
-
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-
-
-def _make_runs_jsonl(path: Path, records: list[dict]) -> None:
-    path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
-
-
-def _build_runs_record(
-    *,
-    run_id: str = "r1",
-    step_index: int = 0,
-    step_duration_ms: int = 500,
-    cost_usd: float | None = 0.01,
-    provider: str = "anthropic",
-    model_name: str = "claude-sonnet-4-5",
-) -> dict:
-    """Slim Phase-9 record — only the fields the `/runs` aggregator reads."""
-    return {
-        "run_id": run_id,
-        "step_index": step_index,
-        "step_duration_ms": step_duration_ms,
-        "cost_usd": cost_usd,
-        "provider": provider,
-        "model_name": model_name,
-    }
 
 
 def _render_runs_fragment(runs: list[dict]) -> str:
@@ -109,24 +71,15 @@ def _make_run_dict(
 
 
 # ===========================================================================
-# PERF-03: `/runs` aggregator (server-side D-17)
+# PERF-03: `/runs` payload (aggregates served from SQLite, no JSONL touch)
 # ===========================================================================
 
 
-async def test_runs_aggregates_api_cost(jsonl_with_records, monkeypatch):
-    """PERF-03 / D-17: `/runs` payload includes step_count, total_duration_s,
-    total_cost_usd, model_name, provider for an API-keyed (anthropic) run.
-
-    RED today: agent/main.py `/runs` endpoint does not aggregate from JSONL yet;
-    the rendered fragment will not contain `~$0.06`, `3 steps`, or the model
-    name until Plan 02 lands D-13..D-17.
+async def test_runs_endpoint_renders_api_aggregates(monkeypatch):
+    """PERF-03: /runs payload includes step_count, total_duration_s,
+    total_cost_usd, model_name for an API-keyed run — sourced from the
+    SQLite row, not from re-scanning training/runs.jsonl.
     """
-    jsonl_with_records([
-        _build_runs_record(run_id="r1", step_index=0, step_duration_ms=500, cost_usd=0.01),
-        _build_runs_record(run_id="r1", step_index=1, step_duration_ms=700, cost_usd=0.02),
-        _build_runs_record(run_id="r1", step_index=2, step_duration_ms=800, cost_usd=0.03),
-    ])
-
     import agent.main as main_mod
 
     async def _fake_list_runs(limit: int = 10) -> list[dict]:
@@ -137,48 +90,11 @@ async def test_runs_aggregates_api_cost(jsonl_with_records, monkeypatch):
             "summary": "",
             "started_at": "2026-05-17T00:00:00Z",
             "completed_at": "2026-05-17T00:00:02Z",
-        }]
-
-    monkeypatch.setattr(main_mod.history_db, "list_runs", _fake_list_runs)
-
-    async with AsyncClient(
-        transport=ASGITransport(app=main_mod.app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/runs")
-
-    assert resp.status_code == 200, f"/runs must return 200; got {resp.status_code}"
-    body = resp.text
-    assert "~$0.06" in body, f"/runs payload must include aggregated cost '~$0.06'; got:\n{body}"
-    assert "3 steps" in body, f"/runs payload must include '3 steps'; got:\n{body}"
-    assert "2s" in body, f"/runs payload must include '2s' (1000+700+800 → 2s); got:\n{body}"
-    assert "claude-sonnet-4-5" in body, "/runs payload must include the model name"
-
-
-async def test_runs_aggregator_ollama_null(jsonl_with_records, monkeypatch):
-    """PERF-03 / D-16 / Phase 5/8 null semantics: Ollama-only run renders
-    `local (no API cost)` and NEVER `~$0.00`, `None`, `null`, or `NaN`.
-    """
-    jsonl_with_records([
-        _build_runs_record(
-            run_id="rO", step_index=0, step_duration_ms=500,
-            cost_usd=None, provider="ollama", model_name="qwen2.5vl:7b",
-        ),
-        _build_runs_record(
-            run_id="rO", step_index=1, step_duration_ms=600,
-            cost_usd=None, provider="ollama", model_name="qwen2.5vl:7b",
-        ),
-    ])
-
-    import agent.main as main_mod
-
-    async def _fake_list_runs(limit: int = 10) -> list[dict]:
-        return [{
-            "run_id": "rO",
-            "task": "ollama task",
-            "status": "complete",
-            "summary": "",
-            "started_at": "2026-05-17T00:00:00Z",
-            "completed_at": "2026-05-17T00:00:01Z",
+            "step_count": 3,
+            "total_duration_s": 2,
+            "total_cost_usd": 0.06,
+            "model_name": "claude-sonnet-4-5",
+            "provider": "anthropic",
         }]
 
     monkeypatch.setattr(main_mod.history_db, "list_runs", _fake_list_runs)
@@ -190,54 +106,71 @@ async def test_runs_aggregator_ollama_null(jsonl_with_records, monkeypatch):
 
     assert resp.status_code == 200
     body = resp.text
-    assert "local (no API cost)" in body, (
-        f"Ollama-only run must render 'local (no API cost)'; got:\n{body}"
-    )
-    for forbidden in ("~$0.00", "None", "null", "NaN"):
-        assert forbidden not in body, (
-            f"Ollama payload must not contain {forbidden!r}; got:\n{body}"
-        )
+    assert "~$0.06" in body
+    assert "3 steps" in body
+    assert "2s" in body
+    assert "claude-sonnet-4-5" in body
 
 
-async def test_runs_aggregator_offloaded(monkeypatch):
-    """PERF-03 / Pitfall 3: aggregator MUST offload the JSONL read via
-    `asyncio.to_thread` so the event loop is not blocked. Patches
-    `asyncio.to_thread` and asserts it is awaited with the aggregator helper
-    (`_aggregate_run_metrics`) as the first positional arg.
+async def test_runs_endpoint_renders_ollama_null_cost(monkeypatch):
+    """PERF-03 / Phase 5/8 null semantics: an Ollama row with
+    total_cost_usd=NULL must render `local (no API cost)` and never
+    coerce to `~$0.00`, `None`, `null`, or `NaN`.
     """
     import agent.main as main_mod
 
     async def _fake_list_runs(limit: int = 10) -> list[dict]:
         return [{
-            "run_id": "rX",
-            "task": "t",
+            "run_id": "rO",
+            "task": "ollama task",
             "status": "complete",
             "summary": "",
             "started_at": "2026-05-17T00:00:00Z",
             "completed_at": "2026-05-17T00:00:01Z",
+            "step_count": 2,
+            "total_duration_s": 1,
+            "total_cost_usd": None,
+            "model_name": "qwen2.5vl:7b",
+            "provider": "ollama",
         }]
 
     monkeypatch.setattr(main_mod.history_db, "list_runs", _fake_list_runs)
 
-    spy = AsyncMock(return_value={})
-    # Patch asyncio.to_thread as seen by agent.main (it may be imported as
-    # `asyncio.to_thread` or rebound — patch the module attribute).
-    monkeypatch.setattr(main_mod.asyncio, "to_thread", spy)
+    async with AsyncClient(
+        transport=ASGITransport(app=main_mod.app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/runs")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "local (no API cost)" in body
+    for forbidden in ("~$0.00", "None", "null", "NaN"):
+        assert forbidden not in body, f"forbidden token {forbidden!r} in body:\n{body}"
+
+
+async def test_runs_endpoint_does_not_read_training_jsonl(monkeypatch, tmp_path):
+    """/runs must NOT touch training/runs.jsonl — the LoRA corpus is
+    write-only from the web layer. Point TRAINING_FILE at a missing path
+    and confirm the endpoint still serves a 200.
+    """
+    import agent.main as main_mod
+    import agent.runner as runner_mod
+
+    monkeypatch.setattr(runner_mod, "TRAINING_FILE", tmp_path / "does-not-exist.jsonl")
+
+    async def _fake_list_runs(limit: int = 10) -> list[dict]:
+        return []
+
+    monkeypatch.setattr(main_mod.history_db, "list_runs", _fake_list_runs)
 
     async with AsyncClient(
         transport=ASGITransport(app=main_mod.app), base_url="http://test"
     ) as client:
-        await client.get("/runs")
+        resp = await client.get("/runs")
 
-    assert spy.await_count >= 1, (
-        "/runs aggregator must await asyncio.to_thread at least once (Pitfall 3)"
-    )
-    first_call_args = spy.await_args_list[0].args
-    assert first_call_args, "asyncio.to_thread must be called with positional args"
-    first_arg = first_call_args[0]
-    name = getattr(first_arg, "__name__", str(first_arg))
-    assert name == "_aggregate_run_metrics", (
-        f"asyncio.to_thread first positional arg must be _aggregate_run_metrics; got {name!r}"
+    assert resp.status_code == 200
+    assert not (tmp_path / "does-not-exist.jsonl").exists(), (
+        "/runs must not create or read the JSONL"
     )
 
 

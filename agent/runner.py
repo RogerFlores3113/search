@@ -350,6 +350,14 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
     # Closure-scoped thoughts accumulator: _pre_step writes at 1-indexed step_num,
     # _log_step reads at step_idx+1 (Pitfall 1).
     run_thoughts: dict[int, dict] = {}
+    # Per-run aggregates persisted to SQLite at completion so /runs is a
+    # straight DB read with no JSONL scan. `cost_is_null_for_ollama` flips
+    # True whenever an Ollama step reports None — the final cost stays None
+    # in that case (Phase 5/8 null semantics).
+    run_step_count = 0
+    run_duration_ms = 0
+    run_cost_usd = 0.0
+    run_cost_is_null_for_ollama = False
 
     if queue is not None:
         _put_nowait(queue, StateEvent(state="running"))
@@ -402,7 +410,7 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
             ))
 
         async def _log_step(agent_instance):
-            nonlocal step_start
+            nonlocal step_start, run_step_count, run_duration_ms, run_cost_usd, run_cost_is_null_for_ollama
             duration_ms = int((time.monotonic() - step_start) * 1000)
             step_idx = agent_instance.history.number_of_steps() - 1
             token_data = await log_step(
@@ -412,6 +420,13 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                 duration_ms=duration_ms,
                 thoughts=run_thoughts,
             )
+            run_step_count += 1
+            run_duration_ms += duration_ms
+            step_cost = token_data.get("cost_usd")
+            if step_cost is None and config.provider.lower() == "ollama":
+                run_cost_is_null_for_ollama = True
+            elif step_cost is not None:
+                run_cost_usd += step_cost
             if queue is not None:
                 actions = agent_instance.history.model_actions()
                 last_action = actions[-1] if actions else {}
@@ -528,6 +543,7 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
 
             completed_at = datetime.now(timezone.utc).isoformat()
             started_at_iso = started_at.isoformat()
+            final_cost = None if run_cost_is_null_for_ollama else run_cost_usd
             await history_db.insert_run(
                 run_id=run_id,
                 task=task,
@@ -535,6 +551,11 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
                 summary=summary,
                 started_at=started_at_iso,
                 completed_at=completed_at,
+                step_count=run_step_count,
+                total_duration_s=run_duration_ms // 1000,
+                total_cost_usd=final_cost,
+                model_name=_resolve_model_name(config),
+                provider=config.provider.lower(),
             )
         except Exception:
             pass  # DB failure must not surface — cleanup below must always run

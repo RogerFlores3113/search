@@ -34,7 +34,10 @@ async def test_init_db_creates_runs_table(db_dir):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("PRAGMA table_info(runs)") as cursor:
             cols = {r[1] async for r in cursor}
-    expected_cols = {"id", "run_id", "task", "status", "summary", "started_at", "completed_at"}
+    expected_cols = {
+        "id", "run_id", "task", "status", "summary", "started_at", "completed_at",
+        "step_count", "total_duration_s", "total_cost_usd", "model_name", "provider",
+    }
     assert expected_cols.issubset(cols), f"Missing columns: {expected_cols - cols}"
 
 
@@ -117,3 +120,120 @@ async def test_insert_run_uses_parameterized_query(db_dir):
     rows = await list_runs()
     assert len(rows) == 1, "runs table should still exist after injection attempt"
     assert rows[0]["task"] == malicious_task, "Injected task string should be stored literally"
+
+
+async def test_aggregates_roundtrip(db_dir):
+    """step_count, total_duration_s, total_cost_usd, model_name, provider
+    round-trip through insert_run / list_runs unchanged.
+    """
+    from agent.db import init_db, insert_run, list_runs
+
+    await init_db()
+    await insert_run(
+        run_id="api-run",
+        task="search wiki",
+        status="complete",
+        summary=None,
+        started_at="2026-05-17T10:00:00Z",
+        completed_at="2026-05-17T10:00:05Z",
+        step_count=4,
+        total_duration_s=5,
+        total_cost_usd=0.0234,
+        model_name="claude-sonnet-4-5",
+        provider="anthropic",
+    )
+    await insert_run(
+        run_id="ollama-run",
+        task="local search",
+        status="complete",
+        summary=None,
+        started_at="2026-05-17T11:00:00Z",
+        completed_at="2026-05-17T11:00:03Z",
+        step_count=2,
+        total_duration_s=3,
+        total_cost_usd=None,
+        model_name="qwen2.5vl:7b",
+        provider="ollama",
+    )
+
+    rows = await list_runs()
+    by_id = {r["run_id"]: r for r in rows}
+
+    api = by_id["api-run"]
+    assert api["step_count"] == 4
+    assert api["total_duration_s"] == 5
+    assert api["total_cost_usd"] == 0.0234
+    assert api["model_name"] == "claude-sonnet-4-5"
+    assert api["provider"] == "anthropic"
+
+    ollama = by_id["ollama-run"]
+    assert ollama["step_count"] == 2
+    assert ollama["total_cost_usd"] is None, "Ollama null cost must round-trip as None, not 0"
+    assert ollama["provider"] == "ollama"
+
+
+async def test_insert_run_defaults_when_aggregates_omitted(db_dir):
+    """Existing callers that don't pass the aggregate kwargs (e.g. tests
+    pre-dating the schema migration) still work; aggregates default to 0/None.
+    """
+    from agent.db import init_db, insert_run, list_runs
+
+    await init_db()
+    await insert_run(
+        run_id="legacy",
+        task="t",
+        status="complete",
+        summary=None,
+        started_at="2026-05-17T12:00:00Z",
+        completed_at="2026-05-17T12:00:01Z",
+    )
+    rows = await list_runs()
+    assert rows[0]["step_count"] == 0
+    assert rows[0]["total_duration_s"] == 0
+    assert rows[0]["total_cost_usd"] is None
+    assert rows[0]["model_name"] is None
+    assert rows[0]["provider"] is None
+
+
+async def test_init_db_migrates_existing_table(db_dir):
+    """A pre-existing runs table without the aggregate columns is migrated
+    in place via ALTER TABLE ADD COLUMN. Idempotent on a second init_db call.
+    """
+    import aiosqlite
+    from agent.db import DB_PATH, init_db
+
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                task TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            )
+        """)
+        await db.execute(
+            "INSERT INTO runs (run_id, task, status, summary, started_at, completed_at) "
+            "VALUES (?,?,?,?,?,?)",
+            ("pre-existing", "t", "complete", None,
+             "2026-05-17T09:00:00Z", "2026-05-17T09:00:01Z"),
+        )
+        await db.commit()
+
+    await init_db()
+    await init_db()  # second call must be a no-op (idempotent)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("PRAGMA table_info(runs)") as cursor:
+            cols = {r[1] async for r in cursor}
+        async with db.execute("SELECT run_id, step_count, total_cost_usd FROM runs") as cursor:
+            row = await cursor.fetchone()
+
+    for needed in ("step_count", "total_duration_s", "total_cost_usd", "model_name", "provider"):
+        assert needed in cols, f"Migration must add {needed!r}; cols={cols}"
+    assert row[0] == "pre-existing"
+    assert row[1] == 0, "Pre-existing row must default step_count to 0"
+    assert row[2] is None, "Pre-existing row must default total_cost_usd to NULL"

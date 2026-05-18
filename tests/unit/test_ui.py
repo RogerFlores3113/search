@@ -313,7 +313,7 @@ async def test_run_agent_emits_summary_event(monkeypatch):
     monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
     monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
     monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
 
     await run_agent("test task", queue=queue)
 
@@ -352,7 +352,7 @@ async def test_run_agent_omits_summary_when_no_final_result(monkeypatch):
     monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
     monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
     monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
 
     await run_agent("test task", queue=queue)
 
@@ -398,7 +398,7 @@ async def test_log_step_does_not_emit_screenshot_event(monkeypatch):
     monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
     monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
     monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
 
     from agent.runner import run_agent
     import inspect
@@ -442,7 +442,7 @@ async def test_log_step_emits_progress_event(monkeypatch):
     monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
     monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
     monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
 
     from agent.runner import run_agent
     await run_agent("test task", queue=queue)
@@ -480,7 +480,7 @@ async def test_run_agent_emits_state_events(monkeypatch):
     monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
     monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
     monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
 
     from agent.runner import run_agent
     await run_agent("test task", queue=queue)
@@ -572,7 +572,7 @@ async def test_run_agent_inserts_run_to_db(monkeypatch, db_dir):
     monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
     monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
     monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
 
     await run_agent("test task")
 
@@ -625,7 +625,7 @@ async def test_run_agent_inserts_stopped_status_when_agent_state_stopped(monkeyp
     monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
     monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
     monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
 
     await run_agent("stopped task")
 
@@ -655,7 +655,7 @@ async def test_run_agent_clears_active_agent_in_finally(monkeypatch, db_dir):
     monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
     monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
     monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
 
     queue: asyncio.Queue = asyncio.Queue()
     monkeypatch.setattr(main_mod, "_active_queue", queue)
@@ -823,7 +823,7 @@ async def test_done_event_always_emitted(monkeypatch):
     monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
     monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
     monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock())
+    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
 
     await run_agent("success task", queue=queue1)
     events1 = []
