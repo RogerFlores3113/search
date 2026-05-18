@@ -449,6 +449,12 @@
               }
             }
           }
+          if (d.step_duration_ms != null && !row.querySelector('.timestamp')) {
+            const ts = document.createElement('span');
+            ts.className = 'timestamp';
+            ts.textContent = (d.step_duration_ms / 1000).toFixed(1) + 's';
+            row.appendChild(ts);
+          }
         },
 
         handleSummary($event) {

@@ -103,6 +103,7 @@ def test_action_detail_event_shape():
     assert evt.value is None
     assert evt.url is None
     assert evt.success is None
+    assert evt.step_duration_ms is None
 
     # Keyword construction with all fields populated
     evt2 = ActionDetailEvent(
@@ -112,6 +113,7 @@ def test_action_detail_event_shape():
         value=None,
         url=None,
         success=None,
+        step_duration_ms=250,
     )
     assert evt2.step == 2
     assert evt2.action_type == "click_element"
@@ -119,6 +121,7 @@ def test_action_detail_event_shape():
     assert evt2.value is None
     assert evt2.url is None
     assert evt2.success is None
+    assert evt2.step_duration_ms == 250
 
 
 def test_action_detail_event_null_fields():
@@ -141,6 +144,9 @@ def test_action_detail_event_null_fields():
 
     assert "success" in asdict_result
     assert asdict_result["success"] is None
+
+    assert "step_duration_ms" in asdict_result
+    assert asdict_result["step_duration_ms"] is None
 
 
 def test_action_detail_event_type_literal():

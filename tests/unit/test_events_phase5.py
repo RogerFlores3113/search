@@ -109,9 +109,8 @@ async def test_action_detail_event_emitted_per_step(training_dir, monkeypatch_en
 async def test_log_step_timing_closure_executes(training_dir, monkeypatch_env):
     """Timing closure in _log_step must execute and run completes with ActionDetailEvent emitted.
 
-    step_duration_ms is computed internally in _log_step but is no longer surfaced on any
-    SSE event (NarrationEvent was removed in Phase 6 Plan 02 D-05). This test guards against
-    regression in the surrounding closure structure by confirming the run completes and
+    step_duration_ms is computed in _log_step and is surfaced on ActionDetailEvent (PERF-01 wired in Phase 9.1).
+    This test guards against regression in the surrounding closure structure by confirming the run completes and
     ActionDetailEvent is emitted even after a sleep delay.
     """
     from agent.runner import run_agent
