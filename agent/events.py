@@ -76,3 +76,4 @@ class ActionDetailEvent:
     value: Optional[str] = None
     url: Optional[str] = None
     success: Optional[bool] = None
+    step_duration_ms: Optional[int] = None

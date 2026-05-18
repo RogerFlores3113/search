@@ -575,6 +575,7 @@ async def run_agent(
                     value=value,
                     url=url,
                     success=None,
+                    step_duration_ms=duration_ms,
                 ))
                 # ProgressEvent — step counter for the UI progress display
                 _put_nowait(queue, ProgressEvent(step=step_idx + 1, max_steps=config.max_steps))
