@@ -159,7 +159,8 @@
             <!-- Narration feed label -->
             <div class="narration-label">Agent log</div>
 
-            <!-- Narration feed container — rows appended by Alpine handleNarration -->
+            <!-- Narration feed container — rows appended by handleActionDetail
+                 (creates the row via _ensureNarrationRow on first event arrival). -->
             <div id="narration-feed"
                  class="narration-feed"
                  role="log"
@@ -173,7 +174,6 @@
               All SSE events carry JSON payload in event.detail.data (Plan 01 used data= not raw_data).
             -->
             <div style="display:none" sse-swap="state"         data-bridge="handleState"></div>
-            <div style="display:none" sse-swap="narration"     data-bridge="handleNarration"></div>
             <div style="display:none" sse-swap="summary"       data-bridge="handleSummary"></div>
             <div style="display:none" sse-swap="error_msg"     data-bridge="handleError"></div>
             <div style="display:none" sse-swap="screenshot"    data-bridge="handleScreenshot"></div>
@@ -221,9 +221,6 @@
         modelName: '',
         provider: '',
         isOllama: false,
-        // Phase 9 D-11: badge-race buffer for action_detail that arrives
-        // before the corresponding narration row exists.
-        _pendingAction: {},
 
         init() {
           // Wire SSE bridge elements to component methods. The bridges have
@@ -260,7 +257,6 @@
             this.totalPromptTokens = 0;
             this.totalCompletionTokens = 0;
             this.totalCost = 0;
-            this._pendingAction = {};
             if (this._elapsedTimer === null) {
               this.runStartedAt = Date.now();
               this.elapsed = 0;
@@ -322,10 +318,9 @@
         },
 
         _ensureNarrationRow(step) {
-          // Helper: locate the narration row for `step`, creating a stub row
-          // if absent. Runner currently emits ActionDetailEvent only (Phase 6
-          // D-05 — NarrationEvent removed), so this MUST create rows on
-          // first action_detail arrival.
+          // Locate the narration row for `step`, creating a stub row if absent.
+          // handleActionDetail and handleThought both call this so they
+          // converge on the same row regardless of arrival order.
           const feed = document.getElementById('narration-feed');
           if (!feed) return null;
           let row = feed.querySelector('[data-step="' + step + '"]');
@@ -427,19 +422,13 @@
         },
 
         handleActionDetail($event) {
-          // Phase 9 D-09..D-12: action badge as first child of the narration row.
-          // Also append a .narration-text description after the step number so
-          // the user sees what was clicked / typed / navigated — not just the
-          // category badge (Phase 6 success criterion: "richer action labels
-          // showing action type + target element").
-          // Each insertion is idempotent: re-firing the same step's event
-          // does not duplicate the badge or the description.
+          // Single producer of narration rows: builds the row via
+          // _ensureNarrationRow, prepends the action-type badge, and appends
+          // a .narration-text description after the step number. Both
+          // insertions are idempotent so re-firing the same step's event
+          // doesn't duplicate either child.
           const d = JSON.parse($event.detail.data);
           const row = this._ensureNarrationRow(d.step);
-          if (!row) {
-            this._pendingAction[d.step] = d.action_type;
-            return;
-          }
           const first = row.firstChild;
           const alreadyBadged = first && first.className && first.className.indexOf('action-badge-') === 0;
           if (!alreadyBadged) {
@@ -459,38 +448,6 @@
                 row.appendChild(text);
               }
             }
-          }
-        },
-
-        handleNarration($event) {
-          // Phase 6 D-05: runner.py no longer emits NarrationEvent — this
-          // handler remains as a defensive fallback if future emitters return.
-          const d = JSON.parse($event.detail.data);
-          const feed = document.getElementById('narration-feed');
-          if (!feed) return;
-          // Create DOM nodes via createElement+textContent — never innerHTML (T-03-02)
-          const row = document.createElement('div');
-          row.className = 'narration-row';
-          row.dataset.step = d.step;  // Phase 9 D-11: data-step for badge race lookup
-          const stepSpan = document.createElement('span');
-          stepSpan.className = 'step-num';
-          stepSpan.textContent = d.step;
-          const textSpan = document.createElement('span');
-          textSpan.className = 'narration-text';
-          textSpan.textContent = d.text;
-          const tsSpan = document.createElement('span');
-          tsSpan.className = 'timestamp';
-          tsSpan.textContent = d.timestamp ? d.timestamp.substring(11, 19) : '';
-          row.appendChild(stepSpan);
-          row.appendChild(textSpan);
-          row.appendChild(tsSpan);
-          feed.appendChild(row);
-          feed.scrollTop = feed.scrollHeight;
-          // Phase 9 D-11: drain any action_detail that arrived before this row existed.
-          if (this._pendingAction[d.step]) {
-            const badge = this._buildActionBadge(this._pendingAction[d.step]);
-            row.insertBefore(badge, row.firstChild);
-            delete this._pendingAction[d.step];
           }
         },
 

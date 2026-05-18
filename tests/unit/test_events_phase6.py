@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.events import ThoughtEvent, ActionDetailEvent, NarrationEvent, StateEvent
+from agent.events import ThoughtEvent, ActionDetailEvent, StateEvent
 
 
 # ---------------------------------------------------------------------------
@@ -707,53 +707,6 @@ async def test_action_detail_success_is_none_midrun(training_dir, monkeypatch_en
     assert action_events[0].success is None, (
         f"ActionDetailEvent.success must be None for mid-run steps; "
         f"got {action_events[0].success!r}"
-    )
-
-
-async def test_narration_event_removed_from_log_step(training_dir, monkeypatch_env):
-    """After Plan 02 wiring, zero NarrationEvent instances must appear in the queue.
-
-    D-05: NarrationEvent is fully replaced by ActionDetailEvent in _log_step.
-    ActionDetailEvent is strictly richer; keeping both would create duplicate
-    step counter events with no consumer.
-
-    NOTE: This test conflicts with Phase 5 tests that assert NarrationEvent presence.
-    That conflict is resolved in Plan 02 Task 4 (Phase 5 test updates).
-
-    TRANS-03: ActionDetailEvent replaces NarrationEvent.
-    """
-    from agent.runner import run_agent
-
-    queue: asyncio.Queue = asyncio.Queue()
-    fake_agent = _make_fake_agent_history()
-
-    class FakeAgentClass:
-        def __init__(self, **kwargs):
-            self._fake = fake_agent
-
-        async def run(self, max_steps, on_step_end):
-            await on_step_end(self._fake)
-            result = MagicMock()
-            result.final_result.return_value = "done"
-            return result
-
-    mock_browser = MagicMock()
-    mock_browser.kill = AsyncMock()
-
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
-        await run_agent("test task", queue=queue)
-
-    events = []
-    while not queue.empty():
-        events.append(queue.get_nowait())
-
-    narration_events = [e for e in events if isinstance(e, NarrationEvent)]
-    assert len(narration_events) == 0, (
-        f"Expected zero NarrationEvent after D-05 replacement; "
-        f"got {len(narration_events)}: {narration_events}"
     )
 
 

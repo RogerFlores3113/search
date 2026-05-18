@@ -575,7 +575,6 @@ async def run_agent(
                 value = params.get("text") or params.get("query") or params.get("keys") or None
                 url = params.get("url") or None
                 target_label = _extract_target_label(last_action.get("interacted_element"))
-                # ActionDetailEvent replaces NarrationEvent (D-05)
                 _put_nowait(queue, ActionDetailEvent(
                     step=step_idx + 1,
                     action_type=action_type,

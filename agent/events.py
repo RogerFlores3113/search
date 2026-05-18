@@ -11,15 +11,6 @@ class ScreenshotEvent:
 
 
 @dataclass
-class NarrationEvent:
-    type: Literal["narration"] = "narration"
-    step: int = 0
-    text: str = ""
-    timestamp: str = ""
-    step_duration_ms: int = 0
-
-
-@dataclass
 class StateEvent:
     type: Literal["state"] = "state"
     state: str = "idle"  # idle | running | paused | complete | error

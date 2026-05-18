@@ -72,15 +72,14 @@ def _make_fake_agent_instance():
 # ---------------------------------------------------------------------------
 
 def test_event_dataclasses_have_type_discriminant():
-    """Each of the 7 event classes must carry the correct type literal field."""
+    """Each event class must carry the correct type literal field."""
     from agent.events import (
-        ScreenshotEvent, NarrationEvent, StateEvent,
+        ScreenshotEvent, StateEvent,
         ProgressEvent, SummaryEvent, ErrorEvent, DoneEvent,
     )
     import dataclasses
 
     assert dataclasses.is_dataclass(ScreenshotEvent)
-    assert dataclasses.is_dataclass(NarrationEvent)
     assert dataclasses.is_dataclass(StateEvent)
     assert dataclasses.is_dataclass(ProgressEvent)
     assert dataclasses.is_dataclass(SummaryEvent)
@@ -88,12 +87,25 @@ def test_event_dataclasses_have_type_discriminant():
     assert dataclasses.is_dataclass(DoneEvent)
 
     assert ScreenshotEvent().type == "screenshot"
-    assert NarrationEvent().type == "narration"
     assert StateEvent().type == "state"
     assert ProgressEvent().type == "progress"
     assert SummaryEvent().type == "summary"
     assert ErrorEvent().type == "error_msg"
     assert DoneEvent().type == "done"
+
+
+def test_narration_event_removed():
+    """Regression guard for Issue #7: NarrationEvent must not be re-introduced.
+    The runner emits ActionDetailEvent + ThoughtEvent + ProgressEvent now;
+    bringing back a third per-step text event would re-create the dual
+    row-builder divergence we deleted.
+    """
+    import agent.events
+    assert not hasattr(agent.events, "NarrationEvent"), (
+        "NarrationEvent was removed in Issue #7. Re-introducing it splits "
+        "narration-row construction across two code paths — use "
+        "ActionDetailEvent (+ optionally extend it) instead."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1058,8 +1070,13 @@ async def test_get_index_contains_alpine_handlers():
 
     body = resp.text
     for handler in ("handleScreenshot", "handleProgress", "handleSummary",
-                    "handleError", "handleNarration", "handleState"):
+                    "handleError", "handleState", "handleActionDetail",
+                    "handleThought", "handleToken", "handleModelInfo"):
         assert handler in body, f"Missing Alpine handler: {handler}"
+    assert "handleNarration" not in body, (
+        "handleNarration was removed in Issue #7 — the row builder is now "
+        "_ensureNarrationRow + handleActionDetail. See agent/templates/index.html."
+    )
 
 
 async def test_sse_bridges_use_data_bridge_not_hx_on():
@@ -1081,14 +1098,21 @@ async def test_sse_bridges_use_data_bridge_not_hx_on():
     )
     for swap_name, handler in (
         ("state", "handleState"),
-        ("narration", "handleNarration"),
         ("summary", "handleSummary"),
         ("error_msg", "handleError"),
         ("screenshot", "handleScreenshot"),
         ("progress", "handleProgress"),
+        ("token", "handleToken"),
+        ("model_info", "handleModelInfo"),
+        ("thought", "handleThought"),
+        ("action_detail", "handleActionDetail"),
     ):
         assert f'sse-swap="{swap_name}"' in body, f"Missing sse-swap bridge for {swap_name}"
         assert f'data-bridge="{handler}"' in body, f"Missing data-bridge for {handler}"
+    # Regression guard for Issue #7: the dead narration bridge stays out.
+    assert 'sse-swap="narration"' not in body, (
+        "narration sse-swap was removed in Issue #7"
+    )
     assert "addEventListener('htmx:sseMessage'" in body, (
         "Expected init() to attach handlers via addEventListener('htmx:sseMessage', ...)"
     )
