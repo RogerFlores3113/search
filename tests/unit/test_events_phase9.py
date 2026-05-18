@@ -313,6 +313,46 @@ def test_new_sse_bridges_inside_container():
 
 
 # ===========================================================================
+# Phase 6 success criterion: richer action labels — action_type + target/value
+# (Issue #3 — ActionDetailEvent carries the data but UI rendered badge only)
+# ===========================================================================
+
+
+def test_handle_action_detail_renders_description():
+    """handleActionDetail must compose a description from the event payload
+    (target / value / url) and append a `.narration-text` span — without this
+    the user sees only the badge + step number with no signal as to WHAT
+    was clicked, navigated to, or typed.
+    """
+    html = Path("agent/templates/index.html").read_text()
+    assert "_buildActionDescription" in html, (
+        "index.html must declare a _buildActionDescription helper"
+    )
+    assert "narration-text" in html, (
+        "handleActionDetail must append a .narration-text span to the row"
+    )
+
+
+def test_action_description_covers_each_action_type():
+    """Each action_type maps to a description that surfaces the payload
+    field carrying the user signal: navigate→url, click→target, type→value,
+    scroll→value.
+    """
+    html = Path("agent/templates/index.html").read_text()
+    for needed in (
+        "Navigating to ",
+        "Clicking element #",
+        "Typing",
+        "Scrolling",
+        "Extracting page content",
+        "Finished",
+    ):
+        assert needed in html, (
+            f"_buildActionDescription must produce {needed!r} for the corresponding action_type"
+        )
+
+
+# ===========================================================================
 # UI-01 / UI-02: action-badge palette + summary marker reset (D-12, D-14)
 # ===========================================================================
 

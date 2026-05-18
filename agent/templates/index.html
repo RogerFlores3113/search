@@ -341,6 +341,27 @@
           return badge;
         },
 
+        _buildActionDescription(d) {
+          // Compose a human-readable description from the ActionDetailEvent
+          // payload — the badge alone tells the user the category (CLICK),
+          // this gives them the specifics (which URL, which element index,
+          // what text was typed). Returns '' when there is no useful detail
+          // and the caller should skip appending.
+          const t = (d.action_type || '').toLowerCase();
+          if (t === 'navigate') return d.url ? 'Navigating to ' + d.url : 'Navigating';
+          if (t === 'click')    return d.target ? 'Clicking element #' + d.target : 'Clicking';
+          if (t === 'type') {
+            if (d.value && d.target) return 'Typing "' + d.value + '" into element #' + d.target;
+            if (d.value)             return 'Typing "' + d.value + '"';
+            if (d.target)            return 'Typing into element #' + d.target;
+            return 'Typing';
+          }
+          if (t === 'scroll')   return d.value ? 'Scrolling ' + d.value : 'Scrolling';
+          if (t === 'extract')  return 'Extracting page content';
+          if (t === 'done')     return 'Finished';
+          return t;
+        },
+
         handleThought($event) {
           // Phase 9 D-05..D-08: native <details><summary>Model thought</summary>
           // collapsed by default, omit when all of thinking / evaluation_previous_goal
@@ -386,22 +407,38 @@
 
         handleActionDetail($event) {
           // Phase 9 D-09..D-12: action badge as first child of the narration row.
-          // If row absent, stash for handleNarration to drain (D-11 race);
-          // because runner.py emits ActionDetailEvent only (Phase 6 D-05),
-          // _ensureNarrationRow creates a stub row eagerly.
+          // Also append a .narration-text description after the step number so
+          // the user sees what was clicked / typed / navigated — not just the
+          // category badge (Phase 6 success criterion: "richer action labels
+          // showing action type + target element").
+          // Each insertion is idempotent: re-firing the same step's event
+          // does not duplicate the badge or the description.
           const d = JSON.parse($event.detail.data);
           const row = this._ensureNarrationRow(d.step);
           if (!row) {
             this._pendingAction[d.step] = d.action_type;
             return;
           }
-          // Skip if badge already first child.
           const first = row.firstChild;
-          if (first && first.className && first.className.indexOf('action-badge-') === 0) {
-            return;
+          const alreadyBadged = first && first.className && first.className.indexOf('action-badge-') === 0;
+          if (!alreadyBadged) {
+            const badge = this._buildActionBadge(d.action_type);
+            row.insertBefore(badge, row.firstChild);
           }
-          const badge = this._buildActionBadge(d.action_type);
-          row.insertBefore(badge, row.firstChild);
+          if (!row.querySelector('.narration-text')) {
+            const desc = this._buildActionDescription(d);
+            if (desc) {
+              const text = document.createElement('span');
+              text.className = 'narration-text';
+              text.textContent = desc;
+              const stepSpan = row.querySelector('.step-num');
+              if (stepSpan) {
+                stepSpan.insertAdjacentElement('afterend', text);
+              } else {
+                row.appendChild(text);
+              }
+            }
+          }
         },
 
         handleNarration($event) {
