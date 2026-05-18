@@ -1262,13 +1262,13 @@ dependencies = [
     { name = "httpx" },
     { name = "itsdangerous" },
     { name = "litellm" },
+    { name = "platformdirs" },
     { name = "pydantic-settings" },
     { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "platformdirs" },
     { name = "pyinstaller" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1283,13 +1283,13 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
     { name = "litellm", specifier = ">=1.83.0" },
+    { name = "platformdirs", specifier = ">=4.9.6" },
     { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "platformdirs", specifier = ">=4.9.6" },
     { name = "pyinstaller", specifier = "==6.20.0" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
