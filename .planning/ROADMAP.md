@@ -26,7 +26,7 @@ See archive: `.planning/milestones/v0.1.0-ROADMAP.md`
 - [x] **Phase 5: Token Counting + Timing** (2/2 plans) — completed 2026-05-17
 - [x] **Phase 6: Model Transparency** (2/2 plans) — completed 2026-05-17
 - [ ] **Phase 7: Screenshot Streaming** - Replace step-completion screenshots with a background 500ms capture loop; eliminate delivery lag with bounded queue and graceful teardown
-- [ ] **Phase 8: Training Data Enrichment** - Extend JSONL records with all Phase 5-6 fields, add run/step quality gates, and build the LoRA training scaffold (converter + two training scripts)
+- [x] **Phase 8: Training Data Enrichment** - Extend JSONL records with all Phase 5-6 fields, add run/step quality gates, and build the LoRA training scaffold (converter + two training scripts)
 - [ ] **Phase 9: Frontend Polish** - Wire all new SSE events to the web UI: token/cost ticker, collapsible thought blocks, action type badges, expandable run history
 
 ## Phase Details
@@ -84,7 +84,7 @@ See archive: `.planning/milestones/v0.1.0-ROADMAP.md`
   6. `training/train_apple.py` targets the 3B model variant on Apple Silicon and auto-selects the mlx-vlm path
 **Plans:** 2 plans
 - [x] 08-01-PLAN.md — Author Phase 8 RED test suite (TRAIN-01..06 + CR-01/CR-02 regressions) and create training/__init__.py
-- [ ] 08-02-PLAN.md — Wire enriched JSONL + run_success back-fill + CR-01/CR-02 in agent/runner.py; implement training/converter.py + train_nvidia.py + train_apple.py; turn the RED suite GREEN
+- [x] 08-02-PLAN.md — Wire enriched JSONL + run_success back-fill + CR-01/CR-02 in agent/runner.py; implement training/converter.py + train_nvidia.py + train_apple.py; turn the RED suite GREEN
 
 ### Phase 9: Frontend Polish
 **Goal**: All new SSE events are wired to observable UI elements — users see token counts, cost totals, collapsible thought blocks, action type badges, and expandable run history rows without page reloads
@@ -96,7 +96,9 @@ See archive: `.planning/milestones/v0.1.0-ROADMAP.md`
   3. Each narration entry shows a color-coded action type badge (navigate=blue, click=green, type=yellow, scroll=gray) applied via CSS class
   4. Run history rows expand to show step count, total duration, total cost, and model used for that run
   5. Screenshot JPEG blobs use `URL.createObjectURL` + `revokeObjectURL` via Alpine.js — no base64 string accumulation in the DOM
-**Plans**: TBD
+**Plans:** 2 plans
+- [x] 09-01-PLAN.md — Author Phase 9 RED test suite (16 tests covering PERF-03/UI-01/UI-02 + Blob lifecycle); optional `jsonl_with_records` conftest fixture
+- [x] 09-02-PLAN.md — Wire /runs aggregator + CSS rules + runs_fragment <details> wrap + index.html SSE bridges/handlers/header ticker/Blob screenshot rewrite; turn the RED suite GREEN
 **UI hint**: yes
 
 ## Progress
@@ -111,4 +113,5 @@ See archive: `.planning/milestones/v0.1.0-ROADMAP.md`
 | 6. Model Transparency | v0.2.0 | 0/2 | Not started | — |
 | 7. Screenshot Streaming | v0.2.0 | 0/2 | Not started | — |
 | 8. Training Data Enrichment | v0.2.0 | 0/2 | Not started | — |
-| 9. Frontend Polish | v0.2.0 | 0/? | Not started | — |
+| 9. Frontend Polish | v0.2.0 | 0/2 | Not started | — |
+</content>
