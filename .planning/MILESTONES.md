@@ -1,5 +1,25 @@
 # Milestones: local-browser-agent
 
+## v0.2.0 Foundations (Shipped: 2026-05-18)
+
+**Phases completed:** 6 phases, 12 plans, 16 tasks
+
+**Key accomplishments:**
+
+- One-liner:
+- One-liner:
+- One-liner:
+- One-liner:
+- Patch targets (all 12 tests use this stack):
+- Background _screenshot_loop delivering continuous JPEG frames via SSE; _log_step ScreenshotEvent emission removed; all 12 Phase 7 RED tests now GREEN
+- [Rule 1 - Bug] CR-01 and CR-02 fixes were already present in agent/runner.py
+- `agent/runner.py`
+- Question:
+- One-liner:
+- One-liner:
+
+---
+
 ---
 
 ## v0.1.0 MVP — Shipped 2026-05-16
@@ -19,10 +39,12 @@
 6. Double-click Mac .app distribution: PyInstaller bundle with frozen path redirection (platformdirs), Chrome detection + no-chrome fallback, browser auto-open, one-time disclaimer modal; GitHub Actions tag-triggered release pipeline with ad-hoc codesign
 
 ### Requirements
+
 - v1 requirements: **35/35 complete**
 - Known gaps at close: none (traceability table was stale during execution, corrected at archive)
 
 ### Archived
+
 - `.planning/milestones/v0.1.0-ROADMAP.md`
 - `.planning/milestones/v0.1.0-REQUIREMENTS.md`
 

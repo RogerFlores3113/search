@@ -23,61 +23,34 @@ User types any natural language task, the agent opens Chrome and completes it �
 - ✓ Mac .app distribution: double-click launch, no dependencies, drives user's Chrome — v0.1.0
 - ✓ Safety disclaimer on first launch (Alpine.js + localStorage gate) — v0.1.0
 - ✓ GitHub Actions release pipeline: tag push → build → codesign → GitHub Releases — v0.1.0
-- ✓ Per-step latency timing + token counting + cost estimation (PERF-01, PERF-02, PERF-04) — Phase 5 (step_duration_ms wired to ActionDetailEvent in Phase 9.1)
-- ✓ ThoughtEvent + ActionDetailEvent SSE events via register_new_step_callback (TRANS-01, TRANS-02, TRANS-03) — Phase 6
-- ✓ Continuous JPEG screenshot streaming via background asyncio task, queue bounded at maxsize=50 (SCR-01, SCR-02) — Phase 7
+- ✓ Per-step latency timing: `step_duration_ms` wired through `_log_step` → `ActionDetailEvent` (PERF-01) — v0.2.0
+- ✓ Token counting + cost estimation per step: `TokenEvent` SSE, `prompt_tokens`/`completion_tokens`/`cost_usd` (PERF-02, PERF-04) — v0.2.0
+- ✓ ThoughtEvent + ActionDetailEvent SSE events via `register_new_step_callback` (TRANS-01, TRANS-02, TRANS-03) — v0.2.0
+- ✓ Continuous JPEG screenshot streaming via background asyncio task, queue bounded at maxsize=50 (SCR-01, SCR-02) — v0.2.0
+- ✓ Enriched training JSONL: step_duration_ms, tokens, cost, model_thought, provider, model_name, run_success, step_quality (TRAIN-01–03) — v0.2.0
+- ✓ LoRA training scaffold: converter.py + train_nvidia.py (QLoRA 4-bit auto) + train_apple.py (mlx-vlm 3B) (TRAIN-04–06) — v0.2.0
+- ✓ Frontend polish: token/cost ticker, action badges, collapsible thought blocks, expandable run history, Blob screenshot lifecycle (PERF-03, UI-01, UI-02) — v0.2.0 (visual rendering deferred to v0.3.0 refactor)
 
-## Current Milestone: v0.2.0 Foundations
+### Active (v0.3.0)
 
-**Goal:** Harden the core loop — instrument performance, surface model transparency, fix screenshot lag, and build the training data pipeline before expanding features.
-
-**Target features:**
-- Per-step latency instrumentation + token counting + cost estimation
-- Surface LLM thought text and richer action labels in the UI
-- Near real-time screenshot streaming (background capture loop + lag fix)
-- Training data capture for API providers (Claude/OpenAI) — enriched JSONL with thought, tokens, cost, duration
-- LoRA training scaffold: data converter + unsloth training script ready to run
-- Frontend polish: action type badges, expandable run history with cost/duration
-
-### Active (v0.2.0)
-
-- [x] Per-step latency timing (PERF-01) — Phase 5
-- [x] Token counting + cost estimation per run (PERF-02) — Phase 5
-- [ ] UI: step timer, token/cost ticker display (PERF-03)
-- [x] Surface LLM thought text in narration feed (TRANS-01) — Phase 6
-- [x] Richer action labels: target, value summary, result indicator (TRANS-02) — Phase 6
-- [x] Step counter + current goal display (TRANS-03) — Phase 6
-- [x] Background screenshot capture loop (~500ms during action) (SCR-01) — Phase 7
-- [x] Fix screenshot queue backpressure / delivery lag (SCR-02) — Phase 7
-- [ ] Enriched JSONL: step_duration_ms, tokens_used, cost_usd, model_thought, provider, model_name (TRAIN-01)
-- [ ] API-provider-only capture mode (Claude/OpenAI; skip Ollama) (TRAIN-02)
-- [ ] LoRA scaffold: JSONL → training format converter + unsloth training script (TRAIN-03)
-- [ ] Narration feed: action type color badges + result indicators (UI-01)
-- [ ] Run history: expandable detail (step count, cost, duration) (UI-02)
-
-### Deferred (post-v0.2.0)
-
+- [ ] Visual UI refactor: confirm per-step "X.Xs" duration renders, fix any rendering gaps from v0.2.0 (PERF-01 visual, PERF-03 visual, UI-01 visual, UI-02 visual)
 - [ ] Windows .exe distribution — GitHub Actions scaffold exists; macOS is the validated path
 - [ ] Full Apple notarization (vs ad-hoc codesign) — required for Gatekeeper auto-pass on all Macs
 - [ ] Manual smoke test verification — requires human with Chrome + Ollama to verify 5 live scenarios
 - [ ] Structured task presets: apartment, job, lead search
-- [ ] Authenticated sessions: saved credential sets, session cookie persistence
-- [ ] Excel/CSV export of structured run results
-- [ ] LoRA training run + evaluation (v0.3.0 — needs 1,000+ quality steps and benchmark suite)
+- [ ] LoRA training run + evaluation (needs 1,000+ quality steps and benchmark suite)
 
 ### Out of Scope
 
-- Cloud deployment — datacenter IPs get blocked by apartment/job sites; residential IP is a functional requirement, not just a privacy preference
+- Cloud deployment — datacenter IPs get blocked by apartment/job/lead sites; residential IP is a functional requirement, not just a privacy preference
 - Electron wrapper — adds complexity; localhost UI in the system browser is sufficient
 - Headless browser — the app uses the user's real Chrome (headed), which avoids bot detection and is the better UX; headless mode not needed
 - Authenticated sessions (login, saved credentials) in v1 — apartment search is unauthenticated; credential management is a dedicated v2 feature requiring secure storage design
-- Using the user's existing browser — too risky; could corrupt active sessions; agent runs its own isolated Chromium instance
+- Using the user's existing browser — too risky; could corrupt active sessions; agent runs its own isolated Chrome instance
 - CAPTCHA solving — not a v1 concern; log and surface to user when encountered
 - Multi-user or shared sessions — local single-user tool
-- Per-domain scrapers / regex selectors — obsolete; LLM vision handles arbitrary domains; building per-domain logic is regressing to pre-LLM tooling
-- Structured task presets in v1 — apartment/job/lead presets are v2, layered on top of the proven general loop
+- Per-domain scrapers / regex selectors — obsolete; LLM vision handles arbitrary domains
 - Fast path (httpx) in v1 — v2 performance optimization once the general agent loop is solid
-- Training data pipeline in v1 — session (screenshot, action) pairs are a stretch goal; log them but no LoRA tooling yet
 - Voice dictation in v1 — nice-to-have for search input, deferred to v2
 
 ## Context
@@ -92,30 +65,17 @@ User types any natural language task, the agent opens Chrome and completes it �
 
 **Why local-first:** Residential IP avoids datacenter IP blocks on apartment/job/lead sites. Cloud deployment was evaluated and abandoned for this reason. The browser runs on the user's machine from their IP.
 
-**Research direction:** Validate browser-use as the loop engine (vs Stagehand, vs raw Playwright + custom loop). Confirm LiteLLM covers Ollama + vision models. Identify the right localhost UI pattern for live streaming (research agents to decide between FastAPI+HTMX+SSE vs FastAPI+React/Vite). Flag pitfalls with visible-browser agentic loops at consumer scale.
+**v0.1.0 shipped 2026-05-16.** 4 phases, 10 plans, 68 commits, 4 days. 7,120 lines Python (source + tests). Core loop, UI, distribution all validated.
 
-## Constraints
+**v0.2.0 shipped 2026-05-18.** 6 phases (05–09.1), 12 plans, 73 commits, 5 days. 32 files changed, 5,814 insertions. Backend instrumentation (timing, tokens, thoughts, screenshots, training data) complete. Visual rendering of several UI features deferred to v0.3.0 visual refactor.
 
-- **Tech stack**: Python — browser-use, LiteLLM, Playwright are all Python; no reason to deviate
-- **Distribution**: Bundled native app — `.app` (Mac) and `.exe` (Windows) via PyInstaller or Briefcase. Double-click to launch, zero dependencies for end users. Built and published via GitHub Actions → GitHub Releases. Developer workflow uses `uv`.
-- **Browser**: User's installed Google Chrome via `playwright.chromium.launch(channel="chrome")`. No Chromium download bundled. Headed (visible), residential IP, real browser fingerprint — not flagged as bot. Fallback: friendly prompt to install Chrome if not found.
-- **Performance**: Minimize overhead — running Playwright + an LLM is already CPU/RAM intensive; UI must be lightweight
-- **Security**: No cloud component; user's API keys stay local; no data leaves the machine except LLM API calls
-- **Scope**: v1 is the general-purpose loop — prove it works on any site before building structured presets
+**Stack confirmed:** browser-use 0.12.6 + cdp-use, FastAPI + HTMX + SSE, PyInstaller for .app, LiteLLM >=1.83.0 hard-pinned. asyncio.Queue as agent-to-SSE bridge is the core architecture.
 
-## Context
-
-**v0.1.0 shipped 2026-05-16.** 4 phases, 10 plans, 68 commits, 4 days. 7,120 lines Python (source + tests). 35/35 v1 requirements complete.
-
-**Stack confirmed:** browser-use 0.12.6 + cdp-use (replaces Playwright in distribution), FastAPI + HTMX + SSE, PyInstaller for .app. LiteLLM >=1.83.0 hard-pinned (supply chain backdoor neutralized).
-
-**Validated learnings:**
-- browser-use is the right loop engine — Stagehand is TypeScript-only; raw Playwright would be months of custom loop work
-- asyncio.Queue as SSE bridge is sound — decouples agent from HTTP layer cleanly
-- PyInstaller .app works — cdp-use (not Playwright) is the bundled browser driver; Playwright cannot bundle cleanly
-- Ad-hoc codesign is sufficient for v1 distribution; Apple notarization is v2
-
-**Next milestone focus:** Windows distribution, full notarization, manual smoke test sign-off, and first structured preset (apartment search).
+**Known technical debt entering v0.3.0:**
+- CR-01: `step_start` timer in runner.py fires before pre_flight_check — inflates first-step duration
+- CR-01/CR-02 from Phase 6 REVIEW: history variable shadow + keys()[0] in log_step
+- Visual rendering gaps: `.timestamp` span not visually confirmed; token/cost ticker, action badges, thought blocks, run history expansion may have display issues
+- test_events_phase8.py: 3 pre-existing failures (test_jsonl_enriched_fields_anthropic, test_provider_gate_openai_populates_fields, test_thoughts_accumulator_key_alignment)
 
 ## Key Decisions
 
@@ -128,8 +88,10 @@ User types any natural language task, the agent opens Chrome and completes it �
 | FastAPI + HTMX + SSE for UI | Zero build step, 30-40KB JS, EventSourceResponse native in FastAPI | ✓ Good — worked cleanly; live screenshot + narration stream both implemented |
 | asyncio.Queue as agent-to-SSE bridge | Decouples agent callbacks from HTTP layer; single event loop | ✓ Good — critical architecture that enabled clean pause/stop without threading hacks |
 | PyInstaller for .app distribution | Consumer target — zero dependencies, double-click launch | ✓ Good — cdp-use is bundled driver (not Playwright); ad-hoc codesign works |
-| macOS first for v1 distribution | Smallest blast radius for validating PyInstaller + codesign + CI pipeline | ✓ Good — Windows CI scaffold exists for v0.2.0 |
+| macOS first for v1 distribution | Smallest blast radius for validating PyInstaller + codesign + CI pipeline | ✓ Good — Windows CI scaffold exists for v0.3.0 |
 | litellm>=1.83.0 hard pin | Supply chain backdoor in 1.82.7/1.82.8 | ✓ Good — neutralized from day 1 |
+| TDD for v0.2.0 phases | RED test suite per phase ensures Nyquist coverage before implementation | ✓ Good — caught regressions in Phase 5/6 test updates; RED gate discipline held |
+| Defer visual rendering to v0.3.0 | UI backend wiring complete; rendering gaps found in UAT; refactoring UI is cleaner work than patching per-feature | ✓ Pragmatic — backend is solid; v0.3.0 visual refactor is a single focused effort |
 
 ## Evolution
 
@@ -149,4 +111,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-17 — Phase 6 complete: ThoughtEvent + ActionDetailEvent wired, 133 tests GREEN*
+*Last updated: 2026-05-18 after v0.2.0 Foundations milestone*
