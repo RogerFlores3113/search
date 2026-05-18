@@ -31,6 +31,13 @@ def _resource_path(relative: str) -> str:
     """
     if getattr(sys, "frozen", False):
         return str(Path(sys._MEIPASS) / relative)
+    # Dev mode: resolve relative to the project root (parent of the agent
+    # package) so callers that chdir away (e.g., pytest tmp_path fixtures)
+    # still find bundled resources like agent/templates and agent/static.
+    project_root = Path(__file__).resolve().parent.parent
+    candidate = project_root / relative
+    if candidate.exists():
+        return str(candidate)
     return relative
 
 

@@ -2,9 +2,19 @@
 <ul class="run-history-list">
   {% for run in runs %}
   <li class="run-history-item">
-    <span class="run-history-task">{{ run.task[:60] }}</span>
-    <span class="badge badge-{{ run.status | replace('complete','green') | replace('error','red') | replace('stopped','gray') }}">{{ run.status }}</span>
-    <time class="run-history-time" datetime="{{ run.started_at }}">{{ run.started_at }}</time>
+    <details>
+      <summary>
+        <span class="run-history-task">{{ run.task[:60] }}</span>
+        <span class="badge badge-{{ run.status | replace('complete','green') | replace('error','red') | replace('stopped','gray') }}">{{ run.status }}</span>
+        <time class="run-history-time" datetime="{{ run.started_at }}">{{ run.started_at }}</time>
+      </summary>
+      {% set _step_count = run.get('step_count', 0) %}
+      {% set _duration_s = run.get('total_duration_s', 0) %}
+      {% set _cost = run.get('total_cost_usd', none) %}
+      {% set _model = run.get('model_name', none) %}
+      {% set _provider = run.get('provider', none) %}
+      <div class="run-history-detail">{% if _step_count %}{{ _step_count }} steps{% else %}—{% endif %} · {% if _duration_s %}{{ _duration_s }}s{% else %}—{% endif %} · {% if _provider == 'ollama' %}local (no API cost){% elif _cost is not none %}~${{ '%.2f' % _cost }}{% else %}—{% endif %}{% if _model %} · {{ _model }}{% endif %}</div>
+    </details>
   </li>
   {% endfor %}
 </ul>
