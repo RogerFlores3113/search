@@ -74,7 +74,15 @@ def test_training_file_uses_user_data_dir_when_frozen(tmp_path, monkeypatch):
 
 
 def test_resource_path_helper_uses_meipass_when_frozen(monkeypatch):
-    """_resource_path returns sys._MEIPASS / relative when frozen; returns relative string otherwise."""
+    """_resource_path returns sys._MEIPASS / relative when frozen.
+
+    Dev mode (Phase 9 update): resolves the path against the project root
+    (parent of the `agent` package) so callers that chdir away from the
+    project root — e.g., pytest fixtures using tmp_path for the /runs
+    JSONL aggregator integration tests — still find bundled resources
+    like agent/templates and agent/static. Falls back to the raw relative
+    string when the candidate does not exist.
+    """
     fake_meipass = "/fake/meipass"
 
     # Test frozen branch
@@ -87,9 +95,15 @@ def test_resource_path_helper_uses_meipass_when_frozen(monkeypatch):
     result = main_mod._resource_path("agent/templates")
     assert result == str(Path(fake_meipass) / "agent/templates")
 
-    # Test dev branch
+    # Test dev branch — Phase 9: resolves against project root
     monkeypatch.delattr(sys, "frozen", raising=False)
     importlib.reload(main_mod)
 
     result_dev = main_mod._resource_path("agent/templates")
-    assert result_dev == "agent/templates"
+    project_root = Path(main_mod.__file__).resolve().parent.parent
+    expected_dev = str(project_root / "agent/templates")
+    assert result_dev == expected_dev
+
+    # Non-existent relative path falls back to the raw string
+    result_missing = main_mod._resource_path("definitely/not/here")
+    assert result_missing == "definitely/not/here"

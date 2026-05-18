@@ -47,19 +47,23 @@
     <!-- Main UI shell — always rendered but visually gated behind modal when disclaimer not accepted -->
     <div :style="disclaimerAccepted ? '' : 'pointer-events:none;filter:blur(4px)'">
 
-      <header class="app-header">local-browser-agent</header>
-
       <!--
         Outer SSE container — hx-ext="sse" activates HTMX SSE extension.
         sse-connect="/stream" opens the SSE connection.
         sse-close="done" tells HTMX to close the connection when event:done arrives.
         x-data="agentUI()" binds the Alpine reactive component.
+        Header is INSIDE this container so the ticker span shares agentUI state.
       -->
       <div id="sse-container"
            hx-ext="sse"
            sse-connect="/stream"
            sse-close="done"
            x-data="agentUI()">
+
+        <header class="app-header">
+          <span>local-browser-agent</span>
+          <span class="header-ticker" aria-live="polite" x-text="tickerText()"></span>
+        </header>
 
         <div class="layout">
 
@@ -151,12 +155,17 @@
               Each div listens to a specific SSE event type and dispatches to Alpine handlers.
               All SSE events carry JSON payload in event.detail.data (Plan 01 used data= not raw_data).
             -->
-            <div style="display:none" sse-swap="state"      data-bridge="handleState"></div>
-            <div style="display:none" sse-swap="narration"  data-bridge="handleNarration"></div>
-            <div style="display:none" sse-swap="summary"    data-bridge="handleSummary"></div>
-            <div style="display:none" sse-swap="error_msg"  data-bridge="handleError"></div>
-            <div style="display:none" sse-swap="screenshot" data-bridge="handleScreenshot"></div>
-            <div style="display:none" sse-swap="progress"   data-bridge="handleProgress"></div>
+            <div style="display:none" sse-swap="state"         data-bridge="handleState"></div>
+            <div style="display:none" sse-swap="narration"     data-bridge="handleNarration"></div>
+            <div style="display:none" sse-swap="summary"       data-bridge="handleSummary"></div>
+            <div style="display:none" sse-swap="error_msg"     data-bridge="handleError"></div>
+            <div style="display:none" sse-swap="screenshot"    data-bridge="handleScreenshot"></div>
+            <div style="display:none" sse-swap="progress"      data-bridge="handleProgress"></div>
+            <!-- Phase 9 D-22: four new bridges (token, model_info, thought, action_detail) -->
+            <div style="display:none" sse-swap="token"         data-bridge="handleToken"></div>
+            <div style="display:none" sse-swap="model_info"    data-bridge="handleModelInfo"></div>
+            <div style="display:none" sse-swap="thought"       data-bridge="handleThought"></div>
+            <div style="display:none" sse-swap="action_detail" data-bridge="handleActionDetail"></div>
 
           </div><!-- /right column -->
         </div><!-- /layout -->
@@ -188,6 +197,16 @@
         elapsed: 0,
         runStartedAt: null,
         _elapsedTimer: null,
+        // Phase 9 D-02: token/cost ticker + model state.
+        totalPromptTokens: 0,
+        totalCompletionTokens: 0,
+        totalCost: 0,
+        modelName: '',
+        provider: '',
+        isOllama: false,
+        // Phase 9 D-11: badge-race buffer for action_detail that arrives
+        // before the corresponding narration row exists.
+        _pendingAction: {},
 
         init() {
           // Wire SSE bridge elements to component methods. The bridges have
@@ -219,6 +238,12 @@
             // Clear results from the previous run so stale summary/error is not visible
             this.summary = '';
             this.errorMsg = '';
+            // Phase 9 D-02 / Pitfall 5: reset token+cost counters every run,
+            // do NOT gate on prior state.
+            this.totalPromptTokens = 0;
+            this.totalCompletionTokens = 0;
+            this.totalCost = 0;
+            this._pendingAction = {};
             if (this._elapsedTimer === null) {
               this.runStartedAt = Date.now();
               this.elapsed = 0;
@@ -233,15 +258,162 @@
               this._elapsedTimer = null;
             }
           }
+          // Phase 9 D-20: idle teardown — revoke the last blob URL so it is
+          // not retained after the run ends.
+          if (d.state === 'idle') {
+            const img = document.getElementById('screenshot-img');
+            if (img && img.src.startsWith('blob:')) {
+              URL.revokeObjectURL(img.src);
+              img.src = '';
+            }
+          }
+        },
+
+        tickerText() {
+          // Phase 9 D-01 / UI-SPEC § Token/Cost Ticker. Locked copy:
+          //   API:    "Model: {name} · in: {n} / out: {n} · ~$0.XX"
+          //   Ollama: "Model: {name} · local (no API cost)"
+          //   Idle:   "Model: —"
+          const name = this.modelName || '—';
+          let line = 'Model: ' + name;
+          if (!this.modelName) return line;
+          if (this.isOllama) {
+            line += ' · local (no API cost)';
+          } else {
+            line += ' · in: ' + this.totalPromptTokens
+                  + ' / out: ' + this.totalCompletionTokens
+                  + ' · ~$' + this.totalCost.toFixed(2);
+          }
+          return line;
+        },
+
+        handleToken($event) {
+          // Phase 9 D-22 / Phase 5/8 null semantics: `??` is defensive
+          // for the running sum; display gating is via isOllama.
+          const d = JSON.parse($event.detail.data);
+          this.totalPromptTokens += d.prompt_tokens ?? 0;
+          this.totalCompletionTokens += d.completion_tokens ?? 0;
+          this.totalCost += d.cost_usd ?? 0;
+        },
+
+        handleModelInfo($event) {
+          // Phase 9 D-22: once provider is known, isOllama gates ticker copy.
+          const d = JSON.parse($event.detail.data);
+          this.modelName = d.model_name || '';
+          this.provider = d.provider || '';
+          this.isOllama = (d.provider || '').toLowerCase() === 'ollama';
+        },
+
+        _ensureNarrationRow(step) {
+          // Helper: locate the narration row for `step`, creating a stub row
+          // if absent. Runner currently emits ActionDetailEvent only (Phase 6
+          // D-05 — NarrationEvent removed), so this MUST create rows on
+          // first action_detail arrival.
+          const feed = document.getElementById('narration-feed');
+          if (!feed) return null;
+          let row = feed.querySelector('[data-step="' + step + '"]');
+          if (row) return row;
+          row = document.createElement('div');
+          row.className = 'narration-row';
+          row.dataset.step = step;
+          const stepSpan = document.createElement('span');
+          stepSpan.className = 'step-num';
+          stepSpan.textContent = step;
+          row.appendChild(stepSpan);
+          feed.appendChild(row);
+          feed.scrollTop = feed.scrollHeight;
+          return row;
+        },
+
+        _buildActionBadge(actionType) {
+          // Phase 9 D-09..D-12: flat dict map + locked .action-badge-* classes.
+          const map = {
+            navigate: 'action-badge-navigate',
+            click:    'action-badge-click',
+            type:     'action-badge-type',
+            scroll:   'action-badge-scroll',
+            extract:  'action-badge-scroll',
+            done:     'action-badge-click',
+          };
+          const badge = document.createElement('span');
+          badge.className = map[actionType] || 'action-badge-scroll';
+          badge.textContent = (actionType || '').toLowerCase();
+          return badge;
+        },
+
+        handleThought($event) {
+          // Phase 9 D-05..D-08: native <details><summary>Model thought</summary>
+          // collapsed by default, omit when all of thinking / evaluation_previous_goal
+          // / next_goal are null/empty.
+          const d = JSON.parse($event.detail.data);
+          const allEmpty = !d.thinking && !d.evaluation_previous_goal && !d.next_goal;
+          if (allEmpty) return;
+          const row = this._ensureNarrationRow(d.step);
+          if (!row) return;
+          const details = document.createElement('details');
+          details.className = 'thought-details';
+          const summary = document.createElement('summary');
+          summary.textContent = 'Model thought';
+          details.appendChild(summary);
+          const body = document.createElement('div');
+          body.setAttribute('aria-hidden', 'true');
+          if (d.evaluation_previous_goal) {
+            const p = document.createElement('div');
+            p.textContent = 'Previous step: ' + d.evaluation_previous_goal;
+            body.appendChild(p);
+          }
+          if (d.next_goal) {
+            const p = document.createElement('div');
+            p.textContent = 'Next goal: ' + d.next_goal;
+            body.appendChild(p);
+          }
+          if (d.memory) {
+            const p = document.createElement('div');
+            p.textContent = 'Memory: ' + d.memory;
+            body.appendChild(p);
+          }
+          if (d.thinking) {
+            const pre = document.createElement('pre');
+            pre.textContent = d.thinking;
+            body.appendChild(pre);
+          }
+          details.appendChild(body);
+          details.addEventListener('toggle', () => {
+            body.setAttribute('aria-hidden', String(!details.open));
+          });
+          row.appendChild(details);
+        },
+
+        handleActionDetail($event) {
+          // Phase 9 D-09..D-12: action badge as first child of the narration row.
+          // If row absent, stash for handleNarration to drain (D-11 race);
+          // because runner.py emits ActionDetailEvent only (Phase 6 D-05),
+          // _ensureNarrationRow creates a stub row eagerly.
+          const d = JSON.parse($event.detail.data);
+          const row = this._ensureNarrationRow(d.step);
+          if (!row) {
+            this._pendingAction[d.step] = d.action_type;
+            return;
+          }
+          // Skip if badge already first child.
+          const first = row.firstChild;
+          if (first && first.className && first.className.indexOf('action-badge-') === 0) {
+            return;
+          }
+          const badge = this._buildActionBadge(d.action_type);
+          row.insertBefore(badge, row.firstChild);
         },
 
         handleNarration($event) {
+          // Phase 6 D-05: runner.py no longer emits NarrationEvent — this
+          // handler remains as a defensive fallback if future emitters return.
           const d = JSON.parse($event.detail.data);
           const feed = document.getElementById('narration-feed');
           if (!feed) return;
           // Create DOM nodes via createElement+textContent — never innerHTML (T-03-02)
           const row = document.createElement('div');
           row.className = 'narration-row';
+          row.dataset.step = d.step;  // Phase 9 D-11: data-step for badge race lookup
           const stepSpan = document.createElement('span');
           stepSpan.className = 'step-num';
           stepSpan.textContent = d.step;
@@ -256,6 +428,12 @@
           row.appendChild(tsSpan);
           feed.appendChild(row);
           feed.scrollTop = feed.scrollHeight;
+          // Phase 9 D-11: drain any action_detail that arrived before this row existed.
+          if (this._pendingAction[d.step]) {
+            const badge = this._buildActionBadge(this._pendingAction[d.step]);
+            row.insertBefore(badge, row.firstChild);
+            delete this._pendingAction[d.step];
+          }
         },
 
         handleSummary($event) {
@@ -270,14 +448,22 @@
         },
 
         handleScreenshot($event) {
+          // Phase 9 D-18..D-21: Blob lifecycle. Phase 7 emits JPEG q=75, so
+          // MIME is image/jpeg (NOT png). Assign-then-revoke ordering avoids
+          // the brief gap where img.src points at an already-revoked URL.
           const d = JSON.parse($event.detail.data);
-          if (d.b64) {
-            const img = document.getElementById('screenshot-img');
-            if (img) {
-              // Set img.src via property — not innerHTML (T-03-02)
-              img.src = 'data:image/png;base64,' + d.b64;
-            }
+          if (!d.b64) return;
+          const img = document.getElementById('screenshot-img');
+          if (!img) return;
+          const binary = atob(d.b64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
           }
+          const blob = new Blob([bytes], { type: 'image/jpeg' });
+          const previousUrl = img.src.startsWith('blob:') ? img.src : null;
+          img.src = URL.createObjectURL(blob);
+          if (previousUrl) URL.revokeObjectURL(previousUrl);
         },
 
         handleProgress($event) {
