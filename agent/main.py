@@ -146,13 +146,102 @@ async def stop_endpoint():
     return JSONResponse({"status": "stopped"})
 
 
+def _aggregate_run_metrics(run_ids: set[str]) -> dict[str, dict]:
+    """Aggregate per-run metrics from training/runs.jsonl (D-17, PERF-03).
+
+    Reads the JSONL file line-by-line. For each record whose `run_id` is in
+    `run_ids`, accumulates:
+      - step_count: incremented by 1 per record
+      - total_duration_s: sum of step_duration_ms, divided by 1000 at the end
+      - total_cost_usd: None if any matching record has cost_usd is None AND
+        provider == 'ollama'; otherwise sum of non-null cost_usd values
+      - model_name: last seen non-null
+      - provider:   last seen non-null
+
+    Returns {} if TRAINING_FILE does not exist.
+
+    Pure file I/O — safe to invoke from a worker thread via asyncio.to_thread
+    (Pitfall 3 — never block the event loop on JSONL reads).
+    """
+    # Resolve TRAINING_FILE lazily so test monkeypatches on agent.runner take effect.
+    from agent import runner as runner_mod
+    path = runner_mod.TRAINING_FILE
+    if not path.exists():
+        return {}
+
+    metrics: dict[str, dict] = {}
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            rid = record.get("run_id")
+            if rid not in run_ids:
+                continue
+            m = metrics.setdefault(rid, {
+                "step_count": 0,
+                "_duration_ms": 0,
+                "total_cost_usd": 0.0,
+                "_ollama_null_cost": False,
+                "model_name": None,
+                "provider": None,
+            })
+            m["step_count"] += 1
+            duration_ms = record.get("step_duration_ms") or 0
+            m["_duration_ms"] += int(duration_ms)
+            cost = record.get("cost_usd")
+            provider = record.get("provider")
+            if cost is None and (provider or "").lower() == "ollama":
+                m["_ollama_null_cost"] = True
+            elif cost is not None:
+                m["total_cost_usd"] += float(cost)
+            if provider is not None:
+                m["provider"] = provider
+            model = record.get("model_name")
+            if model is not None:
+                m["model_name"] = model
+
+    # Finalise: convert duration ms→s int, gate cost on Ollama null semantics.
+    out: dict[str, dict] = {}
+    for rid, m in metrics.items():
+        total_cost = None if m["_ollama_null_cost"] else m["total_cost_usd"]
+        out[rid] = {
+            "step_count": m["step_count"],
+            "total_duration_s": m["_duration_ms"] // 1000,
+            "total_cost_usd": total_cost,
+            "model_name": m["model_name"],
+            "provider": m["provider"],
+        }
+    return out
+
+
 @app.get("/runs")
 async def runs_endpoint(request: Request):
     """Return the last 10 run records as an HTML fragment.
 
-    Renders templates/runs_fragment.html with the run records list.
+    Enriches each DB row with JSONL-derived metrics (step_count,
+    total_duration_s, total_cost_usd, model_name, provider) via the
+    `_aggregate_run_metrics` helper. The aggregator runs in a worker thread
+    (D-17, Pitfall 3) so the event loop is not blocked on file I/O.
+
+    Renders templates/runs_fragment.html with the enriched run records.
     """
     runs = await history_db.list_runs(limit=10)
+    run_ids = {r["run_id"] for r in runs}
+    metrics = await asyncio.to_thread(_aggregate_run_metrics, run_ids)
+    defaults = {
+        "step_count": 0,
+        "total_duration_s": 0,
+        "total_cost_usd": None,
+        "model_name": None,
+        "provider": None,
+    }
+    for r in runs:
+        r.update(metrics.get(r["run_id"], defaults))
     return templates.TemplateResponse(
         request=request, name="runs_fragment.html", context={"runs": runs}
     )
