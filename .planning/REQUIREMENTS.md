@@ -7,7 +7,7 @@
 
 ## Performance & Observability
 
-- [ ] **PERF-01**: User sees per-step elapsed time next to each narration entry (e.g., "3.2s")
+- [x] **PERF-01**: User sees per-step elapsed time next to each narration entry (e.g., "3.2s")
 - [ ] **PERF-02**: User sees token counts per step (prompt / completion tokens) — API providers only; "N/A" displayed for Ollama
 - [ ] **PERF-03**: User sees cumulative cost for the run displayed as "~$0.04" — API providers only; "local (no API cost)" for Ollama
 - [ ] **PERF-04**: User sees active model name and provider displayed in the UI during a run
@@ -71,7 +71,7 @@
 
 | REQ-ID | Phase | Status |
 |--------|-------|--------|
-| PERF-01 | Phase 5 | Pending |
+| PERF-01 | Phase 5 | Complete |
 | PERF-02 | Phase 5 | Pending |
 | PERF-04 | Phase 5 | Pending |
 | TRANS-01 | Phase 6 | Pending |
