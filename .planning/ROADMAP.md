@@ -115,3 +115,14 @@ See archive: `.planning/milestones/v0.1.0-ROADMAP.md`
 | 8. Training Data Enrichment | v0.2.0 | 0/2 | Not started | — |
 | 9. Frontend Polish | v0.2.0 | 0/2 | Not started | — |
 </content>
+
+### Phase 09.1: Close gap: PERF-01 — wire step_duration_ms to ActionDetailEvent and narration UI (INSERTED)
+
+**Goal:** Wire `step_duration_ms` end-to-end from `_log_step` through `ActionDetailEvent` to the narration UI so each narration row displays per-step elapsed time (e.g., "3.2s") next to the action description.
+**Requirements**: PERF-01
+**Depends on:** Phase 9
+**Plans:** 2/2 plans complete
+
+Plans:
+- [x] 09.1-01-PLAN.md — Author Phase 9.1 RED test suite (3 tests covering ActionDetailEvent.step_duration_ms shape, _log_step duration emission, and asdict roundtrip)
+- [x] 09.1-02-PLAN.md — Wire step_duration_ms field on ActionDetailEvent + duration_ms kwarg in _log_step + .timestamp span in handleActionDetail; update phase5/phase6 tests; human-verify live "X.Xs" rendering
