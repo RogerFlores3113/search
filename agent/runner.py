@@ -175,7 +175,54 @@ def _write_jsonl(path: Path, record: dict) -> None:
         f.write(json.dumps(record) + "\n")
 
 
-async def log_step(agent, *, run_id: str, provider: str) -> dict:
+def _rewrite_jsonl_run_success(path: Path, run_id: str, run_success: bool) -> None:
+    """Back-fill `run_success` into every record matching `run_id` (D-04).
+
+    Synchronous, in-place rewrite. Callers wrap with asyncio.to_thread.
+    Malformed JSONL lines are preserved verbatim. Missing file is a no-op.
+    Failures in this routine MUST be swallowed by the caller's try/except so the
+    user is never surfaced a rewrite failure (per D-04).
+    """
+    if not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    out: list[str] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            out.append(line)
+            continue
+        if record.get("run_id") == run_id:
+            record["run_success"] = run_success
+        out.append(json.dumps(record))
+    if out:
+        path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def _derive_step_quality(agent) -> str:
+    """Return per-step quality literal: 'clean' | 'partial' | 'failed'.
+
+    Per-step semantics (RESEARCH.md Pitfall 2): read `agent.state.last_result`
+    (NOT `agent.history.has_errors()` which is cumulative across the whole run).
+    If any current-step result carries a non-None .error, return 'failed'; else
+    'clean'. The 'partial' literal is reserved (Open Q2) but not emitted in v1.
+    """
+    last_results = agent.state.last_result or []
+    if any(getattr(r, "error", None) is not None for r in last_results):
+        return "failed"
+    return "clean"
+
+
+# Module-level thoughts accumulator (closure-scoped equivalent for testability).
+# In production this is reset and populated inside run_agent's _pre_step closure;
+# tests patch this dict directly to inject thoughts into log_step.
+_thoughts: dict[int, dict] = {}
+
+
+async def log_step(agent, *, run_id: str, provider: str, duration_ms: int, thoughts: dict | None = None) -> dict:
     """on_step_end callback. Writes one JSONL record to training/runs.jsonl.
 
     Callback signature: async def log_step(agent: Agent) -> None
@@ -213,6 +260,37 @@ async def log_step(agent, *, run_id: str, provider: str) -> dict:
     action_target = last_action.get("action_target", last_action.get("index", ""))
     action_value = last_action.get("action_value", last_action.get("text", ""))
 
+    # Token delta extraction — Phase 5 (PERF-02). Computed before record build so
+    # the enriched record (TRAIN-01) can embed the values. Provider gate (TRAIN-02):
+    # only anthropic/openai populate token + thought fields; Ollama gets explicit null.
+    token_data: dict = {"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}
+
+    if provider in ("anthropic", "openai"):
+        # CR-01 fix (D-07): rename the inner re-binding to `token_history` so it does
+        # NOT shadow the outer `history = agent.history` binding.
+        token_history = agent.token_cost_service.usage_history
+        if token_history:
+            entry = token_history[-1]
+            token_data["prompt_tokens"] = entry.usage.prompt_tokens
+            token_data["completion_tokens"] = entry.usage.completion_tokens
+            cost_calc = await agent.token_cost_service.calculate_cost(
+                entry.model, entry.usage
+            )
+            if cost_calc is not None:
+                token_data["cost_usd"] = round(cost_calc.total_cost, 6)
+
+    # Resolve thought fields. Lookup key is 1-indexed (step_idx + 1) — equivalent to
+    # agent.history.number_of_steps() — per Pitfall 1. Falls back to the module-level
+    # _thoughts dict for direct-call test paths.
+    if thoughts is None:
+        thoughts = _thoughts
+    thought_for_step = thoughts.get(step_idx + 1, {}) if isinstance(thoughts, dict) else {}
+
+    api_provider = provider in ("anthropic", "openai")
+    model_thought = thought_for_step.get("thinking") if api_provider else None
+    evaluation_previous_goal = thought_for_step.get("evaluation_previous_goal") if api_provider else None
+    next_goal = thought_for_step.get("next_goal") if api_provider else None
+
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id,
@@ -223,6 +301,16 @@ async def log_step(agent, *, run_id: str, provider: str) -> dict:
         "action_value": str(action_value),
         "narration": f"Step {step_idx + 1}: {action_type}",
         "step_success": not history.has_errors(),
+        "step_duration_ms": duration_ms,
+        "prompt_tokens": token_data["prompt_tokens"],
+        "completion_tokens": token_data["completion_tokens"],
+        "cost_usd": token_data["cost_usd"],
+        "model_thought": model_thought,
+        "evaluation_previous_goal": evaluation_previous_goal,
+        "next_goal": next_goal,
+        "provider": provider,
+        "model_name": _resolve_model_name(config),
+        "step_quality": _derive_step_quality(agent),
     }
 
     await asyncio.to_thread(_write_jsonl, TRAINING_FILE, record)
@@ -242,22 +330,6 @@ async def log_step(agent, *, run_id: str, provider: str) -> dict:
             agent.pause()
             break
 
-    # Token delta extraction — Phase 5 (PERF-02)
-    # provider is passed in from run_agent (config.provider.lower()) — not re-read each step.
-    token_data: dict = {"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}
-
-    if provider in ("anthropic", "openai"):
-        token_history = agent.token_cost_service.usage_history
-        if token_history:
-            entry = token_history[-1]
-            token_data["prompt_tokens"] = entry.usage.prompt_tokens
-            token_data["completion_tokens"] = entry.usage.completion_tokens
-            cost_calc = await agent.token_cost_service.calculate_cost(
-                entry.model, entry.usage
-            )
-            if cost_calc is not None:
-                token_data["cost_usd"] = round(cost_calc.total_cost, 6)
-
     return token_data
 
 
@@ -275,6 +347,9 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
     run_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc)
     step_start = time.monotonic()
+    # Closure-scoped thoughts accumulator: _pre_step writes at 1-indexed step_num,
+    # _log_step reads at step_idx+1 (Pitfall 1).
+    run_thoughts: dict[int, dict] = {}
 
     if queue is not None:
         _put_nowait(queue, StateEvent(state="running"))
@@ -307,7 +382,15 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
             Puts a ThoughtEvent on the queue carrying the model's reasoning fields.
             When queue is None (CLI path), returns immediately without side effects.
             Empty string fields are normalized to None via 'or None' guard (RESEARCH.md Pitfall 2).
+
+            Also writes to run_thoughts so log_step can embed the same fields in JSONL.
+            step_num is 1-indexed (matches agent.history.number_of_steps()).
             """
+            run_thoughts[step_num] = {
+                "thinking": agent_output.thinking or None,
+                "evaluation_previous_goal": agent_output.evaluation_previous_goal or None,
+                "next_goal": agent_output.next_goal or None,
+            }
             if queue is None:
                 return
             _put_nowait(queue, ThoughtEvent(
@@ -321,9 +404,15 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
         async def _log_step(agent_instance):
             nonlocal step_start
             duration_ms = int((time.monotonic() - step_start) * 1000)
-            token_data = await log_step(agent_instance, run_id=run_id, provider=config.provider.lower())
+            step_idx = agent_instance.history.number_of_steps() - 1
+            token_data = await log_step(
+                agent_instance,
+                run_id=run_id,
+                provider=config.provider.lower(),
+                duration_ms=duration_ms,
+                thoughts=run_thoughts,
+            )
             if queue is not None:
-                step_idx = agent_instance.history.number_of_steps() - 1
                 actions = agent_instance.history.model_actions()
                 last_action = actions[-1] if actions else {}
                 # action_type: first key that is NOT 'interacted_element' (RESEARCH.md Pitfall 4)
@@ -449,6 +538,14 @@ async def run_agent(task: str, queue: asyncio.Queue | None = None) -> None:
             )
         except Exception:
             pass  # DB failure must not surface — cleanup below must always run
+
+        # Back-fill run_success into every JSONL record for this run (D-04 / TRAIN-03).
+        # Synchronous helper wrapped via asyncio.to_thread. Failures MUST never surface.
+        try:
+            run_success = (run_status == "complete")
+            await asyncio.to_thread(_rewrite_jsonl_run_success, TRAINING_FILE, run_id, run_success)
+        except Exception:
+            pass  # rewrite failure must never surface (D-04)
 
         # Clear module-level refs so stale SSE consumers detect run ended.
         try:

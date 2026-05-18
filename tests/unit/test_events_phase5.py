@@ -402,7 +402,7 @@ async def test_log_step_returns_token_dict(training_dir, monkeypatch_env):
     from agent.runner import log_step
 
     fake_agent = _make_fake_agent_with_tokens()
-    result = await log_step(fake_agent, run_id="test-run-id", provider="anthropic")
+    result = await log_step(fake_agent, run_id="test-run-id", provider="anthropic", duration_ms=0)
 
     assert isinstance(result, dict), (
         f"log_step must return dict; got {type(result)}"
