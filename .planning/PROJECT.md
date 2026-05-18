@@ -23,7 +23,7 @@ User types any natural language task, the agent opens Chrome and completes it �
 - ✓ Mac .app distribution: double-click launch, no dependencies, drives user's Chrome — v0.1.0
 - ✓ Safety disclaimer on first launch (Alpine.js + localStorage gate) — v0.1.0
 - ✓ GitHub Actions release pipeline: tag push → build → codesign → GitHub Releases — v0.1.0
-- ✓ Per-step latency timing + token counting + cost estimation (PERF-01, PERF-02, PERF-04) — Phase 5
+- ✓ Per-step latency timing + token counting + cost estimation (PERF-01, PERF-02, PERF-04) — Phase 5 (step_duration_ms wired to ActionDetailEvent in Phase 9.1)
 - ✓ ThoughtEvent + ActionDetailEvent SSE events via register_new_step_callback (TRANS-01, TRANS-02, TRANS-03) — Phase 6
 - ✓ Continuous JPEG screenshot streaming via background asyncio task, queue bounded at maxsize=50 (SCR-01, SCR-02) — Phase 7
 
