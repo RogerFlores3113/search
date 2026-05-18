@@ -125,6 +125,12 @@ _active_task: Optional[asyncio.Task] = None
 _active_queue: Optional[asyncio.Queue] = None
 _active_control_queue: Optional[asyncio.Queue] = None
 _active_agent = None                             # Agent ref for pause/stop (Plan 03)
+# Serializes the busy-check + assignment in /run so two concurrent POSTs
+# (double-clicked Run button, HTMX retry, two tabs) cannot both pass the
+# `_active_task is None` check and both start a BrowserSession.
+# Released the moment asyncio.create_task returns — the lock guards
+# scheduling, NOT the duration of the run.
+_start_lock = asyncio.Lock()
 
 
 @app.get("/")
@@ -182,15 +188,16 @@ async def run_endpoint(request: Request, task: str = Form(..., max_length=2000))
     global _active_task, _active_queue, _active_control_queue
     if not _disclaimer_accepted(request):
         return _disclaimer_required_response()
-    if _active_task is not None and not _active_task.done():
-        return JSONResponse({"status": "busy"}, status_code=409)
-    data_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
-    control_queue: asyncio.Queue = asyncio.Queue(maxsize=16)
-    _active_queue = data_queue
-    _active_control_queue = control_queue
-    _active_task = asyncio.create_task(
-        run_agent(task, queue=data_queue, control_queue=control_queue)
-    )
+    async with _start_lock:
+        if _active_task is not None and not _active_task.done():
+            return JSONResponse({"status": "busy"}, status_code=409)
+        data_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+        control_queue: asyncio.Queue = asyncio.Queue(maxsize=16)
+        _active_queue = data_queue
+        _active_control_queue = control_queue
+        _active_task = asyncio.create_task(
+            run_agent(task, queue=data_queue, control_queue=control_queue)
+        )
     return JSONResponse({"status": "started"}, headers={"HX-Trigger": "streamStarted"})
 
 

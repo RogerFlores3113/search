@@ -153,6 +153,95 @@ async def test_post_run_busy(monkeypatch):
     assert resp.json()["status"] == "busy"
 
 
+async def test_post_run_concurrent_requests_yield_exactly_one_started(monkeypatch):
+    """Two simultaneous POST /run requests must produce exactly one 200 and
+    exactly one 409 — the busy check and the _active_task assignment are
+    serialized under _start_lock so the TOCTOU race window is closed.
+
+    Without the lock, both requests could pass the `_active_task is None`
+    check at the same time and both schedule a run_agent task, leaving the
+    first task orphaned and two BrowserSessions racing for Chrome.
+
+    run_agent is replaced with a long-lived stub so the task created by the
+    winning request stays in the "not done" state long enough for the racing
+    request to observe it. The stub completes deterministically when the
+    test sets an asyncio.Event.
+    """
+    import agent.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_active_task", None)
+    monkeypatch.setattr(main_mod, "_active_queue", None)
+    monkeypatch.setattr(main_mod, "_active_control_queue", None)
+
+    done_event = asyncio.Event()
+
+    async def stub_run_agent(task, *, queue=None, control_queue=None):
+        await done_event.wait()
+
+    monkeypatch.setattr("agent.main.run_agent", stub_run_agent)
+
+    async with AsyncClient(transport=ASGITransport(app=main_mod.app),
+                           base_url="http://test",
+                           cookies=_disclaimer_cookies()) as client:
+        try:
+            r1, r2 = await asyncio.gather(
+                client.post("/run", data={"task": "first"}),
+                client.post("/run", data={"task": "second"}),
+            )
+        finally:
+            done_event.set()
+            if main_mod._active_task is not None:
+                try:
+                    await asyncio.wait_for(main_mod._active_task, timeout=1.0)
+                except (asyncio.TimeoutError, Exception):
+                    pass
+
+    statuses = sorted([r1.status_code, r2.status_code])
+    assert statuses == [200, 409], (
+        f"Expected exactly one 200 + one 409 under concurrent /run; got {statuses}. "
+        f"This means two requests both passed the busy check (race window open)."
+    )
+    started = r1 if r1.status_code == 200 else r2
+    busy = r1 if r1.status_code == 409 else r2
+    assert started.json()["status"] == "started"
+    assert busy.json()["status"] == "busy"
+
+
+async def test_post_run_sequential_after_completion_succeeds(monkeypatch):
+    """The lock guards scheduling, NOT the duration of the run. A second
+    /run posted AFTER the first task finishes must succeed — regression
+    guard against accidentally serializing across run lifetimes.
+    """
+    import agent.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_active_task", None)
+    monkeypatch.setattr(main_mod, "_active_queue", None)
+    monkeypatch.setattr(main_mod, "_active_control_queue", None)
+
+    async def quick_run_agent(task, *, queue=None, control_queue=None):
+        return  # finishes immediately
+
+    monkeypatch.setattr("agent.main.run_agent", quick_run_agent)
+
+    async with AsyncClient(transport=ASGITransport(app=main_mod.app),
+                           base_url="http://test",
+                           cookies=_disclaimer_cookies()) as client:
+        r1 = await client.post("/run", data={"task": "first"})
+        assert r1.status_code == 200
+        # Let the first task settle so _active_task.done() returns True.
+        if main_mod._active_task is not None:
+            try:
+                await asyncio.wait_for(main_mod._active_task, timeout=1.0)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        r2 = await client.post("/run", data={"task": "second"})
+
+    assert r2.status_code == 200, (
+        f"second sequential /run after task completion must succeed; "
+        f"got {r2.status_code}: {r2.text}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # POST /pause (LOOP-07)
 # ---------------------------------------------------------------------------
