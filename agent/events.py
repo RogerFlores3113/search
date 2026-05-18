@@ -81,6 +81,7 @@ class ActionDetailEvent:
     step: int = 0
     action_type: str = "unknown"
     target: Optional[str] = None
+    target_label: Optional[str] = None  # human-readable element label (ax_name / aria-label / tag)
     value: Optional[str] = None
     url: Optional[str] = None
     success: Optional[bool] = None

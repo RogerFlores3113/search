@@ -343,17 +343,21 @@
 
         _buildActionDescription(d) {
           // Compose a human-readable description from the ActionDetailEvent
-          // payload — the badge alone tells the user the category (CLICK),
-          // this gives them the specifics (which URL, which element index,
-          // what text was typed). Returns '' when there is no useful detail
-          // and the caller should skip appending.
+          // payload. Prefers d.target_label (the browser's accessibility name
+          // for the element — "Search button", "Submit") over the raw DOM
+          // index, since the label carries transferable signal both for the
+          // user reading the feed and for the LoRA training corpus. Falls
+          // back to "element #N" when no label is available.
           const t = (d.action_type || '').toLowerCase();
+          const where = d.target_label
+            ? d.target_label
+            : (d.target ? 'element #' + d.target : '');
           if (t === 'navigate') return d.url ? 'Navigating to ' + d.url : 'Navigating';
-          if (t === 'click')    return d.target ? 'Clicking element #' + d.target : 'Clicking';
+          if (t === 'click')    return where ? 'Clicking ' + where : 'Clicking';
           if (t === 'type') {
-            if (d.value && d.target) return 'Typing "' + d.value + '" into element #' + d.target;
-            if (d.value)             return 'Typing "' + d.value + '"';
-            if (d.target)            return 'Typing into element #' + d.target;
+            if (d.value && where) return 'Typing "' + d.value + '" into ' + where;
+            if (d.value)          return 'Typing "' + d.value + '"';
+            if (where)            return 'Typing into ' + where;
             return 'Typing';
           }
           if (t === 'scroll')   return d.value ? 'Scrolling ' + d.value : 'Scrolling';

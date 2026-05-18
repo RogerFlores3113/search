@@ -335,13 +335,13 @@ def test_handle_action_detail_renders_description():
 
 def test_action_description_covers_each_action_type():
     """Each action_type maps to a description that surfaces the payload
-    field carrying the user signal: navigate→url, click→target, type→value,
-    scroll→value.
+    field carrying the user signal: navigate→url, click→target/label,
+    type→value, scroll→value.
     """
     html = Path("agent/templates/index.html").read_text()
     for needed in (
         "Navigating to ",
-        "Clicking element #",
+        "Clicking ",
         "Typing",
         "Scrolling",
         "Extracting page content",
@@ -350,6 +350,22 @@ def test_action_description_covers_each_action_type():
         assert needed in html, (
             f"_buildActionDescription must produce {needed!r} for the corresponding action_type"
         )
+
+
+def test_action_description_prefers_target_label_over_index():
+    """The label ('Search button') carries transferable signal; the bare
+    DOM index ('#12') is page-specific noise. _buildActionDescription must
+    prefer target_label when present and fall back to `element #N` only
+    when no label was sent.
+    """
+    html = Path("agent/templates/index.html").read_text()
+    assert "d.target_label" in html, (
+        "_buildActionDescription must read d.target_label from the event"
+    )
+    assert "element #" in html, (
+        "_buildActionDescription must keep the `element #N` fallback when "
+        "target_label is unavailable"
+    )
 
 
 # ===========================================================================

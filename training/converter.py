@@ -93,18 +93,27 @@ def _build_assistant_content(
     thought: str | None,
     action_type: str,
     action_target: str | None,
+    action_target_label: str | None,
     action_value: str | None,
 ) -> list[dict]:
     """Compose the assistant-side text content.
 
-    `thought or ""` guards against None per Pitfall 4. action_target/value are
-    appended when present so the assistant turn reflects the full action.
+    Prefers `action_target_label` (the browser's accessibility name for the
+    element — "Search button") over the raw DOM index when composing the
+    target= clause. The label carries transferable signal across pages,
+    which is what we want the LoRA model to learn; the bare index is only
+    meaningful for the specific page snapshot.
+
+    `thought or ""` guards against None per Pitfall 4. Fields are appended
+    only when present so the assistant turn reflects the full action.
     """
     pieces: list[str] = []
     if thought:
         pieces.append(thought)
     action_line = action_type
-    if action_target:
+    if action_target_label:
+        action_line = f'{action_line} target="{action_target_label}"'
+    elif action_target:
         action_line = f"{action_line} target={action_target}"
     if action_value:
         action_line = f"{action_line} value={action_value}"
@@ -120,6 +129,7 @@ def _emit_unsloth(record: dict, image_path: str, task_text: str) -> dict:
         record.get("model_thought"),
         record.get("action_type", "unknown"),
         record.get("action_target") or None,
+        record.get("action_target_label") or None,
         record.get("action_value") or None,
     )
     return {
@@ -142,6 +152,7 @@ def _emit_mlx_vlm(record: dict, image_path: str, task_text: str) -> dict:
         record.get("model_thought"),
         record.get("action_type", "unknown"),
         record.get("action_target") or None,
+        record.get("action_target_label") or None,
         record.get("action_value") or None,
     )
     return {

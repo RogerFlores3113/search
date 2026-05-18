@@ -48,6 +48,64 @@ CAPTCHA_KEYWORDS = frozenset([
     "i'm not a robot", "challenge",
 ])
 
+# Max characters preserved when extracting a human-readable element label.
+# Long labels (e.g. ARIA descriptions that include the whole sentence of a
+# button's tooltip) bloat the narration row and the LoRA training line —
+# 80 chars keeps it readable while preserving the discriminative signal.
+_LABEL_MAX_LEN = 80
+_LABEL_TAG_FALLBACK = frozenset({"button", "a", "input", "textarea", "select"})
+
+
+def _extract_target_label(interacted_element: object) -> str | None:
+    """Best-effort human-readable label for the DOM element the agent acted on.
+
+    Precedence: ax_name (browser-computed accessibility name — gold) → aria-label
+    → title → placeholder → name → node_value → <tag> fallback for interactive
+    elements. Returns None when no useful signal is present.
+
+    Duck-typed to handle the live `DOMInteractedElement` dataclass from
+    browser-use AND dict-shaped fixtures in tests AND None. Never raises —
+    extraction failures degrade to None so the upstream caller stays simple.
+    """
+    if interacted_element is None:
+        return None
+
+    def _get(name: str):
+        v = getattr(interacted_element, name, None)
+        if v is None and isinstance(interacted_element, dict):
+            v = interacted_element.get(name)
+        return v
+
+    ax_name = _get("ax_name")
+    if isinstance(ax_name, str) and ax_name.strip():
+        return _truncate_label(ax_name)
+
+    attributes = _get("attributes") or {}
+    if isinstance(attributes, dict):
+        for attr in ("aria-label", "title", "placeholder", "name"):
+            v = attributes.get(attr)
+            if isinstance(v, str) and v.strip():
+                return _truncate_label(v)
+
+    node_value = _get("node_value")
+    if isinstance(node_value, str) and node_value.strip():
+        return _truncate_label(node_value)
+
+    node_name = _get("node_name")
+    if isinstance(node_name, str):
+        tag = node_name.strip().lower()
+        if tag in _LABEL_TAG_FALLBACK:
+            return f"<{tag}>"
+
+    return None
+
+
+def _truncate_label(s: str) -> str:
+    s = " ".join(s.split())  # collapse whitespace + strip
+    if len(s) <= _LABEL_MAX_LEN:
+        return s
+    return s[: _LABEL_MAX_LEN - 1].rstrip() + "…"
+
 
 def build_llm(cfg: "Settings"):
     """Construct the LLM object for the configured provider.
@@ -280,6 +338,7 @@ async def log_step(agent, *, run_id: str, provider: str, duration_ms: int, thoug
     ) if last_action else "unknown"
     action_target = last_action.get("action_target", last_action.get("index", ""))
     action_value = last_action.get("action_value", last_action.get("text", ""))
+    action_target_label = _extract_target_label(last_action.get("interacted_element"))
 
     # Token delta extraction — Phase 5 (PERF-02). Computed before record build so
     # the enriched record (TRAIN-01) can embed the values. Provider gate (TRAIN-02):
@@ -319,6 +378,7 @@ async def log_step(agent, *, run_id: str, provider: str, duration_ms: int, thoug
         "screenshot_b64": screenshot_b64,
         "action_type": action_type,
         "action_target": str(action_target),
+        "action_target_label": action_target_label,
         "action_value": str(action_value),
         "narration": f"Step {step_idx + 1}: {action_type}",
         "step_success": not history.has_errors(),
@@ -473,11 +533,13 @@ async def run_agent(
                 target = str(params["index"]) if "index" in params else None
                 value = params.get("text") or params.get("query") or params.get("keys") or None
                 url = params.get("url") or None
+                target_label = _extract_target_label(last_action.get("interacted_element"))
                 # ActionDetailEvent replaces NarrationEvent (D-05)
                 _put_nowait(queue, ActionDetailEvent(
                     step=step_idx + 1,
                     action_type=action_type,
                     target=target,
+                    target_label=target_label,
                     value=value,
                     url=url,
                     success=None,

@@ -130,6 +130,8 @@ PHASE8_REQUIRED_KEYS = {
     "prompt_tokens", "completion_tokens", "cost_usd",
     "model_thought", "evaluation_previous_goal", "next_goal",
     "provider", "model_name", "step_quality",
+    # Option B addition: human-readable element label for the LoRA corpus.
+    "action_target_label",
 }
 
 
@@ -634,6 +636,46 @@ def test_converter_min_steps_filter(tmp_path):
     if output_path.exists():
         records = _read_jsonl(output_path)
         assert len(records) == 0, f"min-steps=3 must drop a 2-step run; got {len(records)} records"
+
+
+def test_converter_uses_target_label_when_present(tmp_path):
+    """Option B: when the JSONL record carries `action_target_label`, the
+    LoRA assistant content uses it as `target="..."` instead of the bare DOM
+    index — labels carry transferable cross-page signal, indices don't.
+    """
+    input_path = tmp_path / "runs.jsonl"
+    output_path = tmp_path / "out.jsonl"
+    image_dir = tmp_path / "images"
+
+    base = _build_runs_record(run_id="rL", step_index=0, action_type="click",
+                              action_target="12", action_value="")
+    base["action_target_label"] = "Search button"
+    base_next = _build_runs_record(run_id="rL", step_index=1, action_type="click",
+                                   action_target="3", action_value="")
+    base_next["action_target_label"] = None
+    base_third = _build_runs_record(run_id="rL", step_index=2, action_type="click",
+                                    action_target="3", action_value="")
+    base_third["action_target_label"] = None
+    _make_runs_jsonl(input_path, [base, base_next, base_third])
+
+    result = _run_converter(
+        input_path, output_path,
+        "--image-dir", str(image_dir),
+        "--min-steps", "1",
+    )
+    assert result.returncode == 0, f"converter failed: {result.stderr}"
+
+    records = _read_jsonl(output_path)
+    first_assistant = records[0]["messages"][1]["content"][0]["text"]
+    assert 'target="Search button"' in first_assistant, (
+        f"labeled record must produce target=\"Search button\"; got:\n{first_assistant}"
+    )
+    # The unlabeled records still fall back to the bare-index form so
+    # we don't lose information when the label is absent.
+    second_assistant = records[1]["messages"][1]["content"][0]["text"]
+    assert "target=3" in second_assistant, (
+        f"unlabeled record must fall back to target=N; got:\n{second_assistant}"
+    )
 
 
 def test_converter_handles_null_thought_gracefully(tmp_path):
