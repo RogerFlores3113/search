@@ -1,6 +1,7 @@
 """Shared pytest fixtures for the local-browser-agent test suite."""
 from __future__ import annotations
 
+import json
 import os
 import pytest
 
@@ -29,6 +30,22 @@ def training_dir(tmp_path, monkeypatch):
     import agent.runner as runner_mod
     monkeypatch.setattr(runner_mod, "TRAINING_FILE", training / "runs.jsonl")
     return training
+
+
+@pytest.fixture
+def jsonl_with_records(training_dir):
+    """Return a callable that writes records to `training_dir / runs.jsonl`.
+
+    Builds on the `training_dir` fixture (which already monkeypatches
+    `agent.runner.TRAINING_FILE`). The returned callable accepts a list of
+    record dicts, writes them as newline-delimited JSON (with trailing newline),
+    and returns the JSONL Path. Used by Phase 9 `/runs` aggregator tests.
+    """
+    def _make(records: list[dict]):
+        path = training_dir / "runs.jsonl"
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        return path
+    return _make
 
 
 @pytest.fixture
