@@ -336,12 +336,6 @@ def _derive_step_quality(agent) -> str:
     return "clean"
 
 
-# Module-level thoughts accumulator (closure-scoped equivalent for testability).
-# In production this is reset and populated inside run_agent's _pre_step closure;
-# tests patch this dict directly to inject thoughts into log_step.
-_thoughts: dict[int, dict] = {}
-
-
 async def log_step(agent, *, run_id: str, provider: str, duration_ms: int, thoughts: dict | None = None) -> dict:
     """on_step_end callback. Writes one JSONL record to training/runs.jsonl.
 
@@ -401,11 +395,9 @@ async def log_step(agent, *, run_id: str, provider: str, duration_ms: int, thoug
                 token_data["cost_usd"] = round(cost_calc.total_cost, 6)
 
     # Resolve thought fields. Lookup key is 1-indexed (step_idx + 1) — equivalent to
-    # agent.history.number_of_steps() — per Pitfall 1. Falls back to the module-level
-    # _thoughts dict for direct-call test paths.
-    if thoughts is None:
-        thoughts = _thoughts
-    thought_for_step = thoughts.get(step_idx + 1, {}) if isinstance(thoughts, dict) else {}
+    # agent.history.number_of_steps() — per Pitfall 1.
+    thoughts = thoughts or {}
+    thought_for_step = thoughts.get(step_idx + 1, {})
 
     api_provider = provider in ("anthropic", "openai")
     model_thought = thought_for_step.get("thinking") if api_provider else None
