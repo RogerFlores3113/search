@@ -13,7 +13,8 @@
       {% set _cost = run.get('total_cost_usd', none) %}
       {% set _model = run.get('model_name', none) %}
       {% set _provider = run.get('provider', none) %}
-      <div class="run-history-detail">{% if _step_count %}{{ _step_count }} steps{% else %}—{% endif %} · {% if _duration_s %}{{ _duration_s }}s{% else %}—{% endif %} · {% if _provider == 'ollama' %}local (no API cost){% elif _cost is not none %}~${{ '%.2f' % _cost }}{% else %}—{% endif %}{% if _model %} · {{ _model }}{% endif %}</div>
+      {% set _prompt_id = run.get('prompt_id', none) %}
+      <div class="run-history-detail">{% if _step_count %}{{ _step_count }} steps{% else %}—{% endif %} · {% if _duration_s %}{{ _duration_s }}s{% else %}—{% endif %} · {% if _provider == 'ollama' %}local (no API cost){% elif _cost is not none %}~${{ '%.2f' % _cost }}{% else %}—{% endif %}{% if _model %} · {{ _model }}{% endif %}{% if _prompt_id %} · System prompt: {{ _prompt_id }}{% endif %}</div>
     </details>
   </li>
   {% endfor %}

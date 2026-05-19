@@ -289,6 +289,47 @@ textarea:read-only {
   filter: none;
 }
 
+/* Phase 13: Preset button row */
+.preset-row {
+  display: flex;
+  gap: var(--sp-sm);
+  width: 100%;
+}
+
+.btn-preset {
+  height: 32px;
+  padding: 0 var(--sp-sm);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+  font-family: inherit;
+  cursor: pointer;
+  flex: 1;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.btn-preset:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.btn-preset:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn-preset:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-preset--active {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
 .action-row {
   display: flex;
   gap: var(--sp-sm);
