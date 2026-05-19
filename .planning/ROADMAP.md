@@ -121,7 +121,11 @@ See archive: `.planning/milestones/v0.2.0-ROADMAP.md`
   2. Windows build correctly detects Chrome via %LOCALAPPDATA%, %PROGRAMFILES%, and %PROGRAMFILES(X86)% paths
   3. Windows build includes multiprocessing.freeze_support() and routes stdout/stderr to a log file (no crash on console=False)
   4. GitHub Actions tag push produces both a Mac .app and a Windows .exe artifact on the GitHub Releases page
-**Plans**: TBD
+**Plans**: 4 plans
+  - [x] 14-00-PLAN.md — Wave 0 RED scaffold: 4 new/extended test files covering WIN-01..04 (entrypoint AST + monkeypatch, Windows spec structure + hiddenimports match, release.yml YAML structure, chrome_detect Windows branch)
+  - [x] 14-01-PLAN.md — Wave 1 Python code: agent/__main__.py freeze_support + stdout redirect + uvicorn use_colors=False (WIN-02); agent/chrome_detect.py _windows_chrome_paths + win32 branch (WIN-03)
+  - [x] 14-02-PLAN.md — Wave 1 new spec: local-browser-agent-windows.spec mirroring macOS spec minus BUNDLE() (WIN-01)
+  - [ ] 14-03-PLAN.md — Wave 2 CI + UAT: build-mac + build-windows jobs in .github/workflows/release.yml with smoke-test + softprops upload (WIN-04); human-verify both artifacts on tag push
 
 ### Phase 15: Portfolio Presentation
 **Goal**: The README tells a clear story for portfolio visitors — they can see the app running, understand the architecture, and download it on their OS
@@ -151,5 +155,5 @@ See archive: `.planning/milestones/v0.2.0-ROADMAP.md`
 | 11. Settings Panel + Domain Safety | v0.3.0 | 5/5 | Complete   | 2026-05-19 |
 | 12. Prompt Library | v0.3.0 | 4/4 | Complete    | 2026-05-19 |
 | 13. Task Presets + Prompt Engineering + Runner Wiring | v0.3.0 | 3/4 | In Progress|  |
-| 14. Windows Distribution | v0.3.0 | 0/? | Not started | — |
+| 14. Windows Distribution | v0.3.0 | 3/4 | In Progress|  |
 | 15. Portfolio Presentation | v0.3.0 | 0/? | Not started | — |

@@ -1,0 +1,34 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-05-19T21:59:34Z",
+  "phase": "14",
+  "phase_name": "windows-distribution",
+  "phase_dir": ".planning/phases/14-windows-distribution",
+  "plan": 3,
+  "task": 2,
+  "total_tasks": 2,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": 1, "name": "Wave 0: RED test scaffolding (14-00)", "status": "done", "commit": "bb5054a"},
+    {"id": 2, "name": "Wave 1: Entrypoint fixes + Chrome detect (14-01)", "status": "done", "commit": "b9d31d0"},
+    {"id": 3, "name": "Wave 1: Windows PyInstaller spec (14-02)", "status": "done", "commit": "b9d31d0"},
+    {"id": 4, "name": "14-03 Task 1: append build-mac + build-windows to release.yml", "status": "done", "commit": "ca48fb1"},
+    {"id": 5, "name": "14-03 Task 2: human-verify GitHub Release artifacts", "status": "done", "commit": "user-approved"}
+  ],
+  "remaining_tasks": [
+    {"id": 6, "name": "Create 14-03-SUMMARY.md and update ROADMAP for plan 14-03", "status": "not_started"},
+    {"id": 7, "name": "Run code review gate", "status": "not_started"},
+    {"id": 8, "name": "Run phase verifier (gsd-verifier)", "status": "not_started"},
+    {"id": 9, "name": "Mark phase 14 complete in ROADMAP/STATE", "status": "not_started"},
+    {"id": 10, "name": "Auto-advance transition to Phase 15", "status": "not_started"}
+  ],
+  "blockers": [],
+  "human_actions_pending": [],
+  "decisions": [
+    {"decision": "Smoke test changed from app.log check to process-alive check", "rationale": "CI headless runner has no Chrome; app.log requires full server init", "phase": "14"},
+    {"decision": "Wave 1 worktrees merged via recovery branch (5af9b6e)", "rationale": "Original merge ran in wrong git context due to cwd issue after Wave 0 worktree removal", "phase": "14"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "Create 14-03-SUMMARY.md documenting what was built, update ROADMAP progress for 14-03, then run code review gate and phase verifier",
+  "context_notes": "All 4 plans executed. User approved CI checkpoint (both zip artifacts on GitHub Releases v0.3.0-rc14). Phase 14 execution is complete pending closeout steps. ROADMAP still needs 14-03 marked complete."
+}
