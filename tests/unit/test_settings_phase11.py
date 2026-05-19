@@ -443,3 +443,37 @@ def test_no_innerhtml_phase11():
     """Defense-in-depth: no innerHTML assignment in index.html (Phase 10 XSS guard re-assertion)."""
     html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
     assert 'innerHTML =' not in html, "innerHTML assignment found in index.html (XSS risk)"
+
+
+# ---------------------------------------------------------------------------
+# Plan 05 Task 1 — CR-01 regression: overlay inside agentUI() scope
+# ---------------------------------------------------------------------------
+
+def test_settings_overlay_inside_agentui_scope():
+    """CR-01: settings-overlay div must be a descendant of the agentUI() Alpine scope (#sse-container)."""
+    html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
+    # Find the position of the agentUI() x-data attribute (opening of #sse-container)
+    agentui_pos = html.index('x-data="agentUI()"')
+    # Find the closing marker of #sse-container
+    sse_close_pos = html.index('</div><!-- /sse-container -->')
+    # Find the settings-overlay class attribute
+    overlay_pos = html.index('class="settings-overlay"')
+    assert overlay_pos > agentui_pos, (
+        "settings-overlay must appear AFTER x-data=\"agentUI()\" (i.e., inside the agentUI scope); "
+        f"overlay at {overlay_pos}, agentUI at {agentui_pos}"
+    )
+    assert overlay_pos < sse_close_pos, (
+        "settings-overlay must appear BEFORE </div><!-- /sse-container --> "
+        f"(i.e., inside the agentUI scope); overlay at {overlay_pos}, sse-close at {sse_close_pos}"
+    )
+
+
+def test_settings_overlay_not_in_outer_disclaimer_scope():
+    """CR-01: settings-overlay must NOT appear before the agentUI() scope (i.e., not in the outer disclaimer scope)."""
+    html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
+    agentui_pos = html.index('x-data="agentUI()"')
+    overlay_pos = html.index('class="settings-overlay"')
+    assert overlay_pos > agentui_pos, (
+        "settings-overlay must NOT be in the outer disclaimer Alpine scope — "
+        f"it must come AFTER x-data=\"agentUI()\"; overlay at {overlay_pos}, agentUI at {agentui_pos}"
+    )
