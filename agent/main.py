@@ -95,6 +95,15 @@ async def lifespan(app: FastAPI):
     """
     await history_db.init_db()
 
+    # Phase 12: Seed 4 named prompts on fresh install (no-op if 'prompts' key exists)
+    from agent.settings import seed_prompts_if_absent, load_settings_json  # noqa: PLC0415
+    seed_prompts_if_absent()
+    # Live-patch config singleton so the first GET /api/settings returns seeds (Pitfall 5)
+    _seeded = load_settings_json()
+    from agent.config import config as _cfg  # noqa: PLC0415
+    _cfg.prompts = _seeded.get("prompts", [])
+    _cfg.active_prompt_id = _seeded.get("active_prompt_id", "generic")
+
     task_ref: Optional[asyncio.Task] = None
     pending = getattr(app.state, "pending_task", None)
     if pending:
@@ -286,6 +295,12 @@ async def get_settings() -> JSONResponse:
         "openai_key_set": bool(stored.get("openai_api_key_enc")),
         "safety_defaults": sorted(SAFETY_DEFAULTS),
         "user_domains": list(config.user_domains),
+        # Phase 12: prompt library fields — read from settings.json so fresh-install
+        # seeding is reflected without requiring a config singleton live-patch first.
+        # Content included; not secret (T-12-05). Safety guardrail constant not
+        # included in API response (T-12-01 mitigation — see runner.py).
+        "prompts": stored.get("prompts", list(config.prompts)),
+        "active_prompt_id": stored.get("active_prompt_id", config.active_prompt_id),
     })
 
 
@@ -330,6 +345,8 @@ async def post_settings(
     openai_key_action: str = Form("keep"),
     openai_key_value: str = Form(""),
     user_domains_json: str = Form("[]"),
+    active_prompt_id: str = Form("generic"),
+    prompts_json: str = Form("[]"),
 ) -> JSONResponse:
     """Save settings to settings.json and live-patch the config singleton.
 
@@ -396,6 +413,18 @@ async def post_settings(
             cleaned.append(d)
         user_domains = cleaned
 
+        # --- Phase 12: prompts validation (T-12-02 mitigation) ---
+        try:
+            parsed_prompts = _json.loads(prompts_json)
+        except Exception:
+            parsed_prompts = []
+        # Keep only entries that are dicts with required keys (id, name, content)
+        # is_seed is optional; non-conforming entries are dropped silently
+        validated_prompts = [
+            p for p in parsed_prompts
+            if isinstance(p, dict) and "id" in p and "name" in p and "content" in p
+        ]
+
         # --- Persist to settings.json ---
         stored["provider"] = provider
         stored["ollama_model"] = ollama_model or stored.get("ollama_model", config.ollama_model)
@@ -403,6 +432,8 @@ async def post_settings(
         stored["anthropic_model"] = anthropic_model or stored.get("anthropic_model", config.anthropic_model)
         stored["openai_model"] = openai_model or stored.get("openai_model", config.openai_model)
         stored["user_domains"] = user_domains
+        stored["prompts"] = validated_prompts
+        stored["active_prompt_id"] = active_prompt_id or "generic"
         save_settings_json(stored)
 
         # --- Live-patch config singleton (MUTABILITY_MODE: direct field assignment) ---
@@ -412,6 +443,8 @@ async def post_settings(
         config.anthropic_model = stored["anthropic_model"]
         config.openai_model = stored["openai_model"]
         config.user_domains = user_domains
+        config.prompts = stored["prompts"]
+        config.active_prompt_id = stored["active_prompt_id"]
 
         # Anthropic key live-patch
         anth_enc = stored.get("anthropic_api_key_enc")
