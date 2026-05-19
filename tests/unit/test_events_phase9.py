@@ -374,18 +374,37 @@ def test_action_description_prefers_target_label_over_index():
 
 
 def test_action_badge_palette_hex():
-    """D-12: `.action-badge-*` CSS rules reuse the four locked palette hex
-    values (no new hues): navigate=#1d4ed8, click=#14532d, type=#92400e,
-    scroll=#374151. The `action-badge-` class prefix must also be present.
+    """THEME-02 D-12 — unified blue palette: all `.action-badge-*` CSS rules
+    must use the unified blue #1d4ed8. The three legacy per-action hues
+    (#14532d green, #92400e amber, #374151 slate) must be absent from their
+    respective .action-badge-* class declarations.
+    The `action-badge-` class prefix must also still be present.
     """
     css = Path("agent/static/style.css").read_text()
-    for hex_val in ("#1d4ed8", "#14532d", "#92400e", "#374151"):
+    for hex_val in ("#1d4ed8",):
         assert hex_val in css, (
-            f"style.css must contain locked palette hex {hex_val} (D-12)"
+            f"style.css must contain unified blue palette hex {hex_val} (THEME-02 D-12 — unified blue palette)"
         )
     assert "action-badge-" in css, (
-        "style.css must define `.action-badge-*` classes (D-12)"
+        "style.css must define `.action-badge-*` classes (THEME-02 D-12)"
     )
+    # Legacy per-action hues must be absent from their .action-badge-* rules.
+    # Extract each rule body and check the hex is not present within it.
+    for cls, legacy_hex in (
+        (".action-badge-click", "#14532d"),
+        (".action-badge-type", "#92400e"),
+        (".action-badge-scroll", "#374151"),
+    ):
+        start = css.find(cls + " ")
+        if start == -1:
+            start = css.find(cls + "{")
+        assert start != -1, f"style.css must define {cls} rule (THEME-02 D-12)"
+        brace = css.find("{", start)
+        close = css.find("}", brace)
+        rule_body = css[brace:close + 1]
+        assert legacy_hex not in rule_body, (
+            f"style.css {cls} must NOT contain legacy {legacy_hex} (THEME-02 D-12)"
+        )
 
 
 def test_summary_marker_reset_present():
