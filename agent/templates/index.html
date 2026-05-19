@@ -118,9 +118,8 @@
               <span class="progress-counter"
                     x-show="state === 'running' || state === 'paused'"
                     x-text="`Step ${stepNum} of ${maxSteps} · ${elapsed}s`"></span>
+              <span class="model-line" aria-live="polite" x-text="tickerText()"></span>
             </div>
-
-            <div class="model-line" aria-live="polite" x-text="tickerText()"></div>
 
             <!-- Task form -->
             <form hx-post="/run" hx-swap="none">
