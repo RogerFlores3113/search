@@ -379,6 +379,8 @@
         openaiKeyAction: 'keep',
         anthropicKeyValue: '',
         openaiKeyValue: '',
+        anthropicModel: '',
+        openaiModel: '',
         userDomains: [],
         safetyDefaults: [],
         newDomain: '',
@@ -685,6 +687,8 @@
             this.settingsProvider = d.provider;
             this.settingsOllamaModel = d.ollama_model || '';
             this.settingsOllamaHost = d.ollama_host || 'http://localhost:11434';
+            this.anthropicModel = d.anthropic_model || '';
+            this.openaiModel = d.openai_model || '';
             this.anthropicKeySet = !!d.anthropic_key_set;
             this.openaiKeySet = !!d.openai_key_set;
             this.safetyDefaults = Array.isArray(d.safety_defaults) ? d.safety_defaults : [];
@@ -733,6 +737,8 @@
           fd.append('provider', this.settingsProvider);
           fd.append('ollama_model', this.settingsOllamaModel || '');
           fd.append('ollama_host', this.settingsOllamaHost || '');
+          fd.append('anthropic_model', this.anthropicModel || '');
+          fd.append('openai_model', this.openaiModel || '');
           fd.append('anthropic_key_action', this.anthropicKeyAction);
           fd.append('anthropic_key_value', this.anthropicKeyValue || '');
           fd.append('openai_key_action', this.openaiKeyAction);
