@@ -30,15 +30,22 @@ User types any natural language task, the agent opens Chrome and completes it �
 - ✓ Enriched training JSONL: step_duration_ms, tokens, cost, model_thought, provider, model_name, run_success, step_quality (TRAIN-01–03) — v0.2.0
 - ✓ LoRA training scaffold: converter.py + train_nvidia.py (QLoRA 4-bit auto) + train_apple.py (mlx-vlm 3B) (TRAIN-04–06) — v0.2.0
 - ✓ Frontend polish: token/cost ticker, action badges, collapsible thought blocks, expandable run history, Blob screenshot lifecycle (PERF-03, UI-01, UI-02) — v0.2.0 (visual rendering deferred to v0.3.0 refactor)
+- ✓ UI rendering fixes + theme refactor: dark-green tokens, unified blue badges, narration compression, timestamp/chevron fixes, spinner + thought-area + agent-status wired (FIX-01–04, THEME-01–05) — v0.3.0 Phase 10 (visual UAT pending)
 
 ### Active (v0.3.0)
 
-- [ ] Visual UI refactor: confirm per-step "X.Xs" duration renders, fix any rendering gaps from v0.2.0 (PERF-01 visual, PERF-03 visual, UI-01 visual, UI-02 visual)
-- [ ] Windows .exe distribution — GitHub Actions scaffold exists; macOS is the validated path
-- [ ] Full Apple notarization (vs ad-hoc codesign) — required for Gatekeeper auto-pass on all Macs
-- [ ] Manual smoke test verification — requires human with Chrome + Ollama to verify 5 live scenarios
-- [ ] Structured task presets: apartment, job, lead search
-- [ ] LoRA training run + evaluation (needs 1,000+ quality steps and benchmark suite)
+- [x] UI theme overhaul: dark green color scheme, blue action badges, red errors, green DONE (UI-THEME-01) — Phase 10
+- [x] Real-time agent status: one-liner "thinking" / "clicking" / "typing" + spinner, replacing verbose narration (UI-STATUS-01) — Phase 10
+- [x] Thought blocks rendered below agent screen; compressed step log below status area (UI-LAYOUT-01) — Phase 10
+- [x] Visual rendering gaps fixed: step duration, token/cost ticker, action badges, run history (UI-FIX-01) — Phase 10
+- [ ] Settings panel: Ollama model auto-discovery, API key inputs, domain exclusion list, prompt library (SET-01–04)
+- [ ] Domain exclusion list: pre-filled safety defaults (banking, payment, gov, medical) — some non-editable, user-extensible (SAFE-01)
+- [ ] Prompt library: save/name multiple system prompts, select active, enable A/B testing (PROMPT-01)
+- [ ] Task presets: apartment, job, candidate search — pre-filled templates with per-preset domain-tuned prompts (PRESET-01)
+- [ ] Deep prompt engineering: detailed generic system prompt + domain-specific prompts for each preset (PROMPT-02)
+- [ ] Auth & browser isolation audit: determine WSL Chrome credential posture, document findings (AUTH-01)
+- [ ] Windows .exe packaging: PyInstaller .exe, double-click to run, GitHub Actions tag → release (WIN-01)
+- [ ] Portfolio presentation: README with screenshots/GIF, Mac + Windows download story (PORTFOLIO-01)
 
 ### Out of Scope
 
@@ -110,5 +117,18 @@ This document evolves at phase transitions and milestone boundaries.
 3. Audit Out of Scope — reasons still valid?
 4. Update Context with current state
 
+## Current Milestone: v0.3.0 Polish & Presets
+
+**Goal:** Make the app portfolio-ready — fix all visible UI gaps, add a full settings panel with Ollama model discovery and prompt library, build deep prompt engineering for the three core task types, audit browser auth posture, and ship Windows .exe packaging.
+
+**Target features:**
+- UI theme & layout overhaul (dark green, blue/red/green badges, real-time status spinner, thought blocks below screen)
+- Settings panel (Ollama model discovery, API keys, domain exclusion list, prompt library with A/B support)
+- Task presets (apartment, job, candidate search) with domain-tuned prompts
+- Deep prompt engineering — generic + per-domain system prompts
+- Auth & browser isolation audit (WSL Chrome credential posture)
+- Windows .exe packaging via PyInstaller + GitHub Actions
+- Portfolio presentation (README, screenshots/GIF, download story)
+
 ---
-*Last updated: 2026-05-18 after v0.2.0 Foundations milestone*
+*Last updated: 2026-05-18 — Phase 12 complete — prompt library shipped (PROMPT-01..07)*
