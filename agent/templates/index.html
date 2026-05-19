@@ -80,6 +80,11 @@
         <header class="app-header">
           <span>local-browser-agent</span>
           <span class="header-ticker" aria-live="polite" x-text="tickerText()"></span>
+          <button type="button"
+                  class="btn-gear"
+                  aria-label="Open settings"
+                  aria-haspopup="dialog"
+                  @click="showSettings = true; loadSettings(); loadOllamaModels()">&#x2699;</button>
         </header>
 
         <div class="layout">
@@ -101,15 +106,6 @@
 
           <!-- Right column: control panel -->
           <div class="control-col panel control-panel">
-
-            <!-- Gear button — opens Phase 11 settings overlay -->
-            <div style="display:flex;justify-content:flex-end;">
-              <button type="button"
-                      class="btn-gear"
-                      aria-label="Open settings"
-                      aria-haspopup="dialog"
-                      @click="showSettings = true; loadSettings(); loadOllamaModels()">&#x2699;</button>
-            </div>
 
             <!-- State badge + progress counter -->
             <div class="state-row">
