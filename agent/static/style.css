@@ -6,15 +6,16 @@
 /* ── Custom Properties ─────────────────────────────────────── */
 :root {
   /* Color palette */
-  --bg-dominant:    #0f0f0f;
-  --bg-panel:       #1a1a1a;
-  --accent:         #3b82f6;
-  --destructive:    #ef4444;
-  --text-primary:   #e5e7eb;
+  --bg-dominant: #091209;
+  --bg-panel: #0f1f0f;
+  --accent: #3b82f6;
+  --accent-green: #16a34a;
+  --destructive: #ef4444;
+  --text-primary: #e5e7eb;
   --text-secondary: #6b7280;
   --text-placeholder: #4b5563;
-  --border:         #2a2a2a;
-  --border-button:  #404040;
+  --border: #143214;
+  --border-button: #404040;
 
   /* Spacing scale (multiples of 4px) */
   --sp-xs:  4px;
@@ -279,23 +280,23 @@ textarea:read-only {
 }
 
 .narration-feed {
-  max-height: 300px;
+  max-height: 200px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 3px;
 }
 
 .narration-row {
   background: var(--bg-dominant);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: var(--sp-sm) 10px;
+  padding: 4px 8px;
   font-size: 12px;
   color: var(--text-secondary);
   display: flex;
   gap: var(--sp-sm);
-  align-items: baseline;
+  align-items: center;
 }
 
 .step-num {
@@ -312,7 +313,7 @@ textarea:read-only {
 
 .timestamp {
   font-size: 11px;
-  color: var(--text-placeholder);
+  color: var(--text-secondary);
   flex-shrink: 0;
 }
 
@@ -384,6 +385,18 @@ textarea:read-only {
   display: none;
 }
 
+.run-history-item > details > summary::before {
+  content: '▶';
+  font-size: 10px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+
+.run-history-item > details[open] > summary::before {
+  content: '▼';
+}
+
 .run-history-detail {
   padding: var(--sp-sm) var(--sp-md);
   color: var(--text-secondary);
@@ -403,9 +416,9 @@ textarea:read-only {
 }
 
 .action-badge-navigate { background: #1d4ed8; color: #bfdbfe; }
-.action-badge-click    { background: #14532d; color: #86efac; }
-.action-badge-type     { background: #92400e; color: #fde68a; }
-.action-badge-scroll   { background: #374151; color: #9ca3af; }
+.action-badge-click    { background: #1d4ed8; color: #bfdbfe; }
+.action-badge-type     { background: #1d4ed8; color: #bfdbfe; }
+.action-badge-scroll   { background: #1d4ed8; color: #bfdbfe; }
 
 /* ── Thought disclosure (D-05..D-08) ──────────────────────── */
 .thought-details summary {
