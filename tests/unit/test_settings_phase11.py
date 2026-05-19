@@ -477,3 +477,149 @@ def test_settings_overlay_not_in_outer_disclaimer_scope():
         "settings-overlay must NOT be in the outer disclaimer Alpine scope — "
         f"it must come AFTER x-data=\"agentUI()\"; overlay at {overlay_pos}, agentUI at {agentui_pos}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Plan 05 Task 2 — CR-02 + CR-03 regression: provider enum gate + model round-trip
+# ---------------------------------------------------------------------------
+
+async def test_post_settings_rejects_invalid_provider(tmp_path, monkeypatch, monkeypatch_env):
+    """CR-02: POST /api/settings must reject unknown provider with HTTP 422 and not modify settings.json."""
+    import json as _json
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.main import app
+
+    # Write a known-good settings.json so we can verify it is unchanged after rejection
+    initial_data = {"provider": "ollama"}
+    (tmp_path / "settings.json").write_text(_json.dumps(initial_data))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/settings", data={
+            "provider": "evilcorp",
+            "anthropic_key_action": "keep",
+            "openai_key_action": "keep",
+            "user_domains_json": "[]",
+        })
+    assert r.status_code == 422, f"Expected 422, got {r.status_code}"
+    body = r.json()
+    assert body.get("detail") == "invalid provider", f"Expected detail='invalid provider', got {body}"
+    # settings.json must be unchanged
+    on_disk = _json.loads((tmp_path / "settings.json").read_text())
+    assert on_disk == initial_data, f"settings.json was modified on rejection: {on_disk}"
+
+
+async def test_post_settings_accepts_each_valid_provider(tmp_path, monkeypatch, monkeypatch_env):
+    """CR-02: POST /api/settings must accept each provider in {ollama, anthropic, openai}."""
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.main import app
+    import agent.config as cfg_mod
+
+    original = cfg_mod.config.provider
+    try:
+        for provider in ("ollama", "anthropic", "openai"):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                r = await client.post("/api/settings", data={
+                    "provider": provider,
+                    "anthropic_key_action": "keep",
+                    "openai_key_action": "keep",
+                    "user_domains_json": "[]",
+                })
+            assert r.status_code == 200, f"provider={provider!r} expected 200, got {r.status_code}"
+            assert cfg_mod.config.provider == provider, (
+                f"config.provider not updated for provider={provider!r}: {cfg_mod.config.provider!r}"
+            )
+    finally:
+        cfg_mod.config.provider = original
+
+
+async def test_post_settings_persists_anthropic_model(tmp_path, monkeypatch, monkeypatch_env):
+    """CR-03: POST /api/settings must persist anthropic_model to settings.json AND live-patch config."""
+    import json as _json
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.main import app
+    import agent.config as cfg_mod
+
+    original = cfg_mod.config.anthropic_model
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r = await client.post("/api/settings", data={
+                "provider": "anthropic",
+                "anthropic_model": "claude-opus-4-5",
+                "anthropic_key_action": "keep",
+                "openai_key_action": "keep",
+                "user_domains_json": "[]",
+            })
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+        on_disk = _json.loads((tmp_path / "settings.json").read_text())
+        assert on_disk.get("anthropic_model") == "claude-opus-4-5", (
+            f"settings.json[anthropic_model] expected 'claude-opus-4-5', got {on_disk.get('anthropic_model')!r}"
+        )
+        assert cfg_mod.config.anthropic_model == "claude-opus-4-5", (
+            f"config.anthropic_model expected 'claude-opus-4-5', got {cfg_mod.config.anthropic_model!r}"
+        )
+    finally:
+        cfg_mod.config.anthropic_model = original
+
+
+async def test_post_settings_persists_openai_model(tmp_path, monkeypatch, monkeypatch_env):
+    """CR-03: POST /api/settings must persist openai_model to settings.json AND live-patch config."""
+    import json as _json
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.main import app
+    import agent.config as cfg_mod
+
+    original = cfg_mod.config.openai_model
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r = await client.post("/api/settings", data={
+                "provider": "openai",
+                "openai_model": "gpt-4o-mini",
+                "anthropic_key_action": "keep",
+                "openai_key_action": "keep",
+                "user_domains_json": "[]",
+            })
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+        on_disk = _json.loads((tmp_path / "settings.json").read_text())
+        assert on_disk.get("openai_model") == "gpt-4o-mini", (
+            f"settings.json[openai_model] expected 'gpt-4o-mini', got {on_disk.get('openai_model')!r}"
+        )
+        assert cfg_mod.config.openai_model == "gpt-4o-mini", (
+            f"config.openai_model expected 'gpt-4o-mini', got {cfg_mod.config.openai_model!r}"
+        )
+    finally:
+        cfg_mod.config.openai_model = original
+
+
+async def test_post_settings_blank_model_preserves_existing(tmp_path, monkeypatch, monkeypatch_env):
+    """CR-03: Submitting blank anthropic_model must preserve the existing stored value (fallback pattern)."""
+    import json as _json
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.main import app
+    import agent.config as cfg_mod
+
+    original = cfg_mod.config.anthropic_model
+    try:
+        # First: store a model name
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.post("/api/settings", data={
+                "provider": "anthropic",
+                "anthropic_model": "claude-sonnet-4-5",
+                "anthropic_key_action": "keep",
+                "openai_key_action": "keep",
+                "user_domains_json": "[]",
+            })
+            # Second: submit with blank anthropic_model — stored value must be preserved
+            r = await client.post("/api/settings", data={
+                "provider": "anthropic",
+                "anthropic_model": "",
+                "anthropic_key_action": "keep",
+                "openai_key_action": "keep",
+                "user_domains_json": "[]",
+            })
+        assert r.status_code == 200
+        on_disk = _json.loads((tmp_path / "settings.json").read_text())
+        assert on_disk.get("anthropic_model") == "claude-sonnet-4-5", (
+            f"Blank submit must preserve existing model; got {on_disk.get('anthropic_model')!r}"
+        )
+    finally:
+        cfg_mod.config.anthropic_model = original
