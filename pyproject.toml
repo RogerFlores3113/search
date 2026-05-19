@@ -12,6 +12,7 @@ dependencies = [
     "pydantic-settings>=2.0",
     "itsdangerous>=2.2.0",
     "platformdirs>=4.9.6",
+    "cryptography>=42.0",
 ]
 
 [project.scripts]

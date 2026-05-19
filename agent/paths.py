@@ -49,3 +49,22 @@ def get_secret_key() -> bytes:
         except OSError:
             pass
     return secret_path.read_bytes()
+
+
+def get_settings_path() -> Path:
+    """Return path to settings.json in the platform config directory.
+
+    Unlike get_user_data_dir(), this always uses platformdirs.user_config_dir
+    in both dev and frozen modes — settings are config, not data.
+
+    Dev mode:   ~/.config/local-browser-agent/settings.json  (Linux)
+                ~/Library/Preferences/local-browser-agent/settings.json (macOS)
+    Frozen app: ~/Library/Application Support/local-browser-agent/settings.json (macOS)
+                %APPDATA%/local-browser-agent/settings.json (Windows)
+
+    Always calls mkdir(parents=True, exist_ok=True) so callers never have to.
+    """
+    from platformdirs import user_config_dir
+    path = Path(user_config_dir(APP_NAME)) / "settings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
