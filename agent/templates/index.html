@@ -78,8 +78,8 @@
            x-data="agentUI()">
 
         <header class="app-header">
-          <span>local-browser-agent</span>
-          <span class="header-ticker" aria-live="polite" x-text="tickerText()"></span>
+          <span class="header-spacer" aria-hidden="true"></span>
+          <span class="app-title">local-browser-agent</span>
           <button type="button"
                   class="btn-gear"
                   aria-label="Open settings"
@@ -119,6 +119,8 @@
                     x-show="state === 'running' || state === 'paused'"
                     x-text="`Step ${stepNum} of ${maxSteps} · ${elapsed}s`"></span>
             </div>
+
+            <div class="model-line" aria-live="polite" x-text="tickerText()"></div>
 
             <!-- Task form -->
             <form hx-post="/run" hx-swap="none">
