@@ -136,6 +136,10 @@
               </button>
             </form>
 
+            <!-- Phase 12: Active prompt indicator -->
+            <span class="settings-model-readonly active-prompt-label"
+                  x-text="'System prompt: ' + activePromptName()"></span>
+
             <!-- Result area: summary + error (inline, no modals — D-10) -->
             <div id="result-area" class="result-area">
               <div class="summary-box"
@@ -325,6 +329,51 @@
               </div>
             </div>
 
+            <!-- System Prompts section (Phase 12) -->
+            <div class="settings-section">
+              <h3>System Prompts</h3>
+              <p>Select the active system prompt for new runs.</p>
+              <ul class="prompt-list">
+                <template x-for="p in prompts" :key="p.id">
+                  <li class="prompt-row"
+                      :class="{'prompt-row--selected': p.id === selectedPromptId, 'prompt-row--active': p.id === activePromptId}"
+                      @click="selectedPromptId = p.id">
+                    <span class="prompt-name" x-text="p.name"></span>
+                    <span class="prompt-seed-badge" x-show="p.is_seed" x-text="'seed'"></span>
+                    <span class="prompt-active-badge" x-show="p.id === activePromptId" x-text="'active'"></span>
+                    <button type="button" class="btn-close" x-show="!p.is_seed"
+                            :aria-label="'Delete ' + p.name"
+                            @click.stop="deletePrompt(p.id)">&#x2715;</button>
+                  </li>
+                </template>
+              </ul>
+              <div class="prompt-editor" x-show="selectedPromptId !== null">
+                <template x-if="getSelectedPrompt()">
+                  <div>
+                    <label>Name
+                      <input type="text" class="settings-input"
+                             :value="getSelectedPrompt() ? getSelectedPrompt().name : ''"
+                             @input="updateSelectedName($event.target.value)"
+                             placeholder="Prompt name">
+                    </label>
+                    <label>Content
+                      <textarea class="settings-input prompt-textarea"
+                                :value="getSelectedPrompt() ? getSelectedPrompt().content : ''"
+                                @input="updateSelectedContent($event.target.value)"
+                                placeholder="Enter your system prompt instructions..."></textarea>
+                    </label>
+                    <div class="prompt-editor-actions">
+                      <button type="button" class="btn-neutral"
+                              x-show="selectedPromptId !== activePromptId"
+                              :aria-label="'Set ' + (getSelectedPrompt() ? getSelectedPrompt().name : '') + ' as active system prompt'"
+                              @click="activePromptId = selectedPromptId">Set as Active</button>
+                    </div>
+                  </div>
+                </template>
+              </div>
+              <button type="button" class="btn-neutral" @click="addPrompt()">+ Add prompt</button>
+            </div>
+
             <!-- Footer: Save Settings -->
             <div class="settings-footer">
               <button type="button"
@@ -382,6 +431,10 @@
         safetyDefaults: [],
         newDomain: '',
         savedMsg: '',
+        // Phase 12: Prompt library state
+        prompts: [],
+        activePromptId: 'generic',
+        selectedPromptId: null,
 
         init() {
           // Wire SSE bridge elements to component methods. The bridges have
@@ -699,6 +752,9 @@
             this.openaiKeyAction = 'keep';
             this.anthropicKeyValue = '';
             this.openaiKeyValue = '';
+            this.prompts = Array.isArray(d.prompts) ? d.prompts : [];
+            this.activePromptId = d.active_prompt_id || 'generic';
+            this.selectedPromptId = null;
           } catch (e) {}
         },
 
@@ -734,6 +790,38 @@
           this.userDomains = this.userDomains.filter(x => x !== d);
         },
 
+        // Phase 12: Prompt library methods
+        activePromptName() {
+          const p = this.prompts.find(p => p.id === this.activePromptId);
+          return (p && p.name) || 'Generic';
+        },
+
+        addPrompt() {
+          const entry = {id: crypto.randomUUID(), name: 'New Prompt', content: '', is_seed: false};
+          this.prompts.push(entry);
+          this.selectedPromptId = entry.id;
+        },
+
+        deletePrompt(id) {
+          this.prompts = this.prompts.filter(p => p.id !== id);
+          if (this.selectedPromptId === id) { this.selectedPromptId = null; }
+          if (this.activePromptId === id) { this.activePromptId = 'generic'; }
+        },
+
+        getSelectedPrompt() {
+          return this.prompts.find(p => p.id === this.selectedPromptId) || null;
+        },
+
+        updateSelectedName(val) {
+          const idx = this.prompts.findIndex(p => p.id === this.selectedPromptId);
+          if (idx >= 0) { this.prompts.splice(idx, 1, {...this.prompts[idx], name: val}); }
+        },
+
+        updateSelectedContent(val) {
+          const idx = this.prompts.findIndex(p => p.id === this.selectedPromptId);
+          if (idx >= 0) { this.prompts.splice(idx, 1, {...this.prompts[idx], content: val}); }
+        },
+
         async saveSettings() {
           const fd = new FormData();
           fd.append('provider', this.settingsProvider);
@@ -746,6 +834,8 @@
           fd.append('openai_key_action', this.openaiKeyAction);
           fd.append('openai_key_value', this.openaiKeyValue || '');
           fd.append('user_domains_json', JSON.stringify(this.userDomains));
+          fd.append('active_prompt_id', this.activePromptId || 'generic');
+          fd.append('prompts_json', JSON.stringify(this.prompts));
           try {
             const r = await fetch('/api/settings', { method: 'POST', body: fd });
             const d = await r.json();
