@@ -255,6 +255,20 @@ textarea:read-only {
   flex: 1;
 }
 
+.btn-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  flex: none;
+}
+.btn-close:hover { color: var(--text-primary); }
+.btn-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 .btn-destructive {
   background: #7f1d1d;
   color: #fca5a5;
