@@ -235,27 +235,171 @@ async def test_get_settings_sanitized_shape(tmp_path, monkeypatch, monkeypatch_e
 
 
 # ---------------------------------------------------------------------------
-# GREEN in Plan 03 Task 2: POST /api/settings (will be implemented in Task 2)
+# GREEN in Plan 03 Task 2: POST /api/settings
 # ---------------------------------------------------------------------------
 
 async def test_save_api_key_encrypted(tmp_path, monkeypatch, monkeypatch_env):
     """SET-03: POST /api/settings encrypts API key — plaintext must not appear in settings.json."""
-    pytest.fail("RED — implemented in Plan 03 Task 2 (POST /api/settings)")
+    import json as _json
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.main import app
+    from agent.settings import decrypt_api_key
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/settings", data={
+            "provider": "anthropic",
+            "anthropic_key_action": "set",
+            "anthropic_key_value": "sk-test-123",
+            "openai_key_action": "keep",
+            "user_domains_json": "[]",
+        })
+    assert r.status_code == 200
+    assert r.json() == {"status": "saved"}
+
+    data = _json.loads((tmp_path / "settings.json").read_text())
+    assert "anthropic_api_key_enc" in data
+    assert "sk-test-123" not in data["anthropic_api_key_enc"]
+    # Raw text scan
+    assert "sk-test-123" not in (tmp_path / "settings.json").read_text()
+    # Roundtrip proves encryption is real
+    assert decrypt_api_key(data["anthropic_api_key_enc"]) == "sk-test-123"
 
 
 async def test_get_settings_no_plaintext_key(tmp_path, monkeypatch, monkeypatch_env):
     """SET-03: GET /api/settings returns anthropic_key_set bool, not plaintext or encrypted blob."""
-    pytest.fail("RED — implemented in Plan 03 Task 2 (GET /api/settings)")
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # POST a key first
+        await client.post("/api/settings", data={
+            "provider": "anthropic",
+            "anthropic_key_action": "set",
+            "anthropic_key_value": "sk-test-123",
+            "openai_key_action": "keep",
+            "user_domains_json": "[]",
+        })
+        r = await client.get("/api/settings")
+
+    assert r.status_code == 200
+    assert r.json()["anthropic_key_set"] is True
+    # No plaintext in full response body
+    assert "sk-test-123" not in r.text
+    # No forbidden keys in response
+    forbidden = {"anthropic_api_key", "anthropic_api_key_enc", "openai_api_key", "openai_api_key_enc"}
+    assert not (forbidden & set(r.json().keys()))
 
 
 async def test_save_updates_live_config(tmp_path, monkeypatch, monkeypatch_env):
     """SET-04: POST /api/settings patches config.provider live in-process."""
-    pytest.fail("RED — implemented in Plan 03 Task 2 (POST /api/settings live patch)")
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.main import app
+    import agent.config as cfg_mod
+
+    original_provider = cfg_mod.config.provider
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r = await client.post("/api/settings", data={
+                "provider": "anthropic",
+                "anthropic_key_action": "keep",
+                "openai_key_action": "keep",
+                "user_domains_json": "[]",
+            })
+        assert r.status_code == 200
+        assert cfg_mod.config.provider == "anthropic"
+    finally:
+        cfg_mod.config.provider = original_provider
 
 
 async def test_save_user_domains(tmp_path, monkeypatch, monkeypatch_env):
-    """SAFE-02: POST /api/settings persists user_domains list to settings.json."""
-    pytest.fail("RED — implemented in Plan 03 Task 2 (POST /api/settings user_domains)")
+    """SAFE-02: POST /api/settings persists user_domains list, filters SAFETY_DEFAULTS."""
+    import json as _json
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.main import app
+    import agent.config as cfg_mod
+
+    original_domains = list(cfg_mod.config.user_domains)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r = await client.post("/api/settings", data={
+                "provider": "ollama",
+                "anthropic_key_action": "keep",
+                "openai_key_action": "keep",
+                "user_domains_json": '["example.com","wellsfargo.com","  ","https://foo.com/"]',
+            })
+        assert r.status_code == 200
+        data = _json.loads((tmp_path / "settings.json").read_text())
+        assert data["user_domains"] == ["example.com", "foo.com"]
+        assert "wellsfargo.com" not in data["user_domains"]
+        assert cfg_mod.config.user_domains == ["example.com", "foo.com"]
+    finally:
+        cfg_mod.config.user_domains = original_domains
+
+
+async def test_save_key_action_keep_preserves(tmp_path, monkeypatch, monkeypatch_env):
+    """Pitfall 4 regression gate: key_action=keep must not overwrite existing encrypted key."""
+    import json as _json
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.main import app
+    from agent.settings import decrypt_api_key
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # First: set a real key
+        await client.post("/api/settings", data={
+            "provider": "anthropic",
+            "anthropic_key_action": "set",
+            "anthropic_key_value": "sk-original",
+            "openai_key_action": "keep",
+            "user_domains_json": "[]",
+        })
+        blob1 = _json.loads((tmp_path / "settings.json").read_text())["anthropic_api_key_enc"]
+
+        # Second: submit with keep + empty value — blob must be unchanged
+        await client.post("/api/settings", data={
+            "provider": "anthropic",
+            "anthropic_key_action": "keep",
+            "anthropic_key_value": "",
+            "openai_key_action": "keep",
+            "user_domains_json": "[]",
+        })
+        blob2 = _json.loads((tmp_path / "settings.json").read_text())["anthropic_api_key_enc"]
+
+    assert blob1 == blob2, "keep must not rotate the encrypted key"
+    assert decrypt_api_key(blob2) == "sk-original"
+
+
+async def test_save_key_action_clear_removes(tmp_path, monkeypatch, monkeypatch_env):
+    """key_action=clear must remove the encrypted key from settings.json and config."""
+    import json as _json
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.main import app
+    import agent.config as cfg_mod
+
+    original_key = cfg_mod.config.anthropic_api_key
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.post("/api/settings", data={
+                "provider": "anthropic",
+                "anthropic_key_action": "set",
+                "anthropic_key_value": "sk-tmp",
+                "openai_key_action": "keep",
+                "user_domains_json": "[]",
+            })
+            await client.post("/api/settings", data={
+                "provider": "anthropic",
+                "anthropic_key_action": "clear",
+                "anthropic_key_value": "",
+                "openai_key_action": "keep",
+                "user_domains_json": "[]",
+            })
+            data = _json.loads((tmp_path / "settings.json").read_text())
+            assert "anthropic_api_key_enc" not in data
+
+            r = await client.get("/api/settings")
+            assert r.json()["anthropic_key_set"] is False
+        assert cfg_mod.config.anthropic_api_key is None
+    finally:
+        cfg_mod.config.anthropic_api_key = original_key
 
 
 # ---------------------------------------------------------------------------
