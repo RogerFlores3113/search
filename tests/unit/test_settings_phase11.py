@@ -118,22 +118,71 @@ def test_cve_2025_47241_urlparse_used():
 
 
 # ---------------------------------------------------------------------------
-# RED until Plan 02: SAFETY_DEFAULTS (config.py extension)
+# GREEN in Plan 02: SAFETY_DEFAULTS (config.py extension)
 # ---------------------------------------------------------------------------
 
 def test_safety_defaults_banking(monkeypatch_env):
-    """SAFE-01: SAFETY_DEFAULTS frozenset must contain banking domains."""
-    pytest.fail("RED — implemented in Plan 02 (config.py SAFETY_DEFAULTS)")
+    """SAFE-01: SAFETY_DEFAULTS frozenset must contain banking and payment domains."""
+    from agent.config import SAFETY_DEFAULTS
+    assert isinstance(SAFETY_DEFAULTS, frozenset), "SAFETY_DEFAULTS must be a frozenset"
+    assert {"chase.com", "wellsfargo.com", "paypal.com", "venmo.com"}.issubset(SAFETY_DEFAULTS), (
+        f"Banking/payment domains missing from SAFETY_DEFAULTS: {SAFETY_DEFAULTS}"
+    )
 
 
 def test_safety_defaults_gov_medical(monkeypatch_env):
-    """SAFE-01: SAFETY_DEFAULTS frozenset must contain government and medical domains."""
-    pytest.fail("RED — implemented in Plan 02 (config.py SAFETY_DEFAULTS)")
+    """SAFE-01: SAFETY_DEFAULTS frozenset must contain government, medical, and credential domains."""
+    from agent.config import SAFETY_DEFAULTS
+    assert {
+        "irs.gov", "ssa.gov", "healthcare.gov",
+        "labcorp.com", "mychart.com",
+        "lastpass.com", "1password.com",
+    }.issubset(SAFETY_DEFAULTS), (
+        f"Gov/medical/credential domains missing from SAFETY_DEFAULTS: {SAFETY_DEFAULTS}"
+    )
+
+
+def test_blocked_domains_property_includes_user_domains(monkeypatch_env):
+    """SAFE-01: blocked_domains property merges SAFETY_DEFAULTS with user_domains."""
+    from agent.config import Settings
+    s = Settings(user_domains=["myexample.com"])
+    assert "myexample.com" in s.blocked_domains, "User domain must appear in blocked_domains"
+    assert "chase.com" in s.blocked_domains, "Safety default must still appear in blocked_domains"
+
+
+def test_settings_json_overrides_env(tmp_path, monkeypatch):
+    """SET-04: JsonConfigSettingsSource injects settings.json above .env in precedence."""
+    import json
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"provider": "anthropic", "user_domains": ["foo.com"]}))
+
+    # Patch both locations so the classmethod sees the temp file.
+    monkeypatch.setattr("agent.paths.get_settings_path", lambda: settings_file)
+    monkeypatch.setattr("agent.config.get_settings_path", lambda: settings_file, raising=False)
+
+    # Re-import Settings fresh (do NOT use the module-level config singleton).
+    import importlib
+    import agent.config as cfg_module
+    importlib.reload(cfg_module)
+    s = cfg_module.Settings()
+    assert s.provider == "anthropic", f"Expected anthropic from JSON, got {s.provider!r}"
+    assert s.user_domains == ["foo.com"], f"Expected ['foo.com'] from JSON, got {s.user_domains!r}"
+    # Reload back to defaults so other tests are not affected.
+    importlib.reload(cfg_module)
 
 
 def test_cve_2025_47241_credential_url_blocked(monkeypatch_env):
-    """SAFE-04: credential-embedded URL (user:pass@chase.com) must be blocked."""
-    pytest.fail("RED — implemented in Plan 02 (needs SAFETY_DEFAULTS in config.py)")
+    """SAFE-04: credential-embedded URL (user:pass@chase.com) must be blocked via SAFETY_DEFAULTS."""
+    from urllib.parse import urlparse
+    from agent.config import SAFETY_DEFAULTS
+
+    # Simulate what browser-use's _is_url_allowed does: urlparse strips credentials.
+    url = "https://creds@chase.com/login"
+    hostname = urlparse(url).hostname
+    assert hostname == "chase.com", f"urlparse must strip credentials; got hostname={hostname!r}"
+    assert "chase.com" in SAFETY_DEFAULTS, (
+        "chase.com must be in SAFETY_DEFAULTS so BrowserProfile blocks it"
+    )
 
 
 # ---------------------------------------------------------------------------

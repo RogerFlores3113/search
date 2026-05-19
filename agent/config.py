@@ -1,5 +1,29 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from pydantic import SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    JsonConfigSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+SAFETY_DEFAULTS: frozenset[str] = frozenset({
+    # Banking
+    "chase.com", "wellsfargo.com", "bankofamerica.com", "citi.com", "usbank.com",
+    # Payment
+    "paypal.com", "venmo.com", "stripe.com", "square.com", "braintree.com",
+    # Government
+    "irs.gov", "ssa.gov", "healthcare.gov", "va.gov", "dhs.gov",
+    "state.gov", "fbi.gov", "whitehouse.gov",
+    # Medical
+    "labcorp.com", "questdiagnostics.com", "epic.com", "mychart.com",
+    # Credential / Identity
+    "lastpass.com", "1password.com", "bitwarden.com", "dashlane.com",
+    "nordpass.com", "okta.com", "auth0.com",
+})
 
 
 class Settings(BaseSettings):
@@ -31,13 +55,33 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4o"
 
-    # Guardrails — hardcoded default; not a .env field in Phase 2
-    # (pydantic-settings set[str] coercion from env var is unverified — see RESEARCH.md A3)
-    blocked_domains: set[str] = {
-        "chase.com", "wellsfargo.com", "bankofamerica.com",
-        "citi.com", "usbank.com", "paypal.com", "venmo.com",
-        "stripe.com", "square.com", "braintree.com",
-    }
+    # User-added blocked domains (loaded from settings.json via JsonConfigSettingsSource)
+    user_domains: list[str] = []
+
+    @property
+    def blocked_domains(self) -> set[str]:
+        """Two-tier merge: safety defaults (code) + user-added domains (settings.json).
+
+        SAFETY_DEFAULTS is always included regardless of user_domains — the user
+        cannot shrink the enforcement layer (T-11-06 mitigation).
+        """
+        return SAFETY_DEFAULTS | set(self.user_domains)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Lazy import to avoid circular imports at module load time.
+        from agent.paths import get_settings_path
+
+        json_source = JsonConfigSettingsSource(settings_cls, json_file=get_settings_path())
+        # Precedence: init > settings.json > env > .env > file secrets
+        return init_settings, json_source, env_settings, dotenv_settings, file_secret_settings
 
 
 config = Settings()
