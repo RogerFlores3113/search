@@ -47,9 +47,9 @@
 
 ### Task Presets
 
-- [ ] **PRESET-01**: User can select a preset (Apartment Search / Job Search / Candidate Search) from the main UI
-- [ ] **PRESET-02**: Selecting a preset pre-fills the task input with a template the user can edit before running
-- [ ] **PRESET-03**: Each preset automatically activates its corresponding domain-tuned system prompt
+- [x] **PRESET-01**: User can select a preset (Apartment Search / Job Search / Candidate Search) from the main UI
+- [x] **PRESET-02**: Selecting a preset pre-fills the task input with a template the user can edit before running
+- [x] **PRESET-03**: Each preset automatically activates its corresponding domain-tuned system prompt
 
 ### Prompt Engineering
 
@@ -135,9 +135,9 @@
 | PROMPT-05 | Phase 12 | Complete |
 | PROMPT-06 | Phase 12 | Complete |
 | PROMPT-07 | Phase 12 | Complete |
-| PRESET-01 | Phase 13 | Pending |
-| PRESET-02 | Phase 13 | Pending |
-| PRESET-03 | Phase 13 | Pending |
+| PRESET-01 | Phase 13 | Complete |
+| PRESET-02 | Phase 13 | Complete |
+| PRESET-03 | Phase 13 | Complete |
 | ENG-01 | Phase 13 | Pending |
 | ENG-02 | Phase 13 | Pending |
 | ENG-03 | Phase 13 | Pending |

@@ -106,7 +106,11 @@ See archive: `.planning/milestones/v0.2.0-ROADMAP.md`
   2. Selecting a preset automatically activates its corresponding domain-tuned system prompt (confirmed by the active prompt indicator updating)
   3. All four system prompts (Generic, Apartment, Job, Candidate) contain detailed numbered step sequences, explicit stop conditions, field extraction schemas, and time/cost awareness guidance
   4. Runner snapshots active provider, model, and prompt at task-start — mid-run settings changes do not affect the current task; prompt_id is recorded on the run history row
-**Plans**: TBD
+**Plans**: 4 plans
+  - [x] 13-01-PLAN.md — Wave 0 RED scaffold: 12 failing tests in tests/unit/test_presets_phase13.py covering PRESET-01..03, ENG-01..04, runner snapshot, DB migration
+  - [ ] 13-02-PLAN.md — SEED_PROMPTS body expansion in agent/settings.py for ENG-01..04 (Generic, Apartment, Job unauthenticated-only, Candidate)
+  - [x] 13-03-PLAN.md — Backend wiring: prompt_id column migration, runner snapshot + CR-01 fix, /run endpoint active_prompt_id Form field
+  - [x] 13-04-PLAN.md — Frontend: preset row, applyPreset() Alpine method, .btn-preset CSS, runs_fragment prompt_id display
 
 ### Phase 14: Windows Distribution
 **Goal**: The app builds and runs as a double-click Windows .exe; GitHub Actions produces a Windows artifact on every tag push alongside the existing Mac .app
@@ -146,6 +150,6 @@ See archive: `.planning/milestones/v0.2.0-ROADMAP.md`
 | 10. UI Rendering Fixes + Theme | v0.3.0 | 3/3 | Complete    | 2026-05-19 |
 | 11. Settings Panel + Domain Safety | v0.3.0 | 5/5 | Complete   | 2026-05-19 |
 | 12. Prompt Library | v0.3.0 | 4/4 | Complete    | 2026-05-19 |
-| 13. Task Presets + Prompt Engineering + Runner Wiring | v0.3.0 | 0/? | Not started | — |
+| 13. Task Presets + Prompt Engineering + Runner Wiring | v0.3.0 | 3/4 | In Progress|  |
 | 14. Windows Distribution | v0.3.0 | 0/? | Not started | — |
 | 15. Portfolio Presentation | v0.3.0 | 0/? | Not started | — |
