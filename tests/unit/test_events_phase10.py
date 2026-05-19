@@ -301,8 +301,8 @@ def test_thought_area_cleared_on_run():
     assert "thought-area" in hs_body, (
         "handleState body must reference thought-area for clear-on-run (THEME-04 D-19)"
     )
-    assert "innerHTML" in hs_body, (
-        "handleState body must use innerHTML to clear thought-area (THEME-04 D-19)"
+    assert "removeChild" in hs_body, (
+        "handleState body must use removeChild loop to clear thought-area (THEME-04 D-19)"
     )
 
 

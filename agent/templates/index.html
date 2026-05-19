@@ -265,6 +265,9 @@
             this.totalPromptTokens = 0;
             this.totalCompletionTokens = 0;
             this.totalCost = 0;
+            const thoughtArea = document.getElementById('thought-area');
+            if (thoughtArea) { while (thoughtArea.firstChild) thoughtArea.removeChild(thoughtArea.firstChild); }
+            this.currentAction = 'thinking';
             if (this._elapsedTimer === null) {
               this.runStartedAt = Date.now();
               this.elapsed = 0;
@@ -312,6 +315,7 @@
           // Phase 9 D-22 / Phase 5/8 null semantics: `??` is defensive
           // for the running sum; display gating is via isOllama.
           const d = JSON.parse($event.detail.data);
+          if (!this.modelName && d.model_name) this.modelName = d.model_name;
           this.totalPromptTokens += d.prompt_tokens ?? 0;
           this.totalCompletionTokens += d.completion_tokens ?? 0;
           this.totalCost += d.cost_usd ?? 0;
@@ -403,8 +407,8 @@
           const d = JSON.parse($event.detail.data);
           const allEmpty = !d.thinking && !d.evaluation_previous_goal && !d.next_goal;
           if (allEmpty) return;
-          const row = this._ensureNarrationRow(d.step);
-          if (!row) return;
+          const area = document.getElementById('thought-area');
+          if (!area) return;
           const details = document.createElement('details');
           details.className = 'thought-details';
           const summary = document.createElement('summary');
@@ -436,7 +440,7 @@
           details.addEventListener('toggle', () => {
             body.setAttribute('aria-hidden', String(!details.open));
           });
-          row.appendChild(details);
+          area.appendChild(details);
         },
 
         handleActionDetail($event) {
