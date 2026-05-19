@@ -408,14 +408,38 @@ async def test_save_key_action_clear_removes(tmp_path, monkeypatch, monkeypatch_
 
 def test_gear_button_present():
     """SET-01: index.html must contain gear button and showSettings Alpine prop."""
-    pytest.fail("RED — implemented in Plan 04 (index.html gear button + showSettings)")
+    html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert 'aria-label="Open settings"' in html, "Gear button aria-label missing"
+    assert 'showSettings = true' in html, "showSettings = true click handler missing"
+    assert '⚙' in html or '&#x2699;' in html, "Gear icon (⚙) missing"
+    assert 'showSettings:' in html, "showSettings Alpine prop initializer missing"
 
 
 def test_settings_overlay_aria():
     """SET-01: settings overlay must have role=dialog and aria-modal=true."""
-    pytest.fail("RED — implemented in Plan 04 (index.html settings overlay)")
+    html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert 'role="dialog"' in html, "role=dialog missing"
+    assert 'aria-modal="true"' in html, "aria-modal=true missing"
+    assert 'aria-labelledby="settings-title"' in html, "aria-labelledby=settings-title missing"
+    assert 'id="settings-title"' in html, "id=settings-title missing"
+    assert 'x-show="showSettings"' in html, "x-show=showSettings missing"
+    assert '>Settings<' in html, "Settings title text missing"
 
 
 def test_domain_list_two_tier_html():
     """SAFE-03: domain list must show user domains with remove (✕) and defaults with lock (🔒)."""
-    pytest.fail("RED — implemented in Plan 04 (index.html two-tier domain list)")
+    html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert 'domain-row--locked' in html, "Locked domain row class missing"
+    assert 'domain-row--user' in html, "User domain row class missing"
+    assert 'safetyDefaults' in html, "safetyDefaults prop reference missing"
+    assert 'userDomains' in html, "userDomains prop reference missing"
+    assert 'Remove ${d}' in html, "Remove aria-label template literal missing"
+    assert '🔒' in html or '&#x1F512;' in html, "Lock icon (🔒) missing"
+    # XSS guard: no innerHTML assignment on non-comment lines (matches Phase 10 test_index_no_unsafe_html)
+    assert 'innerHTML =' not in html, "innerHTML assignment found in index.html (XSS risk)"
+
+
+def test_no_innerhtml_phase11():
+    """Defense-in-depth: no innerHTML assignment in index.html (Phase 10 XSS guard re-assertion)."""
+    html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
+    assert 'innerHTML =' not in html, "innerHTML assignment found in index.html (XSS risk)"

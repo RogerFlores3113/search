@@ -57,6 +57,132 @@
       </div>
     </div>
 
+    <!-- Phase 11: Settings overlay — z-index 200 (above disclaimer's 100) -->
+    <div x-show="showSettings"
+         role="dialog"
+         aria-modal="true"
+         aria-labelledby="settings-title"
+         class="settings-overlay"
+         @keydown.escape.window="showSettings = false">
+      <div class="settings-panel">
+        <!-- Header -->
+        <div class="settings-header">
+          <h2 id="settings-title">Settings</h2>
+          <button type="button"
+                  class="btn btn-neutral"
+                  aria-label="Close settings"
+                  @click="showSettings = false">&#x2715;</button>
+        </div>
+
+        <!-- Provider radio group -->
+        <fieldset class="provider-radio-group">
+          <legend>Provider</legend>
+          <label><input type="radio" name="provider" value="ollama" x-model="settingsProvider"> Ollama</label>
+          <label><input type="radio" name="provider" value="anthropic" x-model="settingsProvider"> Anthropic</label>
+          <label><input type="radio" name="provider" value="openai" x-model="settingsProvider"> OpenAI</label>
+        </fieldset>
+
+        <!-- Ollama section -->
+        <div class="settings-section" x-show="settingsProvider === 'ollama'">
+          <label>Model
+            <select class="settings-select" x-model="settingsOllamaModel">
+              <template x-for="m in ollamaModels" :key="m">
+                <option :value="m" x-text="m"></option>
+              </template>
+            </select>
+          </label>
+          <span class="settings-warning"
+                x-show="ollamaUnreachable"
+                x-text="'Ollama is not running — start Ollama to see models'"></span>
+          <label>Ollama host
+            <input type="text"
+                   class="settings-input"
+                   x-model="settingsOllamaHost"
+                   placeholder="http://localhost:11434">
+          </label>
+        </div>
+
+        <!-- Anthropic section -->
+        <div class="settings-section" x-show="settingsProvider === 'anthropic'">
+          <label>Anthropic API key
+            <input type="password"
+                   class="settings-input"
+                   placeholder="&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;"
+                   x-model="anthropicKeyValue"
+                   @input="anthropicKeyAction = 'set'">
+          </label>
+          <button type="button"
+                  class="btn btn-neutral"
+                  @click="anthropicKeyAction = 'clear'; anthropicKeyValue = ''">Clear</button>
+          <span class="settings-model-readonly"
+                x-text="'Model: ' + (anthropicModel || 'claude-sonnet-4-5')"></span>
+        </div>
+
+        <!-- OpenAI section -->
+        <div class="settings-section" x-show="settingsProvider === 'openai'">
+          <label>OpenAI API key
+            <input type="password"
+                   class="settings-input"
+                   placeholder="&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;"
+                   x-model="openaiKeyValue"
+                   @input="openaiKeyAction = 'set'">
+          </label>
+          <button type="button"
+                  class="btn btn-neutral"
+                  @click="openaiKeyAction = 'clear'; openaiKeyValue = ''">Clear</button>
+          <span class="settings-model-readonly"
+                x-text="'Model: ' + (openaiModel || 'gpt-4o')"></span>
+        </div>
+
+        <!-- Domain Safety section (always visible) -->
+        <div class="settings-section">
+          <h3>Domain Safety</h3>
+          <p>The agent will not visit these domains.</p>
+          <!-- Locked safety defaults (no remove control) -->
+          <ul class="domain-list">
+            <template x-for="d in safetyDefaults" :key="d">
+              <li class="domain-row domain-row--locked">
+                <span aria-hidden="true">&#x1F512;</span>
+                <span x-text="d"></span>
+              </li>
+            </template>
+          </ul>
+          <!-- User domains (with remove control) -->
+          <ul class="domain-list">
+            <template x-for="d in userDomains" :key="d">
+              <li class="domain-row domain-row--user">
+                <span x-text="d"></span>
+                <button type="button"
+                        :aria-label="`Remove ${d}`"
+                        @click="removeDomain(d)">&#x2715;</button>
+              </li>
+            </template>
+          </ul>
+          <!-- Add domain row -->
+          <div class="add-domain-row">
+            <input type="text"
+                   class="settings-input"
+                   placeholder="example.com"
+                   x-model="newDomain"
+                   @keydown.enter.prevent="addDomain()">
+            <button type="button"
+                    class="btn btn-neutral"
+                    @click="addDomain()">Add</button>
+          </div>
+        </div>
+
+        <!-- Footer: Save Settings -->
+        <div class="settings-footer">
+          <button type="button"
+                  class="btn btn-primary"
+                  @click="saveSettings()">Save Settings</button>
+          <span x-show="savedMsg"
+                x-text="savedMsg"
+                class="save-confirm"></span>
+        </div>
+      </div>
+    </div>
+
     <!-- Main UI shell — `inert` removes the underlying form from focus, pointer
          events, and the accessibility tree while the modal is open. Replaces
          the prior pointer-events:none + filter:blur hack which was keyboard-
@@ -101,6 +227,15 @@
 
           <!-- Right column: control panel -->
           <div class="control-col panel control-panel">
+
+            <!-- Gear button — opens Phase 11 settings overlay -->
+            <div style="display:flex;justify-content:flex-end;">
+              <button type="button"
+                      class="btn-gear"
+                      aria-label="Open settings"
+                      aria-haspopup="dialog"
+                      @click="showSettings = true; loadSettings(); loadOllamaModels()">&#x2699;</button>
+            </div>
 
             <!-- State badge + progress counter -->
             <div class="state-row">
@@ -229,6 +364,24 @@
         provider: '',
         isOllama: false,
         currentAction: '',
+
+        // Phase 11: Settings panel state
+        showSettings: false,
+        settingsProvider: 'ollama',
+        settingsOllamaModel: '',
+        settingsOllamaHost: 'http://localhost:11434',
+        ollamaModels: [],
+        ollamaUnreachable: false,
+        anthropicKeySet: false,
+        openaiKeySet: false,
+        anthropicKeyAction: 'keep',
+        openaiKeyAction: 'keep',
+        anthropicKeyValue: '',
+        openaiKeyValue: '',
+        userDomains: [],
+        safetyDefaults: [],
+        newDomain: '',
+        savedMsg: '',
 
         init() {
           // Wire SSE bridge elements to component methods. The bridges have
@@ -514,6 +667,92 @@
           const d = JSON.parse($event.detail.data);
           this.stepNum = d.step;
           this.maxSteps = d.max_steps;
+        },
+
+        // Phase 11: Settings methods
+        openSettings() {
+          this.showSettings = true;
+          this.loadSettings();
+          this.loadOllamaModels();
+        },
+
+        async loadSettings() {
+          try {
+            const r = await fetch('/api/settings');
+            if (!r.ok) return;
+            const d = await r.json();
+            this.settingsProvider = d.provider;
+            this.settingsOllamaModel = d.ollama_model || '';
+            this.settingsOllamaHost = d.ollama_host || 'http://localhost:11434';
+            this.anthropicKeySet = !!d.anthropic_key_set;
+            this.openaiKeySet = !!d.openai_key_set;
+            this.safetyDefaults = Array.isArray(d.safety_defaults) ? d.safety_defaults : [];
+            this.userDomains = Array.isArray(d.user_domains) ? d.user_domains : [];
+            this.anthropicKeyAction = 'keep';
+            this.openaiKeyAction = 'keep';
+            this.anthropicKeyValue = '';
+            this.openaiKeyValue = '';
+          } catch (e) {}
+        },
+
+        async loadOllamaModels() {
+          try {
+            const r = await fetch('/api/settings/ollama-models');
+            const d = await r.json();
+            if (d.error === 'unreachable') {
+              this.ollamaModels = [];
+              this.ollamaUnreachable = true;
+              return;
+            }
+            this.ollamaModels = Array.isArray(d.models) ? d.models : [];
+            this.ollamaUnreachable = false;
+          } catch (e) {
+            this.ollamaModels = [];
+            this.ollamaUnreachable = true;
+          }
+        },
+
+        addDomain() {
+          let d = (this.newDomain || '').trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
+          if (!d) return;
+          if (this.userDomains.includes(d) || this.safetyDefaults.includes(d)) {
+            this.newDomain = '';
+            return;
+          }
+          this.userDomains.push(d);
+          this.newDomain = '';
+        },
+
+        removeDomain(d) {
+          this.userDomains = this.userDomains.filter(x => x !== d);
+        },
+
+        async saveSettings() {
+          const fd = new FormData();
+          fd.append('provider', this.settingsProvider);
+          fd.append('ollama_model', this.settingsOllamaModel || '');
+          fd.append('ollama_host', this.settingsOllamaHost || '');
+          fd.append('anthropic_key_action', this.anthropicKeyAction);
+          fd.append('anthropic_key_value', this.anthropicKeyValue || '');
+          fd.append('openai_key_action', this.openaiKeyAction);
+          fd.append('openai_key_value', this.openaiKeyValue || '');
+          fd.append('user_domains_json', JSON.stringify(this.userDomains));
+          try {
+            const r = await fetch('/api/settings', { method: 'POST', body: fd });
+            const d = await r.json();
+            if (r.ok && d.status === 'saved') {
+              this.savedMsg = 'Saved ✓';
+              this.anthropicKeyValue = '';
+              this.openaiKeyValue = '';
+              this.anthropicKeyAction = 'keep';
+              this.openaiKeyAction = 'keep';
+              setTimeout(() => { this.savedMsg = ''; }, 2000);
+            } else {
+              this.savedMsg = 'Save failed — try again';
+            }
+          } catch (e) {
+            this.savedMsg = 'Save failed — try again';
+          }
         },
       };
     }
