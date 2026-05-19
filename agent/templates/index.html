@@ -121,8 +121,37 @@
               <span class="model-line" aria-live="polite" x-text="tickerText()"></span>
             </div>
 
+            <!-- Phase 13: Preset button row -->
+            <div class="preset-row">
+              <button type="button"
+                      class="btn btn-preset"
+                      :class="{'btn-preset--active': activePromptId === 'apartment'}"
+                      :disabled="state === 'running' || state === 'paused'"
+                      :aria-pressed="activePromptId === 'apartment'"
+                      @click="applyPreset('apartment-search')">
+                Apartment Search
+              </button>
+              <button type="button"
+                      class="btn btn-preset"
+                      :class="{'btn-preset--active': activePromptId === 'job'}"
+                      :disabled="state === 'running' || state === 'paused'"
+                      :aria-pressed="activePromptId === 'job'"
+                      @click="applyPreset('job-search')">
+                Job Search
+              </button>
+              <button type="button"
+                      class="btn btn-preset"
+                      :class="{'btn-preset--active': activePromptId === 'candidate'}"
+                      :disabled="state === 'running' || state === 'paused'"
+                      :aria-pressed="activePromptId === 'candidate'"
+                      @click="applyPreset('candidate-search')">
+                Candidate Search
+              </button>
+            </div>
+
             <!-- Task form -->
             <form hx-post="/run" hx-swap="none">
+              <input type="hidden" name="active_prompt_id" :value="activePromptId">
               <textarea name="task"
                         rows="3"
                         maxlength="2000"
@@ -794,6 +823,27 @@
         activePromptName() {
           const p = this.prompts.find(p => p.id === this.activePromptId);
           return (p && p.name) || 'Generic';
+        },
+
+        // Phase 13: Preset application
+        applyPreset(presetSlug) {
+          const PRESET_TEMPLATES = {
+            'apartment-search': 'Find available apartments for rent in [city]. List each result with address, price per month, number of bedrooms, and a link to the listing. Check Craigslist, Apartments.com, and Zillow. Stop after collecting 10 results or 3 pages per site.',
+            'job-search':       'Search for [job title] jobs in [city or remote]. List each result with company name, job title, salary range if shown, and a link to the posting. Check LinkedIn and Indeed. Apply the filters: full-time, posted in the last 7 days. Stop after collecting 10 results.',
+            'candidate-search': 'Find professional profiles for [role] candidates with experience in [skill or industry]. For each candidate list their name, current title, company, LinkedIn URL or profile source, and key experience signals. Stop after collecting 10 profiles.',
+          };
+          const slugToPromptId = {
+            'apartment-search': 'apartment',
+            'job-search':       'job',
+            'candidate-search': 'candidate',
+          };
+          this.activePromptId = slugToPromptId[presetSlug] || presetSlug;
+          const ta = this.$el.querySelector('textarea[name="task"]');
+          if (ta) {
+            ta.value = PRESET_TEMPLATES[presetSlug] || '';
+            ta.dispatchEvent(new Event('input'));
+            ta.focus();
+          }
         },
 
         addPrompt() {
