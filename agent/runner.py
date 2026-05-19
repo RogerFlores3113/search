@@ -42,6 +42,28 @@ GUARDRAIL_PROMPT = (
     "4. If you encounter such an element, set is_done=True, success=False, explain what you found.\n"
 )
 
+def _build_extend_system_message(active_prompt_id: str, prompts: list[dict]) -> str:
+    """Build the extend_system_message string for the Agent constructor.
+
+    If active_prompt_id matches an entry in prompts with non-empty content,
+    returns user_prompt_content + '\\n\\n' + GUARDRAIL_PROMPT.
+
+    Falls back to GUARDRAIL_PROMPT alone when:
+    - active_prompt_id is falsy
+    - prompts is empty
+    - no entry matches active_prompt_id
+    - the matching entry has empty/falsy content
+
+    GUARDRAIL_PROMPT is always the suffix — it cannot be removed or reordered
+    via the API (T-12-03 mitigation).
+    """
+    if active_prompt_id and prompts:
+        match = next((p for p in prompts if p.get("id") == active_prompt_id), None)
+        if match and match.get("content"):
+            return match["content"] + "\n\n" + GUARDRAIL_PROMPT
+    return GUARDRAIL_PROMPT
+
+
 CAPTCHA_KEYWORDS = frozenset([
     "captcha", "recaptcha", "hcaptcha", "cloudflare",
     "bot detection", "access denied", "verify you are human",
@@ -589,7 +611,7 @@ async def run_agent(
                 task=task,
                 llm=llm,
                 browser_session=browser,
-                extend_system_message=GUARDRAIL_PROMPT,
+                extend_system_message=_build_extend_system_message(config.active_prompt_id, config.prompts),
                 calculate_cost=True,
                 register_new_step_callback=_pre_step,
             )
