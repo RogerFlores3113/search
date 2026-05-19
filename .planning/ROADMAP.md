@@ -145,7 +145,7 @@ See archive: `.planning/milestones/v0.2.0-ROADMAP.md`
 | 9.1. Close gap PERF-01 | v0.2.0 | 2/2 | Complete | 2026-05-18 |
 | 10. UI Rendering Fixes + Theme | v0.3.0 | 3/3 | Complete    | 2026-05-19 |
 | 11. Settings Panel + Domain Safety | v0.3.0 | 5/5 | Complete   | 2026-05-19 |
-| 12. Prompt Library | v0.3.0 | 4/4 | Complete | 2026-05-18 |
+| 12. Prompt Library | v0.3.0 | 4/4 | Complete    | 2026-05-19 |
 | 13. Task Presets + Prompt Engineering + Runner Wiring | v0.3.0 | 0/? | Not started | — |
 | 14. Windows Distribution | v0.3.0 | 0/? | Not started | — |
 | 15. Portfolio Presentation | v0.3.0 | 0/? | Not started | — |
