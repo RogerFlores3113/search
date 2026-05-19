@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
+import httpx
+
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -259,6 +261,160 @@ async def runs_endpoint(request: Request):
     return templates.TemplateResponse(
         request=request, name="runs_fragment.html", context={"runs": runs}
     )
+
+
+@app.get("/api/settings")
+async def get_settings() -> JSONResponse:
+    """Return sanitized settings state — never plaintext keys, never encrypted blobs.
+
+    Response shape (T-11-11 mitigation):
+        provider, ollama_model, ollama_host, anthropic_model, openai_model,
+        anthropic_key_set (bool), openai_key_set (bool),
+        safety_defaults (sorted list), user_domains (list)
+    """
+    from agent.config import config, SAFETY_DEFAULTS
+    from agent.settings import load_settings_json
+
+    stored = load_settings_json()
+    return JSONResponse({
+        "provider": config.provider,
+        "ollama_model": config.ollama_model,
+        "ollama_host": config.ollama_host,
+        "anthropic_model": config.anthropic_model,
+        "openai_model": config.openai_model,
+        "anthropic_key_set": bool(stored.get("anthropic_api_key_enc")),
+        "openai_key_set": bool(stored.get("openai_api_key_enc")),
+        "safety_defaults": sorted(SAFETY_DEFAULTS),
+        "user_domains": list(config.user_domains),
+    })
+
+
+@app.get("/api/settings/ollama-models")
+async def get_ollama_models() -> JSONResponse:
+    """Proxy GET http://{ollama_host}/api/tags and return model name list.
+
+    On any connection/timeout/JSON error returns {"models": [], "error": "unreachable"}
+    so the settings UI panel remains functional even when Ollama is down (T-11-15).
+    Uses async httpx (Pitfall 7 — not sync httpx.get).
+    """
+    from agent.config import config
+
+    host = config.ollama_host.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as client:
+            resp = await client.get(f"{host}/api/tags")
+            resp.raise_for_status()
+            data = resp.json()
+            models = [
+                m["name"]
+                for m in data.get("models", [])
+                if isinstance(m, dict) and "name" in m
+            ]
+            return JSONResponse({"models": models})
+    except Exception:
+        return JSONResponse({"models": [], "error": "unreachable"})
+
+
+@app.post("/api/settings")
+async def post_settings(
+    provider: str = Form(...),
+    ollama_model: str = Form(""),
+    ollama_host: str = Form(""),
+    anthropic_key_action: str = Form("keep"),
+    anthropic_key_value: str = Form(""),
+    openai_key_action: str = Form("keep"),
+    openai_key_value: str = Form(""),
+    user_domains_json: str = Form("[]"),
+) -> JSONResponse:
+    """Save settings to settings.json and live-patch the config singleton.
+
+    key_action ∈ {set, clear, keep} — prevents accidental key rotation on
+    empty form submissions (Pitfall 4 / T-11-14 mitigation).
+
+    user_domains filtered against SAFETY_DEFAULTS server-side — the UI also
+    prevents overlap but the server is the trust boundary (T-11-13 mitigation).
+
+    API key plaintext is never echoed in any response (T-11-12 mitigation).
+    """
+    try:
+        import json as _json
+        from agent.config import config, SAFETY_DEFAULTS
+        from agent.settings import (
+            load_settings_json,
+            save_settings_json,
+            encrypt_api_key,
+            decrypt_api_key,
+        )
+        from pydantic import SecretStr
+
+        stored = load_settings_json()
+
+        # --- Anthropic key handling (T-11-14) ---
+        if anthropic_key_action == "set" and anthropic_key_value.strip():
+            stored["anthropic_api_key_enc"] = encrypt_api_key(anthropic_key_value.strip())
+        elif anthropic_key_action == "clear":
+            stored.pop("anthropic_api_key_enc", None)
+        # else: keep — no change
+
+        # --- OpenAI key handling (T-11-14) ---
+        if openai_key_action == "set" and openai_key_value.strip():
+            stored["openai_api_key_enc"] = encrypt_api_key(openai_key_value.strip())
+        elif openai_key_action == "clear":
+            stored.pop("openai_api_key_enc", None)
+        # else: keep — no change
+
+        # --- user_domains validation (T-11-13) ---
+        try:
+            parsed = _json.loads(user_domains_json)
+        except Exception:
+            parsed = []
+        cleaned: list[str] = []
+        for d in parsed:
+            if not isinstance(d, str):
+                continue
+            d = d.strip().lower()
+            # Strip scheme and trailing slash (defensive — UI also does this)
+            for scheme in ("https://", "http://"):
+                if d.startswith(scheme):
+                    d = d[len(scheme):]
+            d = d.rstrip("/").strip()
+            if not d:
+                continue
+            if d in SAFETY_DEFAULTS:
+                continue  # filter SAFETY_DEFAULT overlap
+            if d in cleaned:
+                continue  # dedup
+            cleaned.append(d)
+        user_domains = cleaned
+
+        # --- Persist to settings.json ---
+        stored["provider"] = provider
+        stored["ollama_model"] = ollama_model or stored.get("ollama_model", config.ollama_model)
+        stored["ollama_host"] = ollama_host or stored.get("ollama_host", config.ollama_host)
+        stored["user_domains"] = user_domains
+        save_settings_json(stored)
+
+        # --- Live-patch config singleton (MUTABILITY_MODE: direct field assignment) ---
+        config.provider = stored["provider"]
+        config.ollama_model = stored["ollama_model"]
+        config.ollama_host = stored["ollama_host"]
+        config.user_domains = user_domains
+
+        # Anthropic key live-patch
+        anth_enc = stored.get("anthropic_api_key_enc")
+        anth_plain = decrypt_api_key(anth_enc) if anth_enc else None
+        config.anthropic_api_key = SecretStr(anth_plain) if anth_plain else None
+
+        # OpenAI key live-patch
+        oai_enc = stored.get("openai_api_key_enc")
+        oai_plain = decrypt_api_key(oai_enc) if oai_enc else None
+        config.openai_api_key = SecretStr(oai_plain) if oai_plain else None
+
+        return JSONResponse({"status": "saved"})
+
+    except Exception as e:
+        # Never echo raw key values — generic error (T-11-12)
+        return JSONResponse({"status": "error", "detail": str(e)[:200]}, status_code=500)
 
 
 def _serialize_event(event: object) -> ServerSentEvent:
