@@ -315,13 +315,14 @@ async def test_run_endpoint_accepts_active_prompt_id(tmp_path, monkeypatch):
     settings_file.write_text(json.dumps({"prompts": seed_data, "active_prompt_id": "apartment"}))
     monkeypatch.setattr("agent.settings.get_settings_path", lambda: settings_file)
 
-    from agent.main import app  # noqa: PLC0415
+    from agent.main import app, DISCLAIMER_COOKIE_NAME, _disclaimer_serializer  # noqa: PLC0415
 
+    disclaimer_cookies = {DISCLAIMER_COOKIE_NAME: _disclaimer_serializer().dumps("1")}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post("/run", data={
             "task": "find apartments",
             "active_prompt_id": "apartment",
-        })
+        }, cookies=disclaimer_cookies)
     assert r.status_code in (200, 303, 409), (
         f"POST /run with active_prompt_id must return 200/303/409, got {r.status_code}"
     )

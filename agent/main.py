@@ -182,7 +182,7 @@ async def accept_disclaimer_endpoint(request: Request):
 
 
 @app.post("/run")
-async def run_endpoint(request: Request, task: str = Form(..., max_length=2000)):
+async def run_endpoint(request: Request, task: str = Form(..., max_length=2000), active_prompt_id: str = Form("generic")):
     """Accept a task string and start the agent as a fire-and-forget asyncio task.
 
     Accepts application/x-www-form-urlencoded (the HTMX default for form submissions).
@@ -207,7 +207,7 @@ async def run_endpoint(request: Request, task: str = Form(..., max_length=2000))
         _active_queue = data_queue
         _active_control_queue = control_queue
         _active_task = asyncio.create_task(
-            run_agent(task, queue=data_queue, control_queue=control_queue)
+            run_agent(task, queue=data_queue, control_queue=control_queue, active_prompt_id=active_prompt_id)
         )
     return JSONResponse({"status": "started"}, headers={"HX-Trigger": "streamStarted"})
 
