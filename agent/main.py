@@ -315,11 +315,16 @@ async def get_ollama_models() -> JSONResponse:
         return JSONResponse({"models": [], "error": "unreachable"})
 
 
+ALLOWED_PROVIDERS = {"ollama", "anthropic", "openai"}
+
+
 @app.post("/api/settings")
 async def post_settings(
     provider: str = Form(...),
     ollama_model: str = Form(""),
     ollama_host: str = Form(""),
+    anthropic_model: str = Form(""),
+    openai_model: str = Form(""),
     anthropic_key_action: str = Form("keep"),
     anthropic_key_value: str = Form(""),
     openai_key_action: str = Form("keep"),
@@ -346,6 +351,10 @@ async def post_settings(
             decrypt_api_key,
         )
         from pydantic import SecretStr
+
+        # CR-02: Validate provider before any disk I/O
+        if provider not in ALLOWED_PROVIDERS:
+            return JSONResponse({"status": "error", "detail": "invalid provider"}, status_code=422)
 
         stored = load_settings_json()
 
@@ -391,6 +400,8 @@ async def post_settings(
         stored["provider"] = provider
         stored["ollama_model"] = ollama_model or stored.get("ollama_model", config.ollama_model)
         stored["ollama_host"] = ollama_host or stored.get("ollama_host", config.ollama_host)
+        stored["anthropic_model"] = anthropic_model or stored.get("anthropic_model", config.anthropic_model)
+        stored["openai_model"] = openai_model or stored.get("openai_model", config.openai_model)
         stored["user_domains"] = user_domains
         save_settings_json(stored)
 
@@ -398,6 +409,8 @@ async def post_settings(
         config.provider = stored["provider"]
         config.ollama_model = stored["ollama_model"]
         config.ollama_host = stored["ollama_host"]
+        config.anthropic_model = stored["anthropic_model"]
+        config.openai_model = stored["openai_model"]
         config.user_domains = user_domains
 
         # Anthropic key live-patch
