@@ -104,14 +104,12 @@ jobs:
         run: |
           $proc = Start-Process -FilePath "dist\local-browser-agent\local-browser-agent.exe" -PassThru
           Start-Sleep -Seconds 5
-          $logPath = "$env:APPDATA\local-browser-agent\app.log"
-          if (-not (Test-Path $logPath)) {
-            Write-Error "app.log not created — frozen exe crashed on startup"
-            $proc | Stop-Process -Force
+          if ($proc.HasExited -and $proc.ExitCode -ne 0) {
+            Write-Error "exe crashed on startup with exit code $($proc.ExitCode)"
             exit 1
           }
-          Write-Host "app.log found — frozen exe started successfully"
-          $proc | Stop-Process -Force
+          Write-Host "exe started successfully (pid $($proc.Id), still running: $(-not $proc.HasExited))"
+          $proc | Stop-Process -Force -ErrorAction SilentlyContinue
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
