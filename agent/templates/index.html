@@ -397,6 +397,11 @@
               el.addEventListener('htmx:sseMessage', (e) => this[method](e));
             }
           });
+          // Load saved settings on page mount so provider/domain state is
+          // pre-populated without the user needing to open the settings panel.
+          // loadOllamaModels() is intentionally excluded — it is expensive and
+          // belongs only when the panel opens.
+          this.loadSettings();
         },
 
         badgeClass() {
