@@ -14,7 +14,7 @@ from browser_use import Agent, ChatAnthropic, ChatLiteLLM, ChatOllama
 from browser_use.browser.profile import BrowserProfile
 from browser_use.browser.session import BrowserSession
 
-from agent.config import config
+from agent.config import config, SAFETY_DEFAULTS
 from agent.events import (
     ScreenshotEvent, StateEvent,
     ProgressEvent, SummaryEvent, ErrorEvent, DoneEvent,
@@ -502,7 +502,7 @@ async def run_agent(
         # Fall through to finally — do not return here so DoneEvent is always emitted
     else:
         profile = BrowserProfile(
-            prohibited_domains=config.blocked_domains,
+            prohibited_domains=SAFETY_DEFAULTS | set(config.user_domains),
             channel="chrome",
             headless=False,
             keep_alive=False,
