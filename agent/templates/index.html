@@ -57,132 +57,6 @@
       </div>
     </div>
 
-    <!-- Phase 11: Settings overlay — z-index 200 (above disclaimer's 100) -->
-    <div x-show="showSettings"
-         role="dialog"
-         aria-modal="true"
-         aria-labelledby="settings-title"
-         class="settings-overlay"
-         @keydown.escape.window="showSettings = false">
-      <div class="settings-panel">
-        <!-- Header -->
-        <div class="settings-header">
-          <h2 id="settings-title">Settings</h2>
-          <button type="button"
-                  class="btn btn-neutral"
-                  aria-label="Close settings"
-                  @click="showSettings = false">&#x2715;</button>
-        </div>
-
-        <!-- Provider radio group -->
-        <fieldset class="provider-radio-group">
-          <legend>Provider</legend>
-          <label><input type="radio" name="provider" value="ollama" x-model="settingsProvider"> Ollama</label>
-          <label><input type="radio" name="provider" value="anthropic" x-model="settingsProvider"> Anthropic</label>
-          <label><input type="radio" name="provider" value="openai" x-model="settingsProvider"> OpenAI</label>
-        </fieldset>
-
-        <!-- Ollama section -->
-        <div class="settings-section" x-show="settingsProvider === 'ollama'">
-          <label>Model
-            <select class="settings-select" x-model="settingsOllamaModel">
-              <template x-for="m in ollamaModels" :key="m">
-                <option :value="m" x-text="m"></option>
-              </template>
-            </select>
-          </label>
-          <span class="settings-warning"
-                x-show="ollamaUnreachable"
-                x-text="'Ollama is not running — start Ollama to see models'"></span>
-          <label>Ollama host
-            <input type="text"
-                   class="settings-input"
-                   x-model="settingsOllamaHost"
-                   placeholder="http://localhost:11434">
-          </label>
-        </div>
-
-        <!-- Anthropic section -->
-        <div class="settings-section" x-show="settingsProvider === 'anthropic'">
-          <label>Anthropic API key
-            <input type="password"
-                   class="settings-input"
-                   placeholder="&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;"
-                   x-model="anthropicKeyValue"
-                   @input="anthropicKeyAction = 'set'">
-          </label>
-          <button type="button"
-                  class="btn btn-neutral"
-                  @click="anthropicKeyAction = 'clear'; anthropicKeyValue = ''">Clear</button>
-          <span class="settings-model-readonly"
-                x-text="'Model: ' + (anthropicModel || 'claude-sonnet-4-5')"></span>
-        </div>
-
-        <!-- OpenAI section -->
-        <div class="settings-section" x-show="settingsProvider === 'openai'">
-          <label>OpenAI API key
-            <input type="password"
-                   class="settings-input"
-                   placeholder="&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;"
-                   x-model="openaiKeyValue"
-                   @input="openaiKeyAction = 'set'">
-          </label>
-          <button type="button"
-                  class="btn btn-neutral"
-                  @click="openaiKeyAction = 'clear'; openaiKeyValue = ''">Clear</button>
-          <span class="settings-model-readonly"
-                x-text="'Model: ' + (openaiModel || 'gpt-4o')"></span>
-        </div>
-
-        <!-- Domain Safety section (always visible) -->
-        <div class="settings-section">
-          <h3>Domain Safety</h3>
-          <p>The agent will not visit these domains.</p>
-          <!-- Locked safety defaults (no remove control) -->
-          <ul class="domain-list">
-            <template x-for="d in safetyDefaults" :key="d">
-              <li class="domain-row domain-row--locked">
-                <span aria-hidden="true">&#x1F512;</span>
-                <span x-text="d"></span>
-              </li>
-            </template>
-          </ul>
-          <!-- User domains (with remove control) -->
-          <ul class="domain-list">
-            <template x-for="d in userDomains" :key="d">
-              <li class="domain-row domain-row--user">
-                <span x-text="d"></span>
-                <button type="button"
-                        :aria-label="`Remove ${d}`"
-                        @click="removeDomain(d)">&#x2715;</button>
-              </li>
-            </template>
-          </ul>
-          <!-- Add domain row -->
-          <div class="add-domain-row">
-            <input type="text"
-                   class="settings-input"
-                   placeholder="example.com"
-                   x-model="newDomain"
-                   @keydown.enter.prevent="addDomain()">
-            <button type="button"
-                    class="btn btn-neutral"
-                    @click="addDomain()">Add</button>
-          </div>
-        </div>
-
-        <!-- Footer: Save Settings -->
-        <div class="settings-footer">
-          <button type="button"
-                  class="btn btn-primary"
-                  @click="saveSettings()">Save Settings</button>
-          <span x-show="savedMsg"
-                x-text="savedMsg"
-                class="save-confirm"></span>
-        </div>
-      </div>
-    </div>
-
     <!-- Main UI shell — `inert` removes the underlying form from focus, pointer
          events, and the accessibility tree while the modal is open. Replaces
          the prior pointer-events:none + filter:blur hack which was keyboard-
@@ -338,6 +212,133 @@
                hx-swap="innerHTML">
           </div>
         </section>
+
+        <!-- Phase 11: Settings overlay — z-index 200 (above disclaimer's 100) -->
+        <!-- Relocated inside agentUI() scope (CR-01 fix: x-show="showSettings" evaluates agentUI state) -->
+        <div x-show="showSettings"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="settings-title"
+             class="settings-overlay"
+             @keydown.escape.window="showSettings = false">
+          <div class="settings-panel">
+            <!-- Header -->
+            <div class="settings-header">
+              <h2 id="settings-title">Settings</h2>
+              <button type="button"
+                      class="btn btn-neutral"
+                      aria-label="Close settings"
+                      @click="showSettings = false">&#x2715;</button>
+            </div>
+
+            <!-- Provider radio group -->
+            <fieldset class="provider-radio-group">
+              <legend>Provider</legend>
+              <label><input type="radio" name="provider" value="ollama" x-model="settingsProvider"> Ollama</label>
+              <label><input type="radio" name="provider" value="anthropic" x-model="settingsProvider"> Anthropic</label>
+              <label><input type="radio" name="provider" value="openai" x-model="settingsProvider"> OpenAI</label>
+            </fieldset>
+
+            <!-- Ollama section -->
+            <div class="settings-section" x-show="settingsProvider === 'ollama'">
+              <label>Model
+                <select class="settings-select" x-model="settingsOllamaModel">
+                  <template x-for="m in ollamaModels" :key="m">
+                    <option :value="m" x-text="m"></option>
+                  </template>
+                </select>
+              </label>
+              <span class="settings-warning"
+                    x-show="ollamaUnreachable"
+                    x-text="'Ollama is not running — start Ollama to see models'"></span>
+              <label>Ollama host
+                <input type="text"
+                       class="settings-input"
+                       x-model="settingsOllamaHost"
+                       placeholder="http://localhost:11434">
+              </label>
+            </div>
+
+            <!-- Anthropic section -->
+            <div class="settings-section" x-show="settingsProvider === 'anthropic'">
+              <label>Anthropic API key
+                <input type="password"
+                       class="settings-input"
+                       placeholder="&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;"
+                       x-model="anthropicKeyValue"
+                       @input="anthropicKeyAction = 'set'">
+              </label>
+              <button type="button"
+                      class="btn btn-neutral"
+                      @click="anthropicKeyAction = 'clear'; anthropicKeyValue = ''">Clear</button>
+              <span class="settings-model-readonly"
+                    x-text="'Model: ' + (anthropicModel || 'claude-sonnet-4-5')"></span>
+            </div>
+
+            <!-- OpenAI section -->
+            <div class="settings-section" x-show="settingsProvider === 'openai'">
+              <label>OpenAI API key
+                <input type="password"
+                       class="settings-input"
+                       placeholder="&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;"
+                       x-model="openaiKeyValue"
+                       @input="openaiKeyAction = 'set'">
+              </label>
+              <button type="button"
+                      class="btn btn-neutral"
+                      @click="openaiKeyAction = 'clear'; openaiKeyValue = ''">Clear</button>
+              <span class="settings-model-readonly"
+                    x-text="'Model: ' + (openaiModel || 'gpt-4o')"></span>
+            </div>
+
+            <!-- Domain Safety section (always visible) -->
+            <div class="settings-section">
+              <h3>Domain Safety</h3>
+              <p>The agent will not visit these domains.</p>
+              <!-- Locked safety defaults (no remove control) -->
+              <ul class="domain-list">
+                <template x-for="d in safetyDefaults" :key="d">
+                  <li class="domain-row domain-row--locked">
+                    <span aria-hidden="true">&#x1F512;</span>
+                    <span x-text="d"></span>
+                  </li>
+                </template>
+              </ul>
+              <!-- User domains (with remove control) -->
+              <ul class="domain-list">
+                <template x-for="d in userDomains" :key="d">
+                  <li class="domain-row domain-row--user">
+                    <span x-text="d"></span>
+                    <button type="button"
+                            :aria-label="`Remove ${d}`"
+                            @click="removeDomain(d)">&#x2715;</button>
+                  </li>
+                </template>
+              </ul>
+              <!-- Add domain row -->
+              <div class="add-domain-row">
+                <input type="text"
+                       class="settings-input"
+                       placeholder="example.com"
+                       x-model="newDomain"
+                       @keydown.enter.prevent="addDomain()">
+                <button type="button"
+                        class="btn btn-neutral"
+                        @click="addDomain()">Add</button>
+              </div>
+            </div>
+
+            <!-- Footer: Save Settings -->
+            <div class="settings-footer">
+              <button type="button"
+                      class="btn btn-primary"
+                      @click="saveSettings()">Save Settings</button>
+              <span x-show="savedMsg"
+                    x-text="savedMsg"
+                    class="save-confirm"></span>
+            </div>
+          </div>
+        </div>
 
       </div><!-- /sse-container -->
 
