@@ -42,7 +42,7 @@ def test_timestamp_color_is_visible():
     """FIX-01, D-01: .timestamp color must be var(--text-secondary) for
     readability. Currently var(--text-placeholder) which is too dim.
     """
-    css = Path("agent/static/style.css").read_text()
+    css = Path("agent/static/style.css").read_text(encoding="utf-8")
     # Find the .timestamp rule body
     ts_start = css.find(".timestamp {")
     assert ts_start != -1, "style.css must contain a .timestamp { rule"
@@ -103,7 +103,7 @@ def test_narration_row_align_items():
     action badges (which are taller than inline text) are centred vertically.
     Currently uses align-items: baseline which causes misalignment.
     """
-    css = Path("agent/static/style.css").read_text()
+    css = Path("agent/static/style.css").read_text(encoding="utf-8")
     row_start = css.find(".narration-row {")
     assert row_start != -1, "style.css must contain .narration-row { rule"
     row_body = css[row_start: css.find("}", row_start) + 1]
@@ -124,7 +124,7 @@ def test_run_history_expand_indicator():
     """FIX-04, D-07: Run history rows must have CSS ::before indicators
     (triangle arrows) to signal expandability to users.
     """
-    css = Path("agent/static/style.css").read_text()
+    css = Path("agent/static/style.css").read_text(encoding="utf-8")
     assert ".run-history-item > details > summary::before" in css, (
         "style.css must define .run-history-item > details > summary::before (FIX-04 D-07)"
     )
@@ -151,7 +151,7 @@ def test_dark_green_theme_vars():
     for bg-dominant, bg-panel, border, and accent-green.
     Old neutral-dark values must be removed.
     """
-    css = Path("agent/static/style.css").read_text()
+    css = Path("agent/static/style.css").read_text(encoding="utf-8")
     # New green values must be present
     assert "--bg-dominant: #091209" in css, (
         "style.css must set --bg-dominant: #091209 (THEME-01 D-09)"
@@ -185,7 +185,7 @@ def test_action_badge_blue_unified():
     (#14532d green, #92400e amber, #374151 slate) must be absent from
     .action-badge-* rules.
     """
-    css = Path("agent/static/style.css").read_text()
+    css = Path("agent/static/style.css").read_text(encoding="utf-8")
     assert css.count("#1d4ed8") >= 4, (
         "style.css must contain #1d4ed8 at least 4 times (THEME-02 D-12 — unified blue)"
     )
@@ -243,7 +243,7 @@ def test_spinner_css_declared():
     """THEME-03, D-16: style.css must declare the spin keyframe animation
     and .spinner class with the animation applied.
     """
-    css = Path("agent/static/style.css").read_text()
+    css = Path("agent/static/style.css").read_text(encoding="utf-8")
     assert "@keyframes spin" in css, (
         "style.css must declare @keyframes spin (THEME-03 D-16)"
     )
@@ -271,7 +271,7 @@ def test_thought_area_div_present():
     assert 'class="thought-area"' in html, (
         "index.html must contain class=\"thought-area\" on the container (THEME-04 D-17)"
     )
-    css = Path("agent/static/style.css").read_text()
+    css = Path("agent/static/style.css").read_text(encoding="utf-8")
     assert ".thought-area {" in css, (
         "style.css must declare .thought-area { rule (THEME-04 D-17)"
     )
@@ -316,7 +316,7 @@ def test_narration_feed_compressed():
     gap: 3px to give more screen space to the screenshot and thought blocks.
     Old values (max-height: 300px, gap: 6px) must be removed.
     """
-    css = Path("agent/static/style.css").read_text()
+    css = Path("agent/static/style.css").read_text(encoding="utf-8")
     feed_start = css.find(".narration-feed {")
     assert feed_start != -1, "style.css must contain .narration-feed { rule"
     feed_body = css[feed_start: css.find("}", feed_start) + 1]
@@ -338,7 +338,7 @@ def test_narration_row_padding():
     """THEME-05, D-22: .narration-row padding must be 4px 8px (tighter
     than the old var(--sp-sm) 10px) to compress the feed vertically.
     """
-    css = Path("agent/static/style.css").read_text()
+    css = Path("agent/static/style.css").read_text(encoding="utf-8")
     row_start = css.find(".narration-row {")
     assert row_start != -1, "style.css must contain .narration-row { rule"
     row_body = css[row_start: css.find("}", row_start) + 1]
