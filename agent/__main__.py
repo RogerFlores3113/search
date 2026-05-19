@@ -14,6 +14,7 @@ See: .planning/phases/04-distribution/04-RESEARCH.md "Code Examples" section
 """
 from __future__ import annotations
 
+import multiprocessing
 import sys
 
 import uvicorn
@@ -63,6 +64,11 @@ def main() -> None:
         import logging
         from agent.paths import get_user_data_dir
         log_path = get_user_data_dir() / "app.log"
+        # Redirect stdout/stderr BEFORE uvicorn starts.
+        # On Windows with console=False, PyInstaller sets these to None.
+        # Any print() or stream access without this redirect crashes the process.
+        sys.stdout = open(log_path, "a", encoding="utf-8")  # noqa: WPS515
+        sys.stderr = sys.stdout
         logging.basicConfig(
             filename=str(log_path),
             level=logging.INFO,
@@ -84,8 +90,15 @@ def main() -> None:
     schedule_browser_open(url="http://127.0.0.1:8080", delay=2.0)
 
     # Blocks until server exits
-    uvicorn.run("agent.main:app", host="127.0.0.1", port=8080, log_level="info")
+    uvicorn.run(
+        "agent.main:app",
+        host="127.0.0.1",
+        port=8080,
+        log_level="info",
+        use_colors=False,  # Required: prevents ColourizedFormatter crash on Windows frozen
+    )
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()  # MUST be first — prevents endless spawn loop on Windows
     main()
