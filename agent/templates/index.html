@@ -96,6 +96,7 @@
                    style="display:none"
                    x-show="state !== 'idle'">
             </div>
+            <div id="thought-area" class="thought-area"></div>
           </div>
 
           <!-- Right column: control panel -->
@@ -154,6 +155,12 @@
                       hx-post="/stop"
                       hx-swap="none"
                       :disabled="state !== 'running' && state !== 'paused'">Stop</button>
+            </div>
+
+            <!-- THEME-03: Real-time agent status spinner -->
+            <div class="agent-status" x-show="state === 'running'">
+              <span class="spinner"></span>
+              <span class="agent-status-text" x-text="agentStatusText()"></span>
             </div>
 
             <!-- Narration feed label -->
@@ -221,6 +228,7 @@
         modelName: '',
         provider: '',
         isOllama: false,
+        currentAction: '',
 
         init() {
           // Wire SSE bridge elements to component methods. The bridges have
@@ -315,6 +323,16 @@
           this.modelName = d.model_name || '';
           this.provider = d.provider || '';
           this.isOllama = (d.provider || '').toLowerCase() === 'ollama';
+        },
+
+        agentStatusText() {
+          const map = {
+            navigate: 'Navigating...',
+            click:    'Clicking...',
+            type:     'Typing...',
+            scroll:   'Scrolling...',
+          };
+          return map[this.currentAction] || 'Thinking...';
         },
 
         _ensureNarrationRow(step) {
@@ -428,6 +446,7 @@
           // insertions are idempotent so re-firing the same step's event
           // doesn't duplicate either child.
           const d = JSON.parse($event.detail.data);
+          this.currentAction = d.action_type || 'thinking';
           const row = this._ensureNarrationRow(d.step);
           const first = row.firstChild;
           const alreadyBadged = first && first.className && first.className.indexOf('action-badge-') === 0;
