@@ -41,8 +41,8 @@ User types any natural language task, the agent opens Chrome and completes it �
 - [ ] Settings panel: Ollama model auto-discovery, API key inputs, domain exclusion list, prompt library (SET-01–04)
 - [ ] Domain exclusion list: pre-filled safety defaults (banking, payment, gov, medical) — some non-editable, user-extensible (SAFE-01)
 - [ ] Prompt library: save/name multiple system prompts, select active, enable A/B testing (PROMPT-01)
-- [ ] Task presets: apartment, job, candidate search — pre-filled templates with per-preset domain-tuned prompts (PRESET-01)
-- [ ] Deep prompt engineering: detailed generic system prompt + domain-specific prompts for each preset (PROMPT-02)
+- [x] Task presets: apartment, job, candidate search — pre-filled templates with per-preset domain-tuned prompts (PRESET-01, PRESET-02, PRESET-03) — Phase 13
+- [x] Deep prompt engineering: generic + apartment + job (unauthenticated-only) + candidate system prompts, runner snapshot (ENG-01–04) — Phase 13
 - [ ] Auth & browser isolation audit: determine WSL Chrome credential posture, document findings (AUTH-01)
 - [ ] Windows .exe packaging: PyInstaller .exe, double-click to run, GitHub Actions tag → release (WIN-01)
 - [ ] Portfolio presentation: README with screenshots/GIF, Mac + Windows download story (PORTFOLIO-01)

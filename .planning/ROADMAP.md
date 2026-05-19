@@ -41,7 +41,7 @@ See archive: `.planning/milestones/v0.2.0-ROADMAP.md`
 - [x] **Phase 10: UI Rendering Fixes + Theme** - Fix all v0.2.0 visual gaps and apply dark-green theme, badge colors, real-time status spinner, and compressed layout (completed 2026-05-19)
 - [x] **Phase 11: Settings Panel + Domain Safety** - Settings drawer with Ollama model discovery, API key storage, provider selector, and two-tier domain exclusion list (completed 2026-05-19)
 - [x] **Phase 12: Prompt Library** - Full CRUD prompt library with named saves, active selection, locked seed prompts, and GUARDRAIL_PROMPT suffix enforcement (completed 2026-05-18)
-- [ ] **Phase 13: Task Presets + Prompt Engineering + Runner Wiring** - Three task preset buttons wiring to domain-tuned prompts; deep engineered system prompts for all four use cases; runner config snapshot
+- [x] **Phase 13: Task Presets + Prompt Engineering + Runner Wiring** - Three task preset buttons wiring to domain-tuned prompts; deep engineered system prompts for all four use cases; runner config snapshot (completed 2026-05-19)
 - [ ] **Phase 14: Windows Distribution** - PyInstaller .exe build with Windows Chrome detection, freeze_support, and GitHub Actions CI artifact
 - [ ] **Phase 15: Portfolio Presentation** - README screenshots/GIF, download story for Mac and Windows, architecture overview
 
@@ -108,7 +108,7 @@ See archive: `.planning/milestones/v0.2.0-ROADMAP.md`
   4. Runner snapshots active provider, model, and prompt at task-start — mid-run settings changes do not affect the current task; prompt_id is recorded on the run history row
 **Plans**: 4 plans
   - [x] 13-01-PLAN.md — Wave 0 RED scaffold: 12 failing tests in tests/unit/test_presets_phase13.py covering PRESET-01..03, ENG-01..04, runner snapshot, DB migration
-  - [ ] 13-02-PLAN.md — SEED_PROMPTS body expansion in agent/settings.py for ENG-01..04 (Generic, Apartment, Job unauthenticated-only, Candidate)
+  - [x] 13-02-PLAN.md — SEED_PROMPTS body expansion in agent/settings.py for ENG-01..04 (Generic, Apartment, Job unauthenticated-only, Candidate)
   - [x] 13-03-PLAN.md — Backend wiring: prompt_id column migration, runner snapshot + CR-01 fix, /run endpoint active_prompt_id Form field
   - [x] 13-04-PLAN.md — Frontend: preset row, applyPreset() Alpine method, .btn-preset CSS, runs_fragment prompt_id display
 
