@@ -175,7 +175,7 @@ async def test_post_run_concurrent_requests_yield_exactly_one_started(monkeypatc
 
     done_event = asyncio.Event()
 
-    async def stub_run_agent(task, *, queue=None, control_queue=None):
+    async def stub_run_agent(task, *, queue=None, control_queue=None, **kwargs):
         await done_event.wait()
 
     monkeypatch.setattr("agent.main.run_agent", stub_run_agent)
@@ -218,7 +218,7 @@ async def test_post_run_sequential_after_completion_succeeds(monkeypatch):
     monkeypatch.setattr(main_mod, "_active_queue", None)
     monkeypatch.setattr(main_mod, "_active_control_queue", None)
 
-    async def quick_run_agent(task, *, queue=None, control_queue=None):
+    async def quick_run_agent(task, *, queue=None, control_queue=None, **kwargs):
         return  # finishes immediately
 
     monkeypatch.setattr("agent.main.run_agent", quick_run_agent)

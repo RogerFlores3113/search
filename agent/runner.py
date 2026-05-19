@@ -473,6 +473,7 @@ async def run_agent(
     task: str,
     queue: asyncio.Queue | None = None,
     control_queue: asyncio.Queue | None = None,
+    active_prompt_id: str | None = None,
 ) -> None:
     """Pre-flight, build BrowserSession+Agent, asyncio.wait_for(agent.run(...), timeout).
 
@@ -495,7 +496,11 @@ async def run_agent(
     ctrl_q = control_queue if control_queue is not None else queue
     run_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc)
-    step_start = time.monotonic()
+    # Snapshot provider/model/prompt_id before any await so mid-run settings
+    # changes (config.active_prompt_id, config.provider) cannot affect this run.
+    snapshot_provider = config.provider
+    snapshot_model = _resolve_model_name(config)
+    snapshot_prompt_id = active_prompt_id if active_prompt_id else config.active_prompt_id
     # Closure-scoped thoughts accumulator: _pre_step writes at 1-indexed step_num,
     # _log_step reads at step_idx+1 (Pitfall 1).
     run_thoughts: dict[int, dict] = {}
@@ -510,7 +515,7 @@ async def run_agent(
 
     if queue is not None:
         await _put_control(ctrl_q, StateEvent(state="running"))
-        await _put_control(ctrl_q, ModelInfoEvent(provider=config.provider, model_name=_resolve_model_name(config)))
+        await _put_control(ctrl_q, ModelInfoEvent(provider=snapshot_provider, model_name=snapshot_model))
 
     browser = None
     screenshot_task = None
@@ -523,6 +528,7 @@ async def run_agent(
         error_msg = str(e)
         # Fall through to finally — do not return here so DoneEvent is always emitted
     else:
+        step_start = time.monotonic()
         profile = BrowserProfile(
             prohibited_domains=SAFETY_DEFAULTS | set(config.user_domains),
             channel="chrome",
@@ -611,7 +617,7 @@ async def run_agent(
                 task=task,
                 llm=llm,
                 browser_session=browser,
-                extend_system_message=_build_extend_system_message(config.active_prompt_id, config.prompts),
+                extend_system_message=_build_extend_system_message(snapshot_prompt_id, config.prompts),
                 calculate_cost=True,
                 register_new_step_callback=_pre_step,
             )
@@ -688,8 +694,9 @@ async def run_agent(
                 step_count=run_step_count,
                 total_duration_s=run_duration_ms // 1000,
                 total_cost_usd=final_cost,
-                model_name=_resolve_model_name(config),
-                provider=config.provider.lower(),
+                model_name=snapshot_model,
+                provider=snapshot_provider.lower(),
+                prompt_id=snapshot_prompt_id,
             )
         except Exception:
             pass  # DB failure must not surface — cleanup below must always run
