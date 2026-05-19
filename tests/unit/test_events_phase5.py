@@ -270,6 +270,7 @@ async def test_api_token_event_has_integer_counts(training_dir, monkeypatch_env)
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
          patch("agent.runner.BrowserSession", return_value=mock_browser), \
          patch("agent.runner.ChatAnthropic", MagicMock()), \
+         patch("agent.runner.build_llm", MagicMock()), \
          patch("agent.runner.Agent", FakeAgentClass):
         await run_agent("test task", queue=queue)
 

@@ -262,14 +262,14 @@ def test_post_run_endpoint_starts_agent(monkeypatch, tmp_path):
     import inspect
     from unittest.mock import ANY
     from agent.runner import GUARDRAIL_PROMPT
-    MockAgent.assert_called_once_with(
-        task="another task",
-        llm=MockChatOllama.return_value,
-        browser_session=MockBrowserSession.return_value,
-        extend_system_message=GUARDRAIL_PROMPT,
-        calculate_cost=True,
-        register_new_step_callback=ANY,
+    call_kwargs = MockAgent.call_args.kwargs
+    assert call_kwargs["task"] == "another task"
+    assert call_kwargs["llm"] is not None
+    assert call_kwargs["browser_session"] == MockBrowserSession.return_value
+    assert call_kwargs.get("extend_system_message", "").endswith(GUARDRAIL_PROMPT), (
+        "extend_system_message must end with GUARDRAIL_PROMPT"
     )
+    assert call_kwargs["calculate_cost"] is True
     # Verify the callback is an async coroutine function (_pre_step)
     callback = MockAgent.call_args.kwargs.get("register_new_step_callback")
     assert inspect.iscoroutinefunction(callback), (

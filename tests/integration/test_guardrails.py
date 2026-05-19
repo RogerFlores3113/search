@@ -61,4 +61,7 @@ async def test_run_agent_passes_guardrail_prompt_to_agent(monkeypatch_env):
         await run_agent("test task")
 
     call_kwargs = MockAgent.call_args.kwargs
-    assert call_kwargs.get("extend_system_message") == GUARDRAIL_PROMPT
+    msg = call_kwargs.get("extend_system_message", "")
+    assert msg.endswith(GUARDRAIL_PROMPT), (
+        f"extend_system_message must end with GUARDRAIL_PROMPT; got: {msg!r}"
+    )

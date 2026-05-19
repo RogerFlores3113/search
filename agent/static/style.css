@@ -66,6 +66,7 @@ body {
   justify-self: end;
 }
 
+.header-ticker,
 .model-line {
   margin-left: auto;
   font-size: 12px;

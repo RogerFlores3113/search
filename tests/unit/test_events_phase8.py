@@ -156,7 +156,7 @@ async def test_jsonl_enriched_fields_anthropic(training_dir, monkeypatch):
         "next_goal": "Type the query",
     }}
 
-    await log_step(fake_agent, run_id="r1", provider="anthropic", duration_ms=1234)
+    await log_step(fake_agent, run_id="r1", provider="anthropic", duration_ms=1234, thoughts=fake_agent._thoughts)
 
     records = _read_jsonl(training_dir / "runs.jsonl")
     assert len(records) == 1, f"Expected 1 JSONL record; got {len(records)}"
@@ -226,7 +226,7 @@ async def test_provider_gate_openai_populates_fields(training_dir, monkeypatch):
     }}
     monkeypatch.setattr(agent.runner, "_thoughts", fake_agent._thoughts, raising=False)
 
-    await log_step(fake_agent, run_id="rOA", provider="openai", duration_ms=100)
+    await log_step(fake_agent, run_id="rOA", provider="openai", duration_ms=100, thoughts=fake_agent._thoughts)
 
     record = _read_jsonl(training_dir / "runs.jsonl")[0]
     for gated in (
@@ -397,7 +397,7 @@ async def test_thoughts_accumulator_key_alignment(training_dir, monkeypatch):
     fake_agent._thoughts = captured_thoughts
     monkeypatch.setattr(agent.runner, "_thoughts", captured_thoughts, raising=False)
 
-    await log_step(fake_agent, run_id="rT", provider="anthropic", duration_ms=10)
+    await log_step(fake_agent, run_id="rT", provider="anthropic", duration_ms=10, thoughts=captured_thoughts)
 
     record = _read_jsonl(training_dir / "runs.jsonl")[0]
     assert record["model_thought"] == "key-1 thought", (
