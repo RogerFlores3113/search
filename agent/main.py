@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
+import httpx
+
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -259,6 +261,58 @@ async def runs_endpoint(request: Request):
     return templates.TemplateResponse(
         request=request, name="runs_fragment.html", context={"runs": runs}
     )
+
+
+@app.get("/api/settings")
+async def get_settings() -> JSONResponse:
+    """Return sanitized settings state — never plaintext keys, never encrypted blobs.
+
+    Response shape (T-11-11 mitigation):
+        provider, ollama_model, ollama_host, anthropic_model, openai_model,
+        anthropic_key_set (bool), openai_key_set (bool),
+        safety_defaults (sorted list), user_domains (list)
+    """
+    from agent.config import config, SAFETY_DEFAULTS
+    from agent.settings import load_settings_json
+
+    stored = load_settings_json()
+    return JSONResponse({
+        "provider": config.provider,
+        "ollama_model": config.ollama_model,
+        "ollama_host": config.ollama_host,
+        "anthropic_model": config.anthropic_model,
+        "openai_model": config.openai_model,
+        "anthropic_key_set": bool(stored.get("anthropic_api_key_enc")),
+        "openai_key_set": bool(stored.get("openai_api_key_enc")),
+        "safety_defaults": sorted(SAFETY_DEFAULTS),
+        "user_domains": list(config.user_domains),
+    })
+
+
+@app.get("/api/settings/ollama-models")
+async def get_ollama_models() -> JSONResponse:
+    """Proxy GET http://{ollama_host}/api/tags and return model name list.
+
+    On any connection/timeout/JSON error returns {"models": [], "error": "unreachable"}
+    so the settings UI panel remains functional even when Ollama is down (T-11-15).
+    Uses async httpx (Pitfall 7 — not sync httpx.get).
+    """
+    from agent.config import config
+
+    host = config.ollama_host.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as client:
+            resp = await client.get(f"{host}/api/tags")
+            resp.raise_for_status()
+            data = resp.json()
+            models = [
+                m["name"]
+                for m in data.get("models", [])
+                if isinstance(m, dict) and "name" in m
+            ]
+            return JSONResponse({"models": models})
+    except Exception:
+        return JSONResponse({"models": [], "error": "unreachable"})
 
 
 def _serialize_event(event: object) -> ServerSentEvent:
