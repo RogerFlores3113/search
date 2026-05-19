@@ -69,27 +69,52 @@ def test_settings_path_uses_user_config_dir():
 
 def test_fernet_key_stable():
     """_derive_fernet_key() must return the same key on successive calls (machine-stable)."""
-    pytest.fail("RED — implemented in Task 2")
+    from agent.settings import _derive_fernet_key, encrypt_api_key, decrypt_api_key
+    # Encrypt with one derived key, decrypt with another — they must share the same key
+    token = _derive_fernet_key().encrypt(b"test-value")
+    result = _derive_fernet_key().decrypt(token)
+    assert result == b"test-value", "Keys derived on same machine must be byte-identical"
 
 
 def test_encrypt_decrypt_roundtrip():
     """encrypt_api_key / decrypt_api_key round-trip must recover the original string."""
-    pytest.fail("RED — implemented in Task 2")
+    from agent.settings import encrypt_api_key, decrypt_api_key
+    assert decrypt_api_key(encrypt_api_key("sk-test-123")) == "sk-test-123"
+    assert decrypt_api_key(encrypt_api_key("")) == ""
 
 
 def test_load_settings_json_missing_returns_empty(tmp_path, monkeypatch):
     """load_settings_json() must return {} silently when settings.json does not exist."""
-    pytest.fail("RED — implemented in Task 2")
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.settings import load_settings_json
+    result = load_settings_json()
+    assert result == {}, f"Expected empty dict, got {result!r}"
 
 
 def test_save_settings_json_atomic(tmp_path, monkeypatch):
-    """save_settings_json writes data and leaves no .tmp file behind."""
-    pytest.fail("RED — implemented in Task 2")
+    """save_settings_json writes data atomically and leaves no .tmp file behind."""
+    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from agent.settings import save_settings_json, load_settings_json
+    save_settings_json({"a": 1, "b": "hello"})
+    loaded = load_settings_json()
+    assert loaded == {"a": 1, "b": "hello"}, f"Loaded data mismatch: {loaded!r}"
+    # Verify no .tmp file left behind
+    tmp_file = tmp_path / "settings.tmp"
+    assert not tmp_file.exists(), f"Temp file must be removed after atomic write: {tmp_file}"
 
 
 def test_cve_2025_47241_urlparse_used():
     """SAFE-04: browser-use 0.12.6 security_watchdog.py must use urlparse (CVE patched)."""
-    pytest.fail("RED — implemented in Task 2")
+    import browser_use
+    watchdog_path = Path(browser_use.__file__).parent / "browser" / "watchdogs" / "security_watchdog.py"
+    assert watchdog_path.exists(), f"security_watchdog.py not found at {watchdog_path}"
+    source = watchdog_path.read_text(encoding="utf-8")
+    assert "urlparse" in source, "security_watchdog.py must use urlparse (CVE-2025-47241 patch)"
+    assert "_is_url_allowed" in source, "security_watchdog.py must define _is_url_allowed"
+    # Verify the import is from urllib.parse (not a colon-split workaround)
+    assert "from urllib.parse import urlparse" in source or "urllib.parse" in source, (
+        "urlparse must be imported from urllib.parse"
+    )
 
 
 # ---------------------------------------------------------------------------
