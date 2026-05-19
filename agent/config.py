@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # User-added blocked domains (loaded from settings.json via JsonConfigSettingsSource)
     user_domains: list[str] = []
 
+    # Prompt library (Phase 12) — loaded from settings.json via JsonConfigSettingsSource
+    active_prompt_id: str = "generic"
+    prompts: list[dict] = []
+
     @property
     def blocked_domains(self) -> set[str]:
         """Two-tier merge: safety defaults (code) + user-added domains (settings.json).
