@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Monthly report</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><header class="top"><span class="brand">Brightside</span><a href="/">Home</a><a href="/shop.html">Shop</a><a href="/catalog.html">Catalog</a><a href="/docs/">Docs</a><a href="/search.html">Search</a><a href="/contact.html">Contact</a><a href="/settings.html">Settings</a></header>
+<main>
+<h1>Monthly report</h1>
+<p id="loading" class="status">Generating your report, please wait...</p>
+<p id="ready" class="status hidden"></p>
+</main>
+<script src="/static/app.js"></script>
+<script>
+setTimeout(async () => {
+  const d = await getJSON('/api/delayed-report');
+  document.getElementById('loading').classList.add('hidden');
+  const el = document.getElementById('ready');
+  el.textContent = 'Report ready. Report ID: ' + d.report_id;
+  el.classList.remove('hidden');
+}, 2500);</script>
+</body></html>

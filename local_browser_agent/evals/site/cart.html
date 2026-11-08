@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Your cart</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><header class="top"><span class="brand">Brightside</span><a href="/">Home</a><a href="/shop.html">Shop</a><a href="/catalog.html">Catalog</a><a href="/docs/">Docs</a><a href="/search.html">Search</a><a href="/contact.html">Contact</a><a href="/settings.html">Settings</a></header>
+<main>
+<h1>Your cart</h1>
+<table><thead><tr><th>Item</th><th>Qty</th><th>Price</th></tr></thead><tbody id="lines"></tbody></table>
+<p style="font-size:20px"><strong id="total">Cart total: ...</strong></p>
+<p><a href="/shop.html">Continue shopping</a></p>
+<p><button id="place-order" class="big-danger">Place order</button></p>
+<p id="ordered" class="status hidden">Order placed. Thank you!</p>
+</main>
+<script src="/static/app.js"></script>
+<script>
+async function loadCart() {
+  const d = await getJSON('/api/cart');
+  const tb = document.getElementById('lines'); tb.innerHTML = '';
+  d.lines.forEach((l) => {
+    const tr = document.createElement('tr');
+    [l.name, String(l.qty), l.price].forEach((t) => { const td = document.createElement('td'); td.textContent = t; tr.appendChild(td); });
+    tb.appendChild(tr);
+  });
+  document.getElementById('total').textContent = 'Cart total: ' + d.total;
+}
+document.getElementById('place-order').onclick = async () => {
+  const r = await postJSON('/api/order', {});
+  if (r.ok) document.getElementById('ordered').classList.remove('hidden');
+};
+loadCart();</script>
+</body></html>

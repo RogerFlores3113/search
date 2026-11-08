@@ -1,0 +1,28 @@
+:root { --bg:#fafafa; --fg:#1d2330; --muted:#5b6475; --accent:#2457d6; --line:#d9dde5; }
+* { box-sizing: border-box; }
+body { margin:0; font:16px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+header.top { background:#fff; border-bottom:1px solid var(--line); padding:12px 24px; display:flex; gap:18px; flex-wrap:wrap; align-items:center; }
+header.top .brand { font-weight:700; margin-right:12px; }
+header.top a { color:var(--accent); text-decoration:none; }
+main { max-width:860px; margin:0 auto; padding:24px; }
+h1 { margin-top:0; }
+a { color:var(--accent); }
+table { border-collapse:collapse; width:100%; background:#fff; }
+th, td { border:1px solid var(--line); padding:8px 12px; text-align:left; }
+th { background:#f1f3f7; }
+button, .btn { font:inherit; padding:8px 16px; border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:6px; cursor:pointer; text-decoration:none; display:inline-block; }
+button.secondary { background:#fff; color:var(--accent); }
+button:disabled { opacity:.45; cursor:not-allowed; }
+button.big-danger { font-size:22px; padding:16px 36px; background:#d62b2b; border-color:#d62b2b; }
+label { display:block; margin:12px 0 4px; font-weight:600; }
+input[type=text], input[type=email], select, textarea { font:inherit; width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; }
+fieldset { margin:16px 0; border:1px solid var(--line); border-radius:6px; }
+.row { display:flex; gap:16px; flex-wrap:wrap; }
+.card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px; flex:1 1 200px; }
+.muted { color:var(--muted); }
+.notice { border:2px dashed #b36b00; background:#fff6e5; padding:12px 16px; margin:20px 0; }
+.status { margin-top:12px; font-weight:600; }
+#cookie-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; z-index:100; }
+#cookie-overlay .modal { background:#fff; padding:24px; border-radius:10px; max-width:420px; }
+#cookie-overlay .modal button { margin-right:8px; margin-top:12px; }
+.hidden { display:none !important; }

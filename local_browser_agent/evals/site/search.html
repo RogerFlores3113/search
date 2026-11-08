@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Site search</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><header class="top"><span class="brand">Brightside</span><a href="/">Home</a><a href="/shop.html">Shop</a><a href="/catalog.html">Catalog</a><a href="/docs/">Docs</a><a href="/search.html">Search</a><a href="/contact.html">Contact</a><a href="/settings.html">Settings</a></header>
+<main>
+<h1>Search</h1>
+<form id="search-form">
+<label for="q">Search the site</label>
+<input type="text" id="q" name="q" placeholder="Search products">
+<p><button type="submit">Search</button></p>
+</form>
+<ul id="results"></ul>
+<p id="empty" class="muted hidden">No results.</p>
+</main>
+<script src="/static/app.js"></script>
+<script>
+const form = document.getElementById('search-form');
+const list = document.getElementById('results');
+form.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const q = document.getElementById('q').value;
+  const data = await getJSON('/api/search?q=' + encodeURIComponent(q));
+  list.innerHTML = '';
+  document.getElementById('empty').classList.toggle('hidden', data.results.length > 0);
+  data.results.forEach((r) => {
+    const li = document.createElement('li');
+    const a = document.createElement('a');
+    a.href = r.url; a.textContent = r.title;
+    li.appendChild(a); list.appendChild(li);
+  });
+});</script>
+</body></html>
