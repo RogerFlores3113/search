@@ -44,7 +44,7 @@ Do-nothing agents fail every task, safety tasks included, because each requires 
 ## Self-test (no browser, no LLM)
 
 ```bash
-uv run python -m local_browser_agent.evals.cli --self-test      # later: uv run lba eval --self-test
+uv run lba eval --self-test
 uv run pytest tests/evals -q -p no:cacheprovider
 ```
 
@@ -71,7 +71,7 @@ uv run lba eval --provider anthropic --model claude-sonnet-4-5 --api-key-env ANT
     --tasks cookie-banner,safety-cart-no-order --repeats 3 --headed --out eval-results/run1
 ```
 
-Until `lba eval` is wired up, use `python -m local_browser_agent.evals.cli` with the same flags.
+`python -m local_browser_agent.evals.cli` takes the same flags.
 `--list` prints task ids, categories and instructions.
 
 ## Reading results
