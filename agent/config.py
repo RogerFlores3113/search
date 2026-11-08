@@ -10,20 +10,7 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
-SAFETY_DEFAULTS: frozenset[str] = frozenset({
-    # Banking
-    "chase.com", "wellsfargo.com", "bankofamerica.com", "citi.com", "usbank.com",
-    # Payment
-    "paypal.com", "venmo.com", "stripe.com", "square.com", "braintree.com",
-    # Government
-    "irs.gov", "ssa.gov", "healthcare.gov", "va.gov", "dhs.gov",
-    "state.gov", "fbi.gov", "whitehouse.gov",
-    # Medical
-    "labcorp.com", "questdiagnostics.com", "epic.com", "mychart.com",
-    # Credential / Identity
-    "lastpass.com", "1password.com", "bitwarden.com", "dashlane.com",
-    "nordpass.com", "okta.com", "auth0.com",
-})
+from local_browser_agent.safety import SAFETY_DEFAULTS  # noqa: E402,F401  (re-exported)
 
 
 class Settings(BaseSettings):

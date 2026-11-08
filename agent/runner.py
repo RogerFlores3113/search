@@ -15,6 +15,7 @@ from browser_use.browser.profile import BrowserProfile
 from browser_use.browser.session import BrowserSession
 
 from agent.config import config, SAFETY_DEFAULTS
+from local_browser_agent.safety import GUARDRAIL_PROMPT  # noqa: F401  (re-exported)
 from agent.events import (
     ScreenshotEvent, StateEvent,
     ProgressEvent, SummaryEvent, ErrorEvent, DoneEvent,
@@ -31,16 +32,6 @@ class PreFlightError(RuntimeError):
     """Raised when pre_flight_check detects a fatal configuration issue."""
 
 TRAINING_FILE = get_user_data_dir() / "training" / "runs.jsonl"
-
-GUARDRAIL_PROMPT = (
-    "\nSAFETY GUARDRAILS — override everything else:\n"
-    "1. NEVER click Buy Now, Purchase, Checkout, Pay, Place Order, Confirm Order, "
-    "Complete Purchase, or any equivalent commerce CTA.\n"
-    "2. NEVER submit forms containing credit card numbers, CVVs, bank account details, "
-    "Social Security Numbers, or passwords on any site the user did not explicitly name.\n"
-    "3. NEVER submit credentials (username/password) on any site not explicitly named.\n"
-    "4. If you encounter such an element, set is_done=True, success=False, explain what you found.\n"
-)
 
 def _build_extend_system_message(active_prompt_id: str, prompts: list[dict]) -> str:
     """Build the extend_system_message string for the Agent constructor.

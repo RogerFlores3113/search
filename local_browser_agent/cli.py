@@ -1,0 +1,137 @@
+"""``lba`` command line: run | mcp | eval."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+from collections.abc import Sequence
+
+from local_browser_agent import __version__
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="lba", description="Local browser agent: run a task, serve MCP, or run evals.")
+    p.add_argument("--version", action="version", version=f"lba {__version__}")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    r = sub.add_parser("run", help="run one natural-language browser task")
+    r.add_argument("task", help="what the agent should do")
+    r.add_argument("--provider", help="ollama | anthropic | openai | openai_compatible | litellm (default: $LBA_PROVIDER or ollama)")
+    r.add_argument("--model", help="model name (default depends on provider)")
+    r.add_argument("--base-url", help="API base URL / Ollama host")
+    r.add_argument("--headless", action="store_true", default=None, help="run the browser headless")
+    r.add_argument("--cdp-url", help="attach to a running browser via CDP instead of launching one")
+    r.add_argument("--max-steps", type=int, help="maximum agent steps")
+    r.add_argument("--timeout", type=float, help="overall timeout in seconds")
+    r.add_argument("--start-url", help="navigate here before the agent starts")
+    r.add_argument("--allowed-domain", action="append", dest="allowed_domains", help="restrict to this domain (repeatable)")
+    r.add_argument("--json", action="store_true", help="print the RunResult as JSON")
+    r.add_argument("--trace", metavar="PATH", help="append every event as a JSON line to PATH")
+    r.add_argument("--no-preflight", action="store_true", help="skip the provider availability check")
+
+    sub.add_parser("mcp", help="start the stdio MCP server")
+    ev = sub.add_parser("eval", help="run the evaluation suite (remaining args are forwarded)", add_help=False)
+    ev.add_argument("rest", nargs=argparse.REMAINDER)
+    return p
+
+
+def _config_from_args(args: argparse.Namespace):
+    from local_browser_agent.config import AgentConfig, SafetyPolicy
+
+    cfg = AgentConfig.from_env()
+    if args.provider:
+        cfg.model.provider = args.provider.lower()
+        # re-resolve provider-specific key fallback when provider was overridden
+        if cfg.model.api_key is None:
+            import os
+
+            key = os.environ.get(f"{cfg.model.provider.upper()}_API_KEY") if cfg.model.provider in ("anthropic", "openai") else None
+            if key:
+                from pydantic import SecretStr
+
+                cfg.model.api_key = SecretStr(key)
+    if args.model:
+        cfg.model.model = args.model
+    if args.base_url:
+        cfg.model.base_url = args.base_url
+    if args.headless:
+        cfg.browser.headless = True
+    if args.cdp_url:
+        cfg.browser.cdp_url = args.cdp_url
+    if args.max_steps:
+        cfg.max_steps = args.max_steps
+    if args.timeout:
+        cfg.timeout_s = args.timeout
+    if args.allowed_domains:
+        cfg.safety = SafetyPolicy(**{**cfg.safety.model_dump(), "allowed_domains": args.allowed_domains})
+    return cfg
+
+
+def _human_summary(result) -> str:
+    lines = [
+        f"status:   {result.status}",
+        f"steps:    {result.step_count}  ({result.duration_s:.1f}s)",
+    ]
+    if result.cost_usd is not None:
+        lines.append(f"cost:     ${result.cost_usd:.4f}")
+    if result.final_result:
+        lines.append(f"result:   {result.final_result}")
+    for b in result.blocked_actions:
+        lines.append(f"blocked:  {b}")
+    for e in result.errors:
+        lines.append(f"error:    {e}")
+    return "\n".join(lines)
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    from local_browser_agent import run_task
+    from local_browser_agent.models import PreFlightError, check_provider
+    from local_browser_agent.sinks import JsonlTraceSink
+
+    try:
+        cfg = _config_from_args(args)
+    except Exception as e:
+        print(f"lba: invalid configuration: {e}", file=sys.stderr)
+        return 2
+    sinks = [JsonlTraceSink(args.trace)] if args.trace else []
+
+    async def go():
+        if not args.no_preflight:
+            await check_provider(cfg.model)
+        return await run_task(args.task, cfg, sinks=sinks, start_url=args.start_url)
+
+    try:
+        result = asyncio.run(go())
+    except PreFlightError as e:
+        print(f"lba: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("lba: interrupted", file=sys.stderr)
+        return 130
+    print(json.dumps(result.to_dict(), indent=2) if args.json else _human_summary(result))
+    return 0 if result.status == "success" else 1
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    if args.command == "run":
+        return _cmd_run(args)
+    if args.command == "mcp":
+        from local_browser_agent.mcp_server import serve
+
+        serve()
+        return 0
+    if args.command == "eval":
+        try:
+            from local_browser_agent.evals.cli import main as eval_main
+        except ImportError as e:
+            print(f"lba eval is not available in this install ({e}).", file=sys.stderr)
+            return 2
+        rest = [a for a in args.rest if a != "--"] if args.rest else []
+        return int(eval_main(rest) or 0)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
