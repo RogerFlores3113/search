@@ -5,6 +5,8 @@ Requires the optional ``mcp`` extra: ``uv add "local-browser-agent[mcp] @ git+..
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import sys
 from typing import Any
 
 from local_browser_agent.config import AgentConfig, SafetyPolicy
@@ -53,7 +55,10 @@ async def run_browser_task(
         except Exception as e:
             return {"status": "error", "success": None, "errors": [f"invalid configuration: {e}"],
                     "error": f"invalid configuration: {e}"}
-        result = await run_task(task, cfg, start_url=start_url)
+        # stdout carries the MCP JSON-RPC stream; send any stray print() from
+        # browser-use (e.g. its pause banner) to stderr instead of corrupting it.
+        with contextlib.redirect_stdout(sys.stderr):
+            result = await run_task(task, cfg, start_url=start_url)
         return result.to_dict()
 
 
