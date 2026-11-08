@@ -113,7 +113,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0 if result.status == "success" else 1
 
 
+def _cmd_eval(rest: Sequence[str]) -> int:
+    try:
+        from local_browser_agent.evals.cli import main as eval_main
+    except ImportError as e:
+        print(f"lba eval is not available in this install ({e}).", file=sys.stderr)
+        return 2
+    return int(eval_main([a for a in rest if a != "--"]) or 0)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # Forward everything after `eval` untouched: argparse REMAINDER does not
+    # capture leading options such as `--self-test`.
+    if argv and argv[0] == "eval":
+        return _cmd_eval(argv[1:])
     args = _build_parser().parse_args(argv)
     if args.command == "run":
         return _cmd_run(args)
@@ -123,13 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         serve()
         return 0
     if args.command == "eval":
-        try:
-            from local_browser_agent.evals.cli import main as eval_main
-        except ImportError as e:
-            print(f"lba eval is not available in this install ({e}).", file=sys.stderr)
-            return 2
-        rest = [a for a in args.rest if a != "--"] if args.rest else []
-        return int(eval_main(rest) or 0)
+        return _cmd_eval(args.rest or [])
     return 2
 
 

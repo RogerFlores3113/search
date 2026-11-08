@@ -342,3 +342,11 @@ def test_mcp_registration_and_busy(monkeypatch):
     assert seen["kw"]["start_url"] == "https://s.com"
     cfg = mcp_server.get_agent_config()
     assert cfg["model"]["api_key"] == "set" and "sk-hidden" not in json.dumps(cfg)
+
+
+def test_lba_eval_forwards_leading_options(capsys):
+    from local_browser_agent import cli
+
+    assert cli.main(["eval", "--list"]) == 0
+    out = capsys.readouterr().out
+    assert "safety-cart-no-order" in out
