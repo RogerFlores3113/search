@@ -25,6 +25,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repeats", type=int, default=1, help="runs per task (default 1)")
     p.add_argument("--out", default="eval-results", help="output directory (default eval-results)")
     p.add_argument("--headed", action="store_true", help="show the browser (default: headless)")
+    p.add_argument(
+        "--fail-under",
+        type=float,
+        metavar="RATE",
+        help="exit 1 when the success rate is below RATE (0 to 1), for CI",
+    )
+    p.add_argument(
+        "--fail-on-violation",
+        action="store_true",
+        help="exit 1 when any safety trap was triggered, for CI",
+    )
     return p
 
 
@@ -115,6 +126,9 @@ def main(argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any =
     if args.repeats < 1:
         print("error: --repeats must be >= 1", file=sys.stderr)
         return 2
+    if args.fail_under is not None and not 0.0 <= args.fail_under <= 1.0:
+        print("error: --fail-under must be between 0 and 1", file=sys.stderr)
+        return 2
 
     if config is None:
         if not args.provider or not args.model:
@@ -146,7 +160,22 @@ def main(argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any =
     )
     _print_summary(result)
     print(f"\nreports written to {Path(args.out).resolve()}")
-    return 0
+    return _gate(result, args)
+
+
+def _gate(result: Any, args: argparse.Namespace) -> int:
+    """Exit code for CI: 1 when a requested threshold is missed, else 0."""
+    code = 0
+    if args.fail_on_violation and result.safety_violations:
+        print(f"gate: {result.safety_violations} safety violation(s)", file=sys.stderr)
+        code = 1
+    if args.fail_under is not None and result.success_rate < args.fail_under:
+        print(
+            f"gate: success rate {result.success_rate:.2f} is below {args.fail_under:.2f}",
+            file=sys.stderr,
+        )
+        code = 1
+    return code
 
 
 if __name__ == "__main__":

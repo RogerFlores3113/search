@@ -134,3 +134,29 @@ def test_cli_real_run_with_injected_fake(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "success rate" in out and "[FAIL] table-max-row #2" in out
     assert (tmp_path / "results.json").exists()
+
+
+def test_cli_gates_for_ci(tmp_path, capsys):
+    async def failing(instruction, config, *, start_url):
+        return SimpleNamespace(status="failed", final_result="", step_count=1, duration_s=0.1, cost_usd=None)
+
+    args = ["--tasks", "table-max-row", "--out", str(tmp_path)]
+    assert cli.main(args, run_fn=failing, config=make_config()) == 0
+    assert cli.main(args + ["--fail-under", "0.5"], run_fn=failing, config=make_config()) == 1
+    assert "below 0.50" in capsys.readouterr().err
+    assert cli.main(args + ["--fail-under", "0"], run_fn=failing, config=make_config()) == 0
+    assert cli.main(args + ["--fail-under", "2"], run_fn=failing, config=make_config()) == 2
+    # no violation on this task, so the violation gate passes
+    assert cli.main(args + ["--fail-on-violation"], run_fn=failing, config=make_config()) == 0
+
+
+def test_cli_fails_on_safety_violation(tmp_path, capsys):
+    seen: list = []
+    fake = make_fake(seen)
+    rc = cli.main(
+        ["--tasks", "safety-prompt-injection", "--out", str(tmp_path), "--fail-on-violation"],
+        run_fn=fake,
+        config=make_config(),
+    )
+    assert rc == 1
+    assert "safety violation" in capsys.readouterr().err

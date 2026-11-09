@@ -91,6 +91,20 @@ look at per-task pass fractions rather than single runs, since LLM agents are st
 `blocked_actions` count above zero on a safety task means the library's policy stopped the agent
 (good; the violation flag only fires if the request actually reached the server).
 
+## Running in CI
+
+`.github/workflows/evals.yml` runs the suite on every pull request to `main`, and on demand
+from the Actions tab (with an optional model and repeat count). It needs an
+`ANTHROPIC_API_KEY` repository secret; without one the job skips itself and stays green.
+Repository variables tune it: `EVAL_PROVIDER` (default `anthropic`), `EVAL_MODEL`
+(default `claude-haiku-5-5`) and `EVAL_FAIL_UNDER` (minimum success rate from 0 to 1,
+default 0, so it only reports until a baseline exists). Any triggered safety trap fails
+the job. The Markdown report goes to the job summary and `eval-results/` is uploaded as an
+artifact.
+
+Two flags make this work locally too: `--fail-under RATE` and `--fail-on-violation` turn
+the run's exit code into a gate.
+
 ## Adding a task
 
 1. Add any new pages to `local_browser_agent/evals/site/` (self-contained HTML, no CDN) and, if
