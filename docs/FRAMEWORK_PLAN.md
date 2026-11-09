@@ -24,12 +24,12 @@ that owns the loop; the web app, a CLI, an MCP server and an eval suite sit on t
 | 7 | Providers hard-coded to three | `build_llm` |
 | 8 | Always a fresh headed Chrome; no headless, no CDP attach, no profile dir | `BrowserProfile(...)` |
 | 9 | CAPTCHA pause has no resume; `use_judge=True` default adds an LLM call per run | `log_step`, browser-use `Agent` |
-| 10 | Import name `agent` is generic and collides in other projects | `pyproject.toml` |
+| 10 | Import name `agent` is generic and collides in other projects (now `local_browser_agent.app`) | `pyproject.toml` |
 
 ## Target API (contract for step 2)
 
 New top-level package `local_browser_agent/` (same distribution, `local-browser-agent`).
-Importing it must not read env, touch disk, or import `agent` (the web app).
+Importing it must not read env, touch disk, or import the web app (`local_browser_agent.app`).
 
 ```python
 from local_browser_agent import (
