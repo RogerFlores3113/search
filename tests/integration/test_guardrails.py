@@ -26,15 +26,15 @@ async def test_run_agent_passes_blocked_domains_to_browser_profile(monkeypatch_e
     MockAgent = MagicMock(return_value=mock_agent_instance)
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserProfile", MockBrowserProfile), \
-         patch("agent.runner.BrowserSession", MockBrowserSession), \
-         patch("agent.runner.Agent", MockAgent), \
-         patch("agent.runner.build_llm", MagicMock()):
+         patch("local_browser_agent.browser.BrowserProfile", MockBrowserProfile), \
+         patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
+         patch("local_browser_agent.runner.Agent", MockAgent), \
+         patch("local_browser_agent.runner.build_llm", MagicMock()):
         from agent.runner import run_agent
         await run_agent("test task")
 
     call_kwargs = MockBrowserProfile.call_args.kwargs
-    assert call_kwargs["prohibited_domains"] == cfg.blocked_domains
+    assert set(call_kwargs["prohibited_domains"]) == cfg.blocked_domains
 
 
 async def test_run_agent_passes_guardrail_prompt_to_agent(monkeypatch_env):
@@ -53,10 +53,10 @@ async def test_run_agent_passes_guardrail_prompt_to_agent(monkeypatch_env):
     MockAgent = MagicMock(return_value=mock_agent_instance)
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserProfile", MockBrowserProfile), \
-         patch("agent.runner.BrowserSession", MockBrowserSession), \
-         patch("agent.runner.Agent", MockAgent), \
-         patch("agent.runner.build_llm", MagicMock()):
+         patch("local_browser_agent.browser.BrowserProfile", MockBrowserProfile), \
+         patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
+         patch("local_browser_agent.runner.Agent", MockAgent), \
+         patch("local_browser_agent.runner.build_llm", MagicMock()):
         from agent.runner import run_agent
         await run_agent("test task")
 

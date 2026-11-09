@@ -272,9 +272,9 @@ async def test_run_agent_passes_register_new_step_callback_kwarg(training_dir, m
     mock_browser.kill = AsyncMock()
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", CapturingAgentClass):
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", CapturingAgentClass):
         await run_agent("test task")
 
     assert "register_new_step_callback" in captured_kwargs, (
@@ -312,9 +312,9 @@ async def test_pre_step_emits_thought_event(training_dir, monkeypatch_env):
     mock_browser.kill = AsyncMock()
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", _Fake):
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", _Fake):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -363,9 +363,9 @@ async def test_thought_event_null_when_model_omits_thinking(training_dir, monkey
     mock_browser.kill = AsyncMock()
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", _Fake):
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", _Fake):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -406,9 +406,9 @@ async def test_thought_event_step_matches_callback_step_num(training_dir, monkey
     mock_browser.kill = AsyncMock()
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", _Fake):
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", _Fake):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -442,9 +442,9 @@ async def test_thought_event_fires_before_action_detail(training_dir, monkeypatc
     mock_browser.kill = AsyncMock()
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", _Fake):
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", _Fake):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -500,9 +500,9 @@ async def test_log_step_emits_action_detail_event(training_dir, monkeypatch_env)
     mock_browser.kill = AsyncMock()
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", FakeAgentClass):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -555,9 +555,9 @@ async def test_action_type_excludes_interacted_element(training_dir, monkeypatch
     mock_browser.kill = AsyncMock()
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", FakeAgentClass):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -600,9 +600,9 @@ async def test_action_detail_navigate_url(training_dir, monkeypatch_env):
     mock_browser.kill = AsyncMock()
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", FakeAgentClass):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -648,9 +648,9 @@ async def test_action_detail_input_text_value(training_dir, monkeypatch_env):
     mock_browser.kill = AsyncMock()
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", FakeAgentClass):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -699,9 +699,9 @@ async def test_action_detail_success_is_none_midrun(training_dir, monkeypatch_en
     mock_browser.kill = AsyncMock()
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", FakeAgentClass):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -737,9 +737,9 @@ async def test_thought_and_action_share_step_when_both_fire(training_dir, monkey
     mock_browser.kill = AsyncMock()
 
     with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", _Fake):
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", _Fake):
         await run_agent("test task", queue=queue)
 
     events = []

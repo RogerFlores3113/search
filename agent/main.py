@@ -19,7 +19,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from itsdangerous import BadSignature, URLSafeSerializer
 from pydantic import BaseModel
 
-from agent.events import DoneEvent, StateEvent
+from agent.events import DoneEvent
 from agent import db as history_db
 from agent.paths import get_secret_key
 from agent.runner import run_agent
@@ -107,7 +107,7 @@ async def lifespan(app: FastAPI):
     task_ref: Optional[asyncio.Task] = None
     pending = getattr(app.state, "pending_task", None)
     if pending:
-        task_ref = asyncio.create_task(run_agent(pending))
+        task_ref = asyncio.create_task(run_agent(pending, on_agent=_set_active_agent))
 
     yield
 
@@ -135,13 +135,35 @@ _active_task: Optional[asyncio.Task] = None
 # the UI cannot recover from if dropped. `/stream` multiplexes both.
 _active_queue: Optional[asyncio.Queue] = None
 _active_control_queue: Optional[asyncio.Queue] = None
-_active_agent = None                             # Agent ref for pause/stop (Plan 03)
+# The live BrowserAgent for pause/resume/stop. Set by the runner through its
+# `on_agent` hook (the library never imports this module); None between runs.
+_active_agent = None
 # Serializes the busy-check + assignment in /run so two concurrent POSTs
 # (double-clicked Run button, HTMX retry, two tabs) cannot both pass the
 # `_active_task is None` check and both start a BrowserSession.
 # Released the moment asyncio.create_task returns — the lock guards
 # scheduling, NOT the duration of the run.
 _start_lock = asyncio.Lock()
+
+
+def _set_active_agent(browser_agent) -> None:
+    global _active_agent
+    _active_agent = browser_agent
+
+
+async def _run_tracked(task: str, queue: asyncio.Queue, control_queue: asyncio.Queue, active_prompt_id: str) -> None:
+    """Run one task, exposing the BrowserAgent to /pause and /stop, and reset the
+    per-run queues when it ends so stale SSE consumers see the run is over."""
+    global _active_queue, _active_control_queue
+    try:
+        await run_agent(
+            task, queue=queue, control_queue=control_queue,
+            active_prompt_id=active_prompt_id, on_agent=_set_active_agent,
+        )
+    finally:
+        _set_active_agent(None)
+        _active_queue = None
+        _active_control_queue = None
 
 
 @app.get("/")
@@ -207,7 +229,7 @@ async def run_endpoint(request: Request, task: str = Form(..., max_length=2000),
         _active_queue = data_queue
         _active_control_queue = control_queue
         _active_task = asyncio.create_task(
-            run_agent(task, queue=data_queue, control_queue=control_queue, active_prompt_id=active_prompt_id)
+            _run_tracked(task, data_queue, control_queue, active_prompt_id)
         )
     return JSONResponse({"status": "started"}, headers={"HX-Trigger": "streamStarted"})
 
@@ -217,28 +239,20 @@ async def pause_endpoint(request: Request):
     """Toggle pause/resume on the active agent.
 
     If no agent is running, returns HTTP 400 with {"status": "no_active_run"}.
-    If agent.state.paused is True, calls agent.resume() (sync — RESEARCH Pattern 5).
-    Otherwise, calls agent.pause() (sync).
-    Emits StateEvent("paused" or "running") to _active_queue.
+    If the BrowserAgent is paused, calls resume(); otherwise pause(). The library
+    emits StateEvent("paused" / "running") through the run's QueueSink, i.e. on the
+    control queue. This is also how the user continues after a CAPTCHA pause.
     """
-    global _active_agent, _active_queue, _active_control_queue
     if not _disclaimer_accepted(request):
         return _disclaimer_required_response()
-    if _active_agent is None:
+    agent = _active_agent
+    if agent is None or not agent.is_active:
         return JSONResponse({"status": "no_active_run"}, status_code=400)
-    # State transitions ride on the control queue (lifecycle), falling back
-    # to the data queue for back-compat in test paths that wired only one.
-    target = _active_control_queue if _active_control_queue is not None else _active_queue
-    if _active_agent.state.paused:
-        _active_agent.resume()
-        if target is not None:
-            target.put_nowait(StateEvent(state="running"))
+    if agent.is_paused:
+        agent.resume()
         return JSONResponse({"status": "resumed"})
-    else:
-        _active_agent.pause()
-        if target is not None:
-            target.put_nowait(StateEvent(state="paused"))
-        return JSONResponse({"status": "paused"})
+    agent.pause()
+    return JSONResponse({"status": "paused"})
 
 
 @app.post("/stop")
@@ -246,14 +260,14 @@ async def stop_endpoint(request: Request):
     """Stop the active agent.
 
     If no agent is running, returns HTTP 400 with {"status": "no_active_run"}.
-    Calls agent.stop() (sync) — the runner finally block handles status="stopped" in DB.
+    Calls BrowserAgent.stop() — the runner records status="stopped" in the DB.
     """
-    global _active_agent
     if not _disclaimer_accepted(request):
         return _disclaimer_required_response()
-    if _active_agent is None:
+    agent = _active_agent
+    if agent is None or not agent.is_active:
         return JSONResponse({"status": "no_active_run"}, status_code=400)
-    _active_agent.stop()
+    agent.stop()
     return JSONResponse({"status": "stopped"})
 
 

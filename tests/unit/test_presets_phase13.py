@@ -283,12 +283,28 @@ def test_runner_snapshot_prompt_id():
     assert "active_prompt_id: str | None = None" in source, (
         "run_agent() must accept active_prompt_id: str | None = None parameter"
     )
-    assert "_build_extend_system_message(snapshot_prompt_id" in source, (
-        "runner.py must pass snapshot_prompt_id (not config.active_prompt_id) to _build_extend_system_message"
+    assert "build_agent_config(config, snapshot_prompt_id)" in source, (
+        "runner.py must pass snapshot_prompt_id (not config.active_prompt_id) to build_agent_config"
     )
-    assert "_build_extend_system_message(config.active_prompt_id" not in source, (
-        "runner.py must NOT pass config.active_prompt_id to _build_extend_system_message (use snapshot instead)"
+    assert "build_agent_config(config, config.active_prompt_id" not in source, (
+        "runner.py must NOT pass config.active_prompt_id directly (use the snapshot instead)"
     )
+
+
+def test_agent_config_uses_selected_prompt_then_guardrails(monkeypatch_env):
+    """PRESET-03 behavior: the selected prompt content becomes the system prompt extension and the
+    library appends GUARDRAIL_PROMPT after it; an explicit id beats config.active_prompt_id."""
+    from agent.config import Settings
+    from agent.runner import GUARDRAIL_PROMPT, build_agent_config
+
+    cfg = Settings(active_prompt_id="a", prompts=[
+        {"id": "a", "content": "AAA"}, {"id": "b", "content": "BBB"}, {"id": "c", "content": ""}])
+    assert build_agent_config(cfg).system_prompt_extension == "AAA"
+    chosen = build_agent_config(cfg, "b")
+    assert chosen.system_prompt_extension == "BBB"
+    assert chosen.safety.guardrail_prompt == GUARDRAIL_PROMPT
+    assert build_agent_config(cfg, "c").system_prompt_extension is None
+    assert build_agent_config(cfg, "missing").system_prompt_extension is None
 
 
 # ---------------------------------------------------------------------------

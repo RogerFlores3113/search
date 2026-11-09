@@ -1,38 +1,36 @@
-"""Unit tests for log_step in agent/runner.py (RUN-03 JSONL schema contract).
+"""Unit tests for the training JSONL sink in agent/training_sink.py (RUN-03 schema contract).
 
-All tests are xfail-by-design until Wave 1 (plan 02) implements log_step.
-The nine field names here are the Nyquist contract — Wave 1 MUST satisfy them.
+The sink consumes the library's StepCompletedEvent and writes one record per step to
+training/runs.jsonl (it replaced the old `log_step` on_step_end callback, which read the
+browser-use Agent directly; the event is built by BrowserAgent, see tests/lib).
 """
 from __future__ import annotations
 
 import json
-import types
 
 import pytest
 
+from agent.training_sink import TrainingSink
+from local_browser_agent.events import StepCompletedEvent
 
-def _make_fake_agent():
-    """Build a minimal fake Agent namespace with the attributes log_step reads."""
-    history = types.SimpleNamespace(
-        number_of_steps=lambda: 1,
-        model_actions=lambda: [{"action_type": "click", "action_target": "#btn", "action_value": ""}],
-        screenshots=lambda: ["iVBORw0KGgo="],  # minimal base64 stub
-        has_errors=lambda: False,
-    )
-    # state.last_result is required by the CAPTCHA detection branch in log_step
-    state = types.SimpleNamespace(last_result=[])
-    return types.SimpleNamespace(history=history, state=state)
+
+def _event(**kw) -> StepCompletedEvent:
+    base = dict(run_id="test-run-id", step=1, screenshot_b64="iVBORw0KGgo=", action_type="click",
+                target="#btn", value="", duration_ms=0)
+    base.update(kw)
+    return StepCompletedEvent(**base)
+
+
+async def _log(event, provider="ollama", model_name="m"):
+    await TrainingSink(provider, model_name)(event)
 
 
 async def test_log_step_writes_jsonl_line(training_dir):
-    """log_step must write exactly one JSONL record with all nine D-09 schema fields."""
-    from agent.runner import log_step
-
-    fake_agent = _make_fake_agent()
-    await log_step(fake_agent, run_id="test-run-id", provider="ollama", duration_ms=0)
+    """The sink must write exactly one JSONL record with all nine D-09 schema fields."""
+    await _log(_event())
 
     jsonl_file = training_dir / "runs.jsonl"
-    assert jsonl_file.exists(), "training/runs.jsonl must be created by log_step"
+    assert jsonl_file.exists(), "training/runs.jsonl must be created by the sink"
 
     lines = jsonl_file.read_text().strip().splitlines()
     assert len(lines) == 1
@@ -50,35 +48,43 @@ async def test_log_step_writes_jsonl_line(training_dir):
         "step_success",
     ):
         assert field in record, f"Missing field: {field}"
+    assert record["step_index"] == 0 and record["action_target"] == "#btn"
+    assert record["narration"] == "Step 1: click" and record["step_success"] is True
 
 
 async def test_log_step_creates_training_dir(training_dir):
-    """log_step must create the training/ directory if it does not exist."""
+    """The sink must create the training/ directory if it does not exist."""
     import shutil
-
-    from agent.runner import log_step
 
     shutil.rmtree(training_dir)
     assert not training_dir.exists()
 
-    fake_agent = _make_fake_agent()
-    await log_step(fake_agent, run_id="test-run-id", provider="ollama", duration_ms=0)
+    await _log(_event())
 
-    assert training_dir.exists(), "log_step must create training/ dir if missing"
+    assert training_dir.exists(), "sink must create training/ dir if missing"
     assert (training_dir / "runs.jsonl").exists()
 
 
 async def test_log_step_appends_not_overwrites(training_dir):
-    """Calling log_step twice must produce exactly 2 JSONL lines (append, not overwrite)."""
-    from agent.runner import log_step
+    """Two steps must produce exactly 2 JSONL lines (append, not overwrite)."""
+    await _log(_event())
+    await _log(_event(step=2))
 
-    fake_agent = _make_fake_agent()
-    await log_step(fake_agent, run_id="test-run-id", provider="ollama", duration_ms=0)
-    await log_step(fake_agent, run_id="test-run-id", provider="ollama", duration_ms=0)
-
-    jsonl_file = training_dir / "runs.jsonl"
-    lines = jsonl_file.read_text().strip().splitlines()
+    lines = (training_dir / "runs.jsonl").read_text().strip().splitlines()
     assert len(lines) == 2, f"Expected 2 lines, got {len(lines)}"
+
+
+async def test_sink_ignores_other_events(training_dir):
+    from local_browser_agent.events import ProgressEvent, ScreenshotEvent
+
+    await TrainingSink("ollama", "m")(ProgressEvent(step=1))
+    await TrainingSink("ollama", "m")(ScreenshotEvent(b64="x"))
+    assert not (training_dir / "runs.jsonl").exists()
+
+
+def test_sink_opts_in_to_step_events_only():
+    sink = TrainingSink("ollama", "m")
+    assert sink.wants_step_events is True and sink.wants_screenshots is False
 
 
 # ---------------------------------------------------------------------------
@@ -164,39 +170,18 @@ def test_extract_target_label_accepts_dict_shape():
 
 
 async def test_log_step_records_action_target_label(training_dir):
-    """log_step must extract the element label from interacted_element and
-    write it as `action_target_label` in the JSONL record.
-    """
-    import json
-    import types
-    from agent.runner import log_step
-
-    history = types.SimpleNamespace(
-        number_of_steps=lambda: 1,
-        model_actions=lambda: [{
-            "click": {"index": 12},
-            "interacted_element": _FakeInteractedElement(ax_name="Search button"),
-        }],
-        screenshots=lambda: ["iVBORw0KGgo="],
-        has_errors=lambda: False,
-    )
-    state = types.SimpleNamespace(last_result=[])
-    fake_agent = types.SimpleNamespace(history=history, state=state)
-
-    await log_step(fake_agent, run_id="r1", provider="ollama", duration_ms=0)
+    """The sink must write the event's element label as `action_target_label`."""
+    await _log(_event(target="12", target_label="Search button"), provider="ollama")
 
     record = json.loads((training_dir / "runs.jsonl").read_text().strip())
     assert record["action_target_label"] == "Search button"
 
 
 async def test_log_step_action_target_label_null_when_no_element(training_dir):
-    """When interacted_element is missing the field is explicit None, not
-    omitted — keeps the JSONL schema stable for the LoRA converter.
+    """When there is no label the field is explicit None, not omitted — keeps the
+    JSONL schema stable for the LoRA converter.
     """
-    import json
-    from agent.runner import log_step
-
-    await log_step(_make_fake_agent(), run_id="r1", provider="ollama", duration_ms=0)
+    await _log(_event())
 
     record = json.loads((training_dir / "runs.jsonl").read_text().strip())
     assert "action_target_label" in record

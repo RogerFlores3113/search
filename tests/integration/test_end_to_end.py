@@ -115,10 +115,10 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
 
     # TRAINING_FILE is a module-level constant computed at import time via get_user_data_dir().
     # Monkeypatch it to point into tmp_path so JSONL writes land in the test directory.
-    import agent.runner as runner_mod
+    import agent.training_sink as training_sink_mod
     training_file = tmp_path / "training" / "runs.jsonl"
     training_file.parent.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(runner_mod, "TRAINING_FILE", training_file)
+    monkeypatch.setattr(training_sink_mod, "TRAINING_FILE", training_file)
 
     history = _make_fake_history(num_steps=2)
     fake_agent = _make_fake_agent(history)
@@ -143,10 +143,10 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
         return fn(*args, **kwargs)
 
     with patch("agent.runner.pre_flight_check", new=AsyncMock()), \
-         patch("agent.runner.BrowserProfile", MockBrowserProfile), \
-         patch("agent.runner.BrowserSession", MockBrowserSession), \
-         patch("agent.runner.ChatOllama", MockChatOllama), \
-         patch("agent.runner.Agent", MockAgent), \
+         patch("local_browser_agent.browser.BrowserProfile", MockBrowserProfile), \
+         patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
+         patch("browser_use.ChatOllama", MockChatOllama), \
+         patch("local_browser_agent.runner.Agent", MockAgent), \
          patch("asyncio.to_thread", side_effect=_sync_to_thread):
 
         with TestClient(app) as client:
@@ -179,6 +179,7 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
     # ChatOllama was constructed with ollama_options={"num_ctx": 32000} and the configured model
     MockChatOllama.assert_called_once_with(
         model=config.ollama_model,
+            host=config.ollama_host,
         ollama_options={"num_ctx": 32000},
     )
 
@@ -243,10 +244,10 @@ def test_post_run_endpoint_starts_agent(monkeypatch, tmp_path):
     MockBrowserProfile = MagicMock(return_value=MagicMock())
 
     with patch("agent.runner.pre_flight_check", new=AsyncMock()), \
-         patch("agent.runner.BrowserProfile", MockBrowserProfile), \
-         patch("agent.runner.BrowserSession", MockBrowserSession), \
-         patch("agent.runner.ChatOllama", MockChatOllama), \
-         patch("agent.runner.Agent", MockAgent):
+         patch("local_browser_agent.browser.BrowserProfile", MockBrowserProfile), \
+         patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
+         patch("browser_use.ChatOllama", MockChatOllama), \
+         patch("local_browser_agent.runner.Agent", MockAgent):
 
         with TestClient(app) as client:
             # Acquire the disclaimer cookie before posting /run (Issue #5 gate).

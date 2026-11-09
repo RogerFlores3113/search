@@ -59,14 +59,14 @@ def test_db_path_uses_user_data_dir_when_frozen(tmp_path, monkeypatch):
 
 
 def test_training_file_uses_user_data_dir_when_frozen(tmp_path, monkeypatch):
-    """When sys.frozen=True and agent.runner is reloaded, TRAINING_FILE resolves under user_data_dir."""
+    """When sys.frozen=True and agent.training_sink is reloaded, TRAINING_FILE resolves under user_data_dir."""
     import platformdirs
     monkeypatch.setattr(sys, "frozen", True, raising=False)
 
     import agent.paths as paths_mod
     importlib.reload(paths_mod)
 
-    import agent.runner as runner_mod
+    import agent.training_sink as runner_mod
     importlib.reload(runner_mod)
 
     expected = Path(platformdirs.user_data_dir("local-browser-agent")) / "training" / "runs.jsonl"

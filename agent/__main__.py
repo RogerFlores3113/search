@@ -27,7 +27,7 @@ from agent.main import app
 def redirect_data_paths() -> None:
     """Patch module-level path constants to user_data_dir when running frozen.
 
-    Must be called before any async code uses agent.db or agent.runner.
+    Must be called before any async code uses agent.db or agent.training_sink.
     In dev mode this is a no-op — paths stay as get_user_data_dir() already set.
     """
     if not getattr(sys, "frozen", False):
@@ -39,8 +39,8 @@ def redirect_data_paths() -> None:
     import agent.db as db_module
     db_module.DB_PATH = user_dir / "history.db"
 
-    import agent.runner as runner_module
-    runner_module.TRAINING_FILE = user_dir / "training" / "runs.jsonl"
+    import agent.training_sink as training_sink_module
+    training_sink_module.TRAINING_FILE = user_dir / "training" / "runs.jsonl"
     (user_dir / "training").mkdir(parents=True, exist_ok=True)
 
 

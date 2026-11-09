@@ -40,7 +40,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import agent.runner
+import agent.runner  # noqa: F401
+import agent.training_sink
 
 
 # ---------------------------------------------------------------------------
@@ -62,55 +63,34 @@ for _heavy in ("torch", "torch.cuda", "unsloth", "mlx_vlm", "mlx", "mlx.core"):
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _make_fake_agent(
-    provider_supports_tokens: bool = True,
-    has_error: bool = False,
+def _event(
+    *,
+    tokens: bool = True,
+    error: str | None = None,
+    run_has_errors: bool = False,
     thoughts: dict | None = None,
-    model_actions=None,
-    number_of_steps: int = 1,
+    step: int = 1,
+    duration_ms: int = 0,
 ):
-    """Return a fake agent shaped like browser_use's Agent — patterned after
-    tests/unit/test_events_phase7.py::_make_fake_agent_history but extended with
-    last_result, token usage_history, and a calculate_cost stub.
-    """
-    if model_actions is None:
-        model_actions = [{"click_element": {"index": 5}, "interacted_element": None}]
+    """A StepCompletedEvent as BrowserAgent builds it (replaces the old fake browser-use agent
+    the `log_step` callback read). Token fields are already None for Ollama upstream."""
+    from local_browser_agent.events import StepCompletedEvent
 
-    # token_cost_service.usage_history entry shaped like browser_use's
-    # TokenCostService records (model + usage with prompt_tokens / completion_tokens).
-    usage_entry = types.SimpleNamespace(
-        model="claude-sonnet-4-5",
-        usage=types.SimpleNamespace(prompt_tokens=123, completion_tokens=45),
-    )
-    cost_result = types.SimpleNamespace(total_cost=0.000123)
-    token_cost_service = types.SimpleNamespace(
-        usage_history=[usage_entry] if provider_supports_tokens else [],
-        calculate_cost=AsyncMock(return_value=cost_result),
+    t = thoughts or {}
+    return StepCompletedEvent(
+        run_id="r", step=step, screenshot_b64="iVBORw0KGgo=", action_type="click_element",
+        target="5", duration_ms=duration_ms, error=error, run_has_errors=run_has_errors,
+        prompt_tokens=123 if tokens else None, completion_tokens=45 if tokens else None,
+        cost_usd=0.000123 if tokens else None,
+        thinking=t.get("thinking"), evaluation_previous_goal=t.get("evaluation_previous_goal"),
+        next_goal=t.get("next_goal"),
     )
 
-    err_value = "ElementNotFound" if has_error else None
-    state = types.SimpleNamespace(
-        last_result=[types.SimpleNamespace(error=err_value)],
-        stopped=False,
-    )
 
-    history = types.SimpleNamespace(
-        number_of_steps=lambda: number_of_steps,
-        model_actions=lambda: model_actions,
-        screenshots=lambda: ["iVBORw0KGgo="],
-        has_errors=lambda: has_error,
-    )
+async def _write(event, provider: str, model_name: str = "claude-sonnet-4-5") -> None:
+    from agent.training_sink import TrainingSink
 
-    return types.SimpleNamespace(
-        history=history,
-        state=state,
-        token_cost_service=token_cost_service,
-        # Plan 02 may attach _thoughts to the agent OR to the run_agent closure.
-        # Tests that need to verify thought-field injection patch agent.runner
-        # internals directly, so we expose an attribute for completeness.
-        _thoughts=thoughts or {},
-        pause=MagicMock(),
-    )
+    await TrainingSink(provider, model_name)(event)
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -135,28 +115,14 @@ PHASE8_REQUIRED_KEYS = {
 }
 
 
-async def test_jsonl_enriched_fields_anthropic(training_dir, monkeypatch):
-    """TRAIN-01: log_step writes all 19 enriched fields for an anthropic run."""
-    from agent.runner import log_step
-
-    # Provide a thoughts accumulator at the module level so log_step can find it.
-    # Plan 02 is free to attach it to the agent OR to a module-level dict — tests
-    # here patch the most-likely module-level binding name.
-    fake_agent = _make_fake_agent()
-    monkeypatch.setattr(
-        agent.runner, "_thoughts", {1: {
-            "thinking": "I should click the search box",
-            "evaluation_previous_goal": "Previous goal succeeded",
-            "next_goal": "Type the query",
-        }}, raising=False,
-    )
-    fake_agent._thoughts = {1: {
+async def test_jsonl_enriched_fields_anthropic(training_dir):
+    """TRAIN-01: the training sink writes all 19 enriched fields for an anthropic run."""
+    thoughts = {
         "thinking": "I should click the search box",
         "evaluation_previous_goal": "Previous goal succeeded",
         "next_goal": "Type the query",
-    }}
-
-    await log_step(fake_agent, run_id="r1", provider="anthropic", duration_ms=1234, thoughts=fake_agent._thoughts)
+    }
+    await _write(_event(thoughts=thoughts, duration_ms=1234), "anthropic")
 
     records = _read_jsonl(training_dir / "runs.jsonl")
     assert len(records) == 1, f"Expected 1 JSONL record; got {len(records)}"
@@ -177,32 +143,26 @@ async def test_jsonl_enriched_fields_anthropic(training_dir, monkeypatch):
     assert record["step_quality"] in {"clean", "partial", "failed"}
 
 
-def test_log_step_signature_includes_duration_ms():
-    """TRAIN-01: log_step exposes duration_ms as a keyword-only parameter."""
-    sig = inspect.signature(agent.runner.log_step)
-    assert "duration_ms" in sig.parameters, (
-        f"log_step must accept duration_ms; current params: {list(sig.parameters)}"
-    )
-    param = sig.parameters["duration_ms"]
-    assert param.kind == inspect.Parameter.KEYWORD_ONLY, (
-        f"duration_ms must be keyword-only; got kind={param.kind}"
-    )
+def test_step_event_carries_duration_ms():
+    """TRAIN-01: the step event exposes duration_ms (replaces the log_step signature check)."""
+    import dataclasses
+    from local_browser_agent.events import StepCompletedEvent
+
+    assert "duration_ms" in {f.name for f in dataclasses.fields(StepCompletedEvent)}
 
 
 # ===========================================================================
 # TRAIN-02: provider gate
 # ===========================================================================
 
-async def test_provider_gate_ollama_nulls_token_and_thought(training_dir, monkeypatch):
-    """TRAIN-02: when provider is not anthropic/openai, all 6 gated fields are None."""
-    from agent.runner import log_step
+async def test_provider_gate_ollama_nulls_token_and_thought(training_dir):
+    """TRAIN-02: when provider is not anthropic/openai, all 6 gated fields are None.
 
-    fake_agent = _make_fake_agent()
-    # Even if thoughts are present, ollama path must null them out
-    fake_agent._thoughts = {1: {"thinking": "x", "evaluation_previous_goal": "y", "next_goal": "z"}}
-    monkeypatch.setattr(agent.runner, "_thoughts", fake_agent._thoughts, raising=False)
-
-    await log_step(fake_agent, run_id="rO", provider="ollama", duration_ms=10)
+    (Token fields are None upstream for Ollama - see tests/lib/test_step_events.py - and the
+    sink nulls the thought fields even when the event carries them.)
+    """
+    thoughts = {"thinking": "x", "evaluation_previous_goal": "y", "next_goal": "z"}
+    await _write(_event(tokens=False, thoughts=thoughts, duration_ms=10), "ollama")
 
     record = _read_jsonl(training_dir / "runs.jsonl")[0]
     for gated in (
@@ -214,19 +174,10 @@ async def test_provider_gate_ollama_nulls_token_and_thought(training_dir, monkey
         )
 
 
-async def test_provider_gate_openai_populates_fields(training_dir, monkeypatch):
+async def test_provider_gate_openai_populates_fields(training_dir):
     """TRAIN-02: openai provider populates all six gated fields."""
-    from agent.runner import log_step
-
-    fake_agent = _make_fake_agent()
-    fake_agent._thoughts = {1: {
-        "thinking": "openai thought",
-        "evaluation_previous_goal": "ok",
-        "next_goal": "continue",
-    }}
-    monkeypatch.setattr(agent.runner, "_thoughts", fake_agent._thoughts, raising=False)
-
-    await log_step(fake_agent, run_id="rOA", provider="openai", duration_ms=100, thoughts=fake_agent._thoughts)
+    thoughts = {"thinking": "openai thought", "evaluation_previous_goal": "ok", "next_goal": "continue"}
+    await _write(_event(thoughts=thoughts, duration_ms=100), "openai")
 
     record = _read_jsonl(training_dir / "runs.jsonl")[0]
     for gated in (
@@ -238,15 +189,10 @@ async def test_provider_gate_openai_populates_fields(training_dir, monkeypatch):
         )
 
 
-async def test_provider_gate_anthropic_canonical_lower(training_dir, monkeypatch):
-    """TRAIN-02: provider param is canonical lower-case; literal 'anthropic' populates."""
-    from agent.runner import log_step
-
-    fake_agent = _make_fake_agent()
-    fake_agent._thoughts = {1: {"thinking": "t", "evaluation_previous_goal": "e", "next_goal": "n"}}
-    monkeypatch.setattr(agent.runner, "_thoughts", fake_agent._thoughts, raising=False)
-
-    await log_step(fake_agent, run_id="rA2", provider="anthropic", duration_ms=50)
+async def test_provider_gate_anthropic_canonical_lower(training_dir):
+    """TRAIN-02: provider is canonical lower-case; literal 'anthropic' populates."""
+    thoughts = {"thinking": "t", "evaluation_previous_goal": "e", "next_goal": "n"}
+    await _write(_event(thoughts=thoughts, duration_ms=50), "anthropic")
 
     record = _read_jsonl(training_dir / "runs.jsonl")[0]
     assert record["prompt_tokens"] is not None
@@ -258,7 +204,7 @@ async def test_provider_gate_anthropic_canonical_lower(training_dir, monkeypatch
 # ===========================================================================
 
 def test_rewrite_jsonl_run_success_adds_field_to_all_matching_records(tmp_path):
-    """TRAIN-03: _rewrite_jsonl_run_success annotates every record matching run_id."""
+    """TRAIN-03: rewrite_jsonl_run_success annotates every record matching run_id."""
     path = tmp_path / "runs.jsonl"
     path.write_text(
         json.dumps({"run_id": "rA", "step_index": 0}) + "\n" +
@@ -266,7 +212,7 @@ def test_rewrite_jsonl_run_success_adds_field_to_all_matching_records(tmp_path):
         json.dumps({"run_id": "rB", "step_index": 0}) + "\n"
     )
 
-    agent.runner._rewrite_jsonl_run_success(path, "rA", True)  # type: ignore[attr-defined]
+    agent.training_sink.rewrite_jsonl_run_success(path, "rA", True)  # type: ignore[attr-defined]
 
     records = _read_jsonl(path)
     assert records[0]["run_success"] is True
@@ -280,7 +226,7 @@ def test_rewrite_jsonl_run_success_writes_false_for_failed_run(tmp_path):
     path = tmp_path / "runs.jsonl"
     path.write_text(json.dumps({"run_id": "rX", "step_index": 0}) + "\n")
 
-    agent.runner._rewrite_jsonl_run_success(path, "rX", False)  # type: ignore[attr-defined]
+    agent.training_sink.rewrite_jsonl_run_success(path, "rX", False)  # type: ignore[attr-defined]
 
     record = _read_jsonl(path)[0]
     assert record["run_success"] is False
@@ -294,7 +240,7 @@ def test_rewrite_jsonl_run_success_preserves_malformed_lines(tmp_path):
         json.dumps({"run_id": "rM", "step_index": 0}) + "\n"
     )
 
-    agent.runner._rewrite_jsonl_run_success(path, "rM", True)  # type: ignore[attr-defined]
+    agent.training_sink.rewrite_jsonl_run_success(path, "rM", True)  # type: ignore[attr-defined]
 
     raw = path.read_text().splitlines()
     assert raw[0] == "not json at all", "malformed line must be preserved verbatim"
@@ -307,9 +253,9 @@ def test_rewrite_jsonl_run_success_idempotent(tmp_path):
     path = tmp_path / "runs.jsonl"
     path.write_text(json.dumps({"run_id": "rI", "step_index": 0}) + "\n")
 
-    agent.runner._rewrite_jsonl_run_success(path, "rI", True)  # type: ignore[attr-defined]
+    agent.training_sink.rewrite_jsonl_run_success(path, "rI", True)  # type: ignore[attr-defined]
     after_first = path.read_text()
-    agent.runner._rewrite_jsonl_run_success(path, "rI", True)  # type: ignore[attr-defined]
+    agent.training_sink.rewrite_jsonl_run_success(path, "rI", True)  # type: ignore[attr-defined]
     after_second = path.read_text()
     assert after_first == after_second, "rewrite must be idempotent"
 
@@ -318,91 +264,56 @@ def test_rewrite_jsonl_run_success_missing_file_noop(tmp_path):
     """TRAIN-03: rewrite against a non-existent path returns silently (no exception)."""
     missing = tmp_path / "does-not-exist.jsonl"
     # Must not raise
-    agent.runner._rewrite_jsonl_run_success(missing, "r0", True)  # type: ignore[attr-defined]
+    agent.training_sink.rewrite_jsonl_run_success(missing, "r0", True)  # type: ignore[attr-defined]
 
 
-async def test_step_quality_clean_when_no_errors(training_dir, monkeypatch):
-    """TRAIN-03: step_quality is 'clean' when last_result has no errors."""
-    from agent.runner import log_step
-
-    fake_agent = _make_fake_agent(has_error=False)
-    monkeypatch.setattr(agent.runner, "_thoughts", {}, raising=False)
-
-    await log_step(fake_agent, run_id="rQC", provider="ollama", duration_ms=10)
+async def test_step_quality_clean_when_no_errors(training_dir):
+    """TRAIN-03: step_quality is 'clean' when the step has no error."""
+    await _write(_event(error=None), "ollama")
 
     record = _read_jsonl(training_dir / "runs.jsonl")[0]
     assert record["step_quality"] == "clean"
 
 
-async def test_step_quality_failed_when_error_present(training_dir, monkeypatch):
-    """TRAIN-03: step_quality is 'failed' when any last_result.error is non-None."""
-    from agent.runner import log_step
-
-    fake_agent = _make_fake_agent(has_error=True)
-    monkeypatch.setattr(agent.runner, "_thoughts", {}, raising=False)
-
-    await log_step(fake_agent, run_id="rQF", provider="ollama", duration_ms=10)
+async def test_step_quality_failed_when_error_present(training_dir):
+    """TRAIN-03: step_quality is 'failed' when the step carries an error."""
+    await _write(_event(error="ElementNotFound", run_has_errors=True), "ollama")
 
     record = _read_jsonl(training_dir / "runs.jsonl")[0]
     assert record["step_quality"] == "failed"
 
 
-async def test_step_quality_per_step_not_cumulative(training_dir, monkeypatch):
-    """TRAIN-03 / Pitfall 2: step_quality reflects the current step's last_result,
-    NOT the cumulative history.has_errors() (which is True for the run as a whole).
+async def test_step_quality_per_step_not_cumulative(training_dir):
+    """TRAIN-03 / Pitfall 2: step_quality reflects the current step's error, NOT the
+    cumulative has_errors() (True for the run as a whole); step_success stays cumulative.
     """
-    from agent.runner import log_step
-
-    fake_agent = _make_fake_agent(has_error=False)
-    # Cumulative history says there WERE errors, but the current step's
-    # last_result is clean — per-step semantics win.
-    fake_agent.history.has_errors = lambda: True
-    fake_agent.state.last_result = [types.SimpleNamespace(error=None)]
-    monkeypatch.setattr(agent.runner, "_thoughts", {}, raising=False)
-
-    await log_step(fake_agent, run_id="rQP", provider="ollama", duration_ms=10)
+    await _write(_event(error=None, run_has_errors=True), "ollama")
 
     record = _read_jsonl(training_dir / "runs.jsonl")[0]
     assert record["step_quality"] == "clean", (
-        "step_quality must be derived per-step from last_result, not from cumulative has_errors()"
+        "step_quality must be derived per-step, not from cumulative has_errors()"
     )
+    assert record["step_success"] is False
 
 
-async def test_step_quality_is_valid_literal(training_dir, monkeypatch):
+async def test_step_quality_is_valid_literal(training_dir):
     """TRAIN-03: step_quality is always in the {clean, partial, failed} set."""
-    from agent.runner import log_step
-
-    fake_agent = _make_fake_agent()
-    monkeypatch.setattr(agent.runner, "_thoughts", {}, raising=False)
-
-    await log_step(fake_agent, run_id="rQV", provider="ollama", duration_ms=10)
+    await _write(_event(), "ollama")
 
     record = _read_jsonl(training_dir / "runs.jsonl")[0]
     assert record["step_quality"] in {"clean", "partial", "failed"}
 
 
-async def test_thoughts_accumulator_key_alignment(training_dir, monkeypatch):
-    """TRAIN-03 / Pitfall 1: thought lookup uses step_idx + 1 (1-indexed key)
-    so that _pre_step's step_num=1 is found by _log_step at step_idx=0.
+async def test_thoughts_step_alignment(training_dir):
+    """TRAIN-03 / Pitfall 1: the 1-indexed event step maps to 0-indexed step_index and
+    carries that step's thoughts into the record.
     """
-    from agent.runner import log_step
-
-    fake_agent = _make_fake_agent(number_of_steps=1)  # step_idx == 0
-    # _thoughts is keyed 1-indexed
-    captured_thoughts = {1: {
-        "thinking": "key-1 thought",
-        "evaluation_previous_goal": "key-1 eval",
-        "next_goal": "key-1 next",
-    }}
-    fake_agent._thoughts = captured_thoughts
-    monkeypatch.setattr(agent.runner, "_thoughts", captured_thoughts, raising=False)
-
-    await log_step(fake_agent, run_id="rT", provider="anthropic", duration_ms=10, thoughts=captured_thoughts)
+    thoughts = {"thinking": "key-1 thought", "evaluation_previous_goal": "e", "next_goal": "n"}
+    await _write(_event(step=1, thoughts=thoughts, duration_ms=10), "anthropic")
 
     record = _read_jsonl(training_dir / "runs.jsonl")[0]
-    assert record["model_thought"] == "key-1 thought", (
-        f"step_idx+1 lookup off-by-one: expected 'key-1 thought', got {record['model_thought']!r}"
-    )
+    assert record["step_index"] == 0
+    assert record["model_thought"] == "key-1 thought"
 
 
 # ===========================================================================
@@ -781,35 +692,16 @@ def test_train_apple_model_id_targets_qwen_3b():
 # CR-01 / CR-02 regression tests
 # ===========================================================================
 
-def test_cr01_no_history_shadow_in_log_step():
-    """CR-01: log_step source must use 'token_history' AND must NOT contain a
-    second `    history = ` re-binding that shadows the initial agent.history binding.
-    """
-    src = inspect.getsource(agent.runner.log_step)
-    assert "token_history" in src, (
-        "log_step source must rename the token_cost_service usage_history binding "
-        "to 'token_history' (CR-01 fix)"
-    )
-    # Count occurrences of "    history = " (the indented re-binding pattern).
-    # The initial `history = agent.history` is fine; a second one is the shadow.
-    count = src.count("    history = ")
-    assert count <= 1, (
-        f"log_step contains {count} `    history = ` bindings — only the initial "
-        "`history = agent.history` is allowed (CR-01 fix)"
-    )
-
-
 def test_cr02_action_type_uses_interacted_element_skip():
-    """CR-02: log_step source must use the `interacted_element` skip-key idiom
-    and MUST NOT use the `list(last_action.keys())[0]` fallback.
+    """CR-02: the library's step extraction uses the `interacted_element` skip-key idiom
+    (replaces the old log_step source inspection; behavior is tested in tests/lib/test_step_events.py).
     """
-    src = inspect.getsource(agent.runner.log_step)
-    assert "'interacted_element'" in src or '"interacted_element"' in src, (
-        "log_step must reference the 'interacted_element' skip key (CR-02 fix)"
-    )
-    assert "list(last_action.keys())[0]" not in src, (
-        "log_step must NOT use the list(last_action.keys())[0] fallback (CR-02 fix)"
-    )
+    import inspect
+    import local_browser_agent.runner as lib_runner
+
+    src = inspect.getsource(lib_runner.BrowserAgent._run)
+    assert '"interacted_element"' in src
+    assert "list(last_action.keys())[0]" not in src
 
 
 # ===========================================================================

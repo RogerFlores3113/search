@@ -47,6 +47,18 @@ def _make_mock_agent(history=None):
     return mock_agent
 
 
+def _make_browser_agent(data_q, ctrl_q, *, paused=False):
+    """A real BrowserAgent (QueueSink on the given queues) wrapping a mock browser-use agent,
+    as /pause, /resume and /stop see it while a run is active."""
+    from local_browser_agent import AgentConfig, BrowserAgent, QueueSink
+
+    ba = BrowserAgent(AgentConfig(), sinks=[QueueSink(data_q, ctrl_q)])
+    inner = _make_mock_agent()
+    ba._agent = inner
+    ba._paused = paused
+    return ba, inner
+
+
 def _make_fake_agent_instance():
     """Build a minimal fake browser-use agent instance for queue emission tests."""
     from unittest.mock import AsyncMock as _AsyncMock
@@ -247,25 +259,26 @@ async def test_post_run_sequential_after_completion_succeeds(monkeypatch):
 # ---------------------------------------------------------------------------
 
 async def test_post_pause_calls_agent_pause(monkeypatch):
-    """POST /pause must call agent.pause() when agent is active and not paused."""
+    """POST /pause must call BrowserAgent.pause() when a run is active and not paused."""
     import agent.main as main_mod
     from agent.main import app
 
-    mock_agent = _make_mock_agent()
-    mock_agent.state.paused = False
     queue: asyncio.Queue = asyncio.Queue()
+    ba, inner = _make_browser_agent(queue, queue)
 
-    monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
+    monkeypatch.setattr(main_mod, "_active_agent", ba)
     monkeypatch.setattr(main_mod, "_active_queue", queue)
     monkeypatch.setattr(main_mod, "_active_control_queue", queue)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
                            cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/pause")
+    await asyncio.sleep(0.05)
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "paused"
-    mock_agent.pause.assert_called_once()
+    inner.pause.assert_called_once()
+    assert ba.is_paused
     # StateEvent("paused") must be on the queue
     from agent.events import StateEvent
     events = []
@@ -276,25 +289,27 @@ async def test_post_pause_calls_agent_pause(monkeypatch):
 
 
 async def test_post_pause_toggles_resume(monkeypatch):
-    """POST /pause on a paused agent must call agent.resume() instead."""
+    """POST /pause on a paused run must call BrowserAgent.resume() instead (this is the
+    UI's Resume button, also used to continue after a CAPTCHA pause)."""
     import agent.main as main_mod
     from agent.main import app
 
-    mock_agent = _make_mock_agent()
-    mock_agent.state.paused = True
     queue: asyncio.Queue = asyncio.Queue()
+    ba, inner = _make_browser_agent(queue, queue, paused=True)
 
-    monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
+    monkeypatch.setattr(main_mod, "_active_agent", ba)
     monkeypatch.setattr(main_mod, "_active_queue", queue)
     monkeypatch.setattr(main_mod, "_active_control_queue", queue)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
                            cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/pause")
+    await asyncio.sleep(0.05)
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "resumed"
-    mock_agent.resume.assert_called_once()
+    inner.resume.assert_called_once()
+    assert not ba.is_paused
     # StateEvent("running") must be on the queue
     from agent.events import StateEvent
     events = []
@@ -373,7 +388,7 @@ async def test_log_step_emits_narration_event(monkeypatch):
     fake_agent_instance = _make_fake_agent_instance()
 
     # Patch log_step (the JSONL writer) to be a no-op so test stays unit-level
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("agent.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
     mock_browser.llm_screenshot_size = None
@@ -389,10 +404,10 @@ async def test_log_step_emits_narration_event(monkeypatch):
     mock_agent.run = fake_run
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
 
     from agent.runner import run_agent
     await run_agent("test task", queue=queue)
@@ -430,11 +445,11 @@ async def test_run_agent_emits_summary_event(monkeypatch):
     mock_agent = _make_mock_agent(history=mock_history)
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     await run_agent("test task", queue=queue)
 
@@ -469,11 +484,11 @@ async def test_run_agent_omits_summary_when_no_final_result(monkeypatch):
     mock_agent = _make_mock_agent(history=mock_history)
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     await run_agent("test task", queue=queue)
 
@@ -515,11 +530,11 @@ async def test_log_step_does_not_emit_screenshot_event(monkeypatch):
     mock_agent.run = fake_run
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     from agent.runner import run_agent
     import inspect
@@ -559,11 +574,11 @@ async def test_log_step_emits_progress_event(monkeypatch):
     mock_agent.run = fake_run
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     from agent.runner import run_agent
     await run_agent("test task", queue=queue)
@@ -597,11 +612,11 @@ async def test_run_agent_emits_state_events(monkeypatch):
     mock_agent.run = AsyncMock(return_value=_make_mock_history())
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     from agent.runner import run_agent
     await run_agent("test task", queue=queue)
@@ -689,11 +704,11 @@ async def test_run_agent_inserts_run_to_db(monkeypatch, db_dir):
     mock_agent.state.stopped = False
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     await run_agent("test task")
 
@@ -742,11 +757,11 @@ async def test_run_agent_inserts_stopped_status_when_agent_state_stopped(monkeyp
     mock_agent.state.stopped = True  # user stopped the agent
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     await run_agent("stopped task")
 
@@ -756,9 +771,10 @@ async def test_run_agent_inserts_stopped_status_when_agent_state_stopped(monkeyp
 
 
 async def test_run_agent_clears_active_agent_in_finally(monkeypatch, db_dir):
-    """After run_agent returns, _active_agent and _active_queue are both None."""
+    """While a run is in flight the web layer holds its BrowserAgent (so /pause and /stop can
+    reach it); after the run ends _active_agent and the queues are all None."""
     import agent.main as main_mod
-    from agent.runner import run_agent
+    from agent.runner import run_agent  # noqa: F401
     from agent import db as history_db
 
     await history_db.init_db()
@@ -772,19 +788,34 @@ async def test_run_agent_clears_active_agent_in_finally(monkeypatch, db_dir):
     mock_agent.state.stopped = False
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     queue: asyncio.Queue = asyncio.Queue()
+    ctrl: asyncio.Queue = asyncio.Queue()
     monkeypatch.setattr(main_mod, "_active_queue", queue)
+    monkeypatch.setattr(main_mod, "_active_control_queue", ctrl)
 
-    await run_agent("clear task", queue=queue)
+    seen = {}
+    real_set = main_mod._set_active_agent
 
+    def spy(agent):
+        if agent is not None:
+            seen["agent"] = agent
+        real_set(agent)
+
+    monkeypatch.setattr(main_mod, "_set_active_agent", spy)
+
+    await main_mod._run_tracked("clear task", queue, ctrl, "generic")
+
+    from local_browser_agent import BrowserAgent
+    assert isinstance(seen.get("agent"), BrowserAgent), "run must expose its BrowserAgent while active"
     assert main_mod._active_agent is None, f"Expected _active_agent=None; got {main_mod._active_agent}"
     assert main_mod._active_queue is None, f"Expected _active_queue=None; got {main_mod._active_queue}"
+    assert main_mod._active_control_queue is None
 
 
 # ---------------------------------------------------------------------------
@@ -940,11 +971,11 @@ async def test_done_event_always_emitted(monkeypatch):
     mock_agent.run = AsyncMock(return_value=_make_mock_history())
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("agent.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     await run_agent("success task", queue=queue1)
     events1 = []
@@ -982,10 +1013,10 @@ async def test_done_event_always_emitted(monkeypatch):
     mock_agent2.run = agent_run_times_out
 
     monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser2))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent2))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser2))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent2))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
 
     await run_agent("timeout task", queue=queue3)
     events3 = []
@@ -1104,18 +1135,18 @@ async def test_pause_routes_state_event_to_control_queue(monkeypatch):
     from agent.events import StateEvent
     from agent.main import app
 
-    mock_agent = _make_mock_agent()
-    mock_agent.state.paused = False
     data_q: asyncio.Queue = asyncio.Queue()
     ctrl_q: asyncio.Queue = asyncio.Queue()
+    ba, _inner = _make_browser_agent(data_q, ctrl_q)
 
-    monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
+    monkeypatch.setattr(main_mod, "_active_agent", ba)
     monkeypatch.setattr(main_mod, "_active_queue", data_q)
     monkeypatch.setattr(main_mod, "_active_control_queue", ctrl_q)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
                            cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/pause")
+    await asyncio.sleep(0.05)
 
     assert resp.status_code == 200
     assert data_q.empty(), "StateEvent must not land on the data queue"

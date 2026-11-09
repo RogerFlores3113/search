@@ -36,14 +36,14 @@ def test_guardrail_prompt_blocks_credentials(monkeypatch_env):
 
 def test_captcha_keywords_set_is_frozenset(monkeypatch_env):
     """CAPTCHA_KEYWORDS must be a frozenset for immutability."""
-    from agent.runner import CAPTCHA_KEYWORDS
+    from local_browser_agent.captcha import CAPTCHA_KEYWORDS
 
     assert isinstance(CAPTCHA_KEYWORDS, frozenset)
 
 
 def test_captcha_keywords_contains_core_terms(monkeypatch_env):
     """CAPTCHA_KEYWORDS must contain 'captcha', 'recaptcha', 'cloudflare'."""
-    from agent.runner import CAPTCHA_KEYWORDS
+    from local_browser_agent.captcha import CAPTCHA_KEYWORDS
 
     for term in ("captcha", "recaptcha", "cloudflare"):
         assert term in CAPTCHA_KEYWORDS, f"Expected {term!r} in CAPTCHA_KEYWORDS"

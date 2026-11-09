@@ -55,7 +55,7 @@ def test_main_redirects_paths_when_frozen(monkeypatch):
 
     # After frozen main() runs, DB_PATH and TRAINING_FILE should point under user_data_dir
     import agent.db as db_mod
-    import agent.runner as runner_mod
+    import agent.training_sink as runner_mod
     user_dir = platformdirs.user_data_dir("local-browser-agent")
 
     assert str(db_mod.DB_PATH).startswith(user_dir)

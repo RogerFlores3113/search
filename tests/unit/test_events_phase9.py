@@ -154,7 +154,7 @@ async def test_runs_endpoint_does_not_read_training_jsonl(monkeypatch, tmp_path)
     and confirm the endpoint still serves a 200.
     """
     import agent.main as main_mod
-    import agent.runner as runner_mod
+    import agent.training_sink as runner_mod
 
     monkeypatch.setattr(runner_mod, "TRAINING_FILE", tmp_path / "does-not-exist.jsonl")
 
