@@ -19,27 +19,27 @@ import sys
 
 import uvicorn
 
-from agent.chrome_detect import chrome_is_installed
-from agent.launcher import schedule_browser_open
-from agent.main import app
+from local_browser_agent.app.chrome_detect import chrome_is_installed
+from local_browser_agent.app.launcher import schedule_browser_open
+from local_browser_agent.app.main import app
 
 
 def redirect_data_paths() -> None:
     """Patch module-level path constants to user_data_dir when running frozen.
 
-    Must be called before any async code uses agent.db or agent.training_sink.
+    Must be called before any async code uses local_browser_agent.app.db or local_browser_agent.app.training_sink.
     In dev mode this is a no-op — paths stay as get_user_data_dir() already set.
     """
     if not getattr(sys, "frozen", False):
         return
 
-    from agent.paths import get_user_data_dir
+    from local_browser_agent.app.paths import get_user_data_dir
     user_dir = get_user_data_dir()
 
-    import agent.db as db_module
+    import local_browser_agent.app.db as db_module
     db_module.DB_PATH = user_dir / "history.db"
 
-    import agent.training_sink as training_sink_module
+    import local_browser_agent.app.training_sink as training_sink_module
     training_sink_module.TRAINING_FILE = user_dir / "training" / "runs.jsonl"
     (user_dir / "training").mkdir(parents=True, exist_ok=True)
 
@@ -62,7 +62,7 @@ def main() -> None:
     # (e) Set up file logging when frozen so startup errors are visible (Pitfall 6)
     if getattr(sys, "frozen", False):
         import logging
-        from agent.paths import get_user_data_dir
+        from local_browser_agent.app.paths import get_user_data_dir
         log_path = get_user_data_dir() / "app.log"
         # Redirect stdout/stderr BEFORE uvicorn starts.
         # On Windows with console=False, PyInstaller sets these to None.
@@ -91,7 +91,7 @@ def main() -> None:
 
     # Blocks until server exits
     uvicorn.run(
-        "agent.main:app",
+        "local_browser_agent.app.main:app",
         host="127.0.0.1",
         port=8080,
         log_level="info",

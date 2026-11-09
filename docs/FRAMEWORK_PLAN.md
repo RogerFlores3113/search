@@ -5,8 +5,8 @@ tickable checklist: "Search: Framework Plan" Claude Doc.
 
 ## Summary
 
-The agent loop works, but it is welded to the web UI: `agent/runner.py::run_agent`
-reads a global config singleton, writes back into `agent.main` module globals,
+The agent loop works, but it is welded to the web UI: `local_browser_agent/app/runner.py::run_agent`
+reads a global config singleton, writes back into `local_browser_agent.app.main` module globals,
 always writes `history.db` / `runs.jsonl` / stdout, and returns `None`. Other
 projects cannot import it. The plan adds a library package, `local_browser_agent`,
 that owns the loop; the web app, a CLI, an MCP server and an eval suite sit on top.
@@ -15,10 +15,10 @@ that owns the loop; the web app, a CLI, an MCP server and an eval suite sit on t
 
 | # | Finding | Where |
 |---|---------|-------|
-| 1 | Loop reads module-level `config` singleton; two callers cannot use different settings | `agent/runner.py`, `agent/config.py` |
-| 2 | `run_agent` imports `agent.main` and writes `_active_agent` / queues into it | `agent/runner.py` |
+| 1 | Loop reads module-level `config` singleton; two callers cannot use different settings | `local_browser_agent/app/runner.py`, `local_browser_agent/app/config.py` |
+| 2 | `run_agent` imports `local_browser_agent.app.main` and writes `_active_agent` / queues into it | `local_browser_agent/app/runner.py` |
 | 3 | Every run writes `history.db`, `runs.jsonl` and `print()`; paths fixed at import | `runner.py`, `db.py`, `paths.py` |
-| 4 | `run_agent` returns `None`; no result object (success, answer, steps, cost) | `agent/runner.py` |
+| 4 | `run_agent` returns `None`; no result object (success, answer, steps, cost) | `local_browser_agent/app/runner.py` |
 | 5 | browser-use telemetry on by default; cloud sync follows it | browser-use `config.py` (fixed in step 1) |
 | 6 | Safety is prompt text + `prohibited_domains`; no enforced action gate | `GUARDRAIL_PROMPT` |
 | 7 | Providers hard-coded to three | `build_llm` |

@@ -86,7 +86,7 @@ Each folder contains `history.db` (session history), `training/runs.jsonl` (agen
 uv sync
 
 # Run
-uv run python -m agent
+uv run python -m local_browser_agent.app
 
 # Tests
 uv run pytest tests/ -q

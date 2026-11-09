@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.events import TokenEvent, ModelInfoEvent, ActionDetailEvent, StateEvent
+from local_browser_agent.app.events import TokenEvent, ModelInfoEvent, ActionDetailEvent, StateEvent
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ async def test_action_detail_event_emitted_per_step(training_dir, monkeypatch_en
     NarrationEvent was replaced by ActionDetailEvent in Phase 6 Plan 02 (D-05).
     ActionDetailEvent carries structured action metadata instead of a text narration.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_with_tokens()
@@ -84,7 +84,7 @@ async def test_action_detail_event_emitted_per_step(training_dir, monkeypatch_en
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass):
@@ -113,7 +113,7 @@ async def test_log_step_timing_closure_executes(training_dir, monkeypatch_env):
     This test guards against regression in the surrounding closure structure by confirming the run completes and
     ActionDetailEvent is emitted even after a sleep delay.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_with_tokens()
@@ -133,7 +133,7 @@ async def test_log_step_timing_closure_executes(training_dir, monkeypatch_env):
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass):
@@ -159,7 +159,7 @@ async def test_token_event_emitted_per_step(training_dir, monkeypatch_env):
 
     This test is RED until Plan 02 adds queue.put_nowait(TokenEvent(...)) to _log_step.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_with_tokens()
@@ -177,7 +177,7 @@ async def test_token_event_emitted_per_step(training_dir, monkeypatch_env):
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass):
@@ -198,7 +198,7 @@ async def test_ollama_token_event_fields_are_none(training_dir, monkeypatch_env)
 
     This test is RED until Plan 02 gates token extraction behind the provider check.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_ollama()
@@ -217,7 +217,7 @@ async def test_ollama_token_event_fields_are_none(training_dir, monkeypatch_env)
     mock_browser.kill = AsyncMock()
 
     # PROVIDER defaults to "ollama" — monkeypatch_env clears env vars so Settings() is ollama
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass):
@@ -243,8 +243,8 @@ async def test_api_token_event_has_integer_counts(training_dir, monkeypatch_env)
     monkeypatch_env.setenv("PROVIDER", "anthropic")
     monkeypatch_env.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
 
-    from agent.runner import run_agent
-    import agent.runner as runner_mod
+    from local_browser_agent.app.runner import run_agent
+    import local_browser_agent.app.runner as runner_mod
 
     # Patch config.provider on the module-level singleton so config.provider.lower()
     # returns "anthropic" inside _log_step. The module-level config singleton does not
@@ -267,7 +267,7 @@ async def test_api_token_event_has_integer_counts(training_dir, monkeypatch_env)
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatAnthropic", MagicMock()), \
          patch("local_browser_agent.runner.build_llm", MagicMock()), \
@@ -299,7 +299,7 @@ async def test_model_info_event_emitted_at_run_start(training_dir, monkeypatch_e
     Position must be: StateEvent('running') at index N, ModelInfoEvent at index N+1.
     This test is RED until Plan 02 emits ModelInfoEvent after StateEvent('running').
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_with_tokens()
@@ -316,7 +316,7 @@ async def test_model_info_event_emitted_at_run_start(training_dir, monkeypatch_e
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass):
@@ -347,8 +347,8 @@ async def test_model_info_event_fields(training_dir, monkeypatch_env):
     For default Ollama config: provider='ollama', model_name=config.ollama_model.
     This test is RED until Plan 02 emits ModelInfoEvent with resolved model name.
     """
-    from agent.config import Settings
-    from agent.runner import run_agent
+    from local_browser_agent.app.config import Settings
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_with_tokens()
@@ -367,7 +367,7 @@ async def test_model_info_event_fields(training_dir, monkeypatch_env):
 
     expected_cfg = Settings()  # reads defaults: provider='ollama', ollama_model='qwen3-vl:8b'
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass):
@@ -398,7 +398,7 @@ async def test_training_record_carries_token_fields(training_dir, monkeypatch_en
     """The training sink must persist the step's token dict (prompt/completion/cost) from the
     StepCompletedEvent (replaces the old log_step return-value check)."""
     import json
-    from agent.training_sink import TrainingSink
+    from local_browser_agent.app.training_sink import TrainingSink
     from local_browser_agent.events import StepCompletedEvent
 
     ev = StepCompletedEvent(run_id="r", step=1, prompt_tokens=10, completion_tokens=5, cost_usd=0.001)
@@ -417,7 +417,7 @@ async def test_run_agent_sets_calculate_cost(training_dir, monkeypatch_env):
 
     This test is RED until Plan 02 adds calculate_cost=True to the Agent constructor call.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     captured_kwargs: dict = {}
 
@@ -436,7 +436,7 @@ async def test_run_agent_sets_calculate_cost(training_dir, monkeypatch_env):
     monkeypatch_env.setenv("PROVIDER", "anthropic")
     monkeypatch_env.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatAnthropic", MagicMock()), \
          patch("local_browser_agent.runner.Agent", CapturingAgentClass):

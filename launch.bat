@@ -14,4 +14,4 @@ if %errorlevel% neq 0 (
 )
 
 cd /d "%~dp0"
-uv run python -m agent %*
+uv run python -m local_browser_agent.app %*

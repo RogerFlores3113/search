@@ -19,10 +19,10 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from itsdangerous import BadSignature, URLSafeSerializer
 from pydantic import BaseModel
 
-from agent.events import DoneEvent
-from agent import db as history_db
-from agent.paths import get_secret_key
-from agent.runner import run_agent
+from local_browser_agent.app.events import DoneEvent
+from local_browser_agent.app import db as history_db
+from local_browser_agent.app.paths import get_secret_key
+from local_browser_agent.app.runner import run_agent
 
 
 DISCLAIMER_COOKIE_NAME = "lba_disclaimer"
@@ -72,17 +72,23 @@ def _resource_path(relative: str) -> str:
     """
     if getattr(sys, "frozen", False):
         return str(Path(sys._MEIPASS) / relative)
-    # Dev mode: resolve relative to the project root (parent of the agent
+    # Dev mode: resolve relative to the project root (parent of the local_browser_agent
     # package) so callers that chdir away (e.g., pytest tmp_path fixtures)
-    # still find bundled resources like agent/templates and agent/static.
-    project_root = Path(__file__).resolve().parent.parent
+    # still find bundled resources like local_browser_agent/app/templates and local_browser_agent/app/static.
+    project_root = Path(__file__).resolve().parent.parent.parent
     candidate = project_root / relative
     if candidate.exists():
         return str(candidate)
+    # Installed wheel: resources sit next to this module, not under a project root.
+    prefix = "local_browser_agent/app/"
+    if relative.startswith(prefix):
+        pkg_candidate = Path(__file__).resolve().parent / relative[len(prefix):]
+        if pkg_candidate.exists():
+            return str(pkg_candidate)
     return relative
 
 
-templates = Jinja2Templates(directory=_resource_path("agent/templates"))
+templates = Jinja2Templates(directory=_resource_path("local_browser_agent/app/templates"))
 
 
 @asynccontextmanager
@@ -96,11 +102,11 @@ async def lifespan(app: FastAPI):
     await history_db.init_db()
 
     # Phase 12: Seed 4 named prompts on fresh install (no-op if 'prompts' key exists)
-    from agent.settings import seed_prompts_if_absent, load_settings_json  # noqa: PLC0415
+    from local_browser_agent.app.settings import seed_prompts_if_absent, load_settings_json  # noqa: PLC0415
     seed_prompts_if_absent()
     # Live-patch config singleton so the first GET /api/settings returns seeds (Pitfall 5)
     _seeded = load_settings_json()
-    from agent.config import config as _cfg  # noqa: PLC0415
+    from local_browser_agent.app.config import config as _cfg  # noqa: PLC0415
     _cfg.prompts = _seeded.get("prompts", [])
     _cfg.active_prompt_id = _seeded.get("active_prompt_id", "generic")
 
@@ -125,8 +131,8 @@ app = FastAPI(lifespan=lifespan)
 app.state.chrome_missing = False
 
 # Mount static files with check_dir=False so startup does not crash when the
-# agent/static directory has not yet been created (RESEARCH Anti-Patterns).
-app.mount("/static", StaticFiles(directory=_resource_path("agent/static"), check_dir=False), name="static")
+# local_browser_agent/app/static directory has not yet been created (RESEARCH Anti-Patterns).
+app.mount("/static", StaticFiles(directory=_resource_path("local_browser_agent/app/static"), check_dir=False), name="static")
 
 _active_task: Optional[asyncio.Task] = None
 # Per-run SSE queues. Data queue (bounded, drop-on-overflow) carries
@@ -277,7 +283,7 @@ async def runs_endpoint(request: Request):
 
     All UI-facing aggregates (step_count, total_duration_s, total_cost_usd,
     model_name, provider) are columns on the runs row — computed once by
-    `agent.runner.run_agent` when the run finishes. This endpoint is a
+    `local_browser_agent.app.runner.run_agent` when the run finishes. This endpoint is a
     straight SELECT; the LoRA-only `training/runs.jsonl` is not touched.
     """
     runs = await history_db.list_runs(limit=10)
@@ -295,8 +301,8 @@ async def get_settings() -> JSONResponse:
         anthropic_key_set (bool), openai_key_set (bool),
         safety_defaults (sorted list), user_domains (list)
     """
-    from agent.config import config, SAFETY_DEFAULTS
-    from agent.settings import load_settings_json
+    from local_browser_agent.app.config import config, SAFETY_DEFAULTS
+    from local_browser_agent.app.settings import load_settings_json
 
     stored = load_settings_json()
     return JSONResponse({
@@ -326,7 +332,7 @@ async def get_ollama_models() -> JSONResponse:
     so the settings UI panel remains functional even when Ollama is down (T-11-15).
     Uses async httpx (Pitfall 7 — not sync httpx.get).
     """
-    from agent.config import config
+    from local_browser_agent.app.config import config
 
     host = config.ollama_host.rstrip("/")
     try:
@@ -374,8 +380,8 @@ async def post_settings(
     """
     try:
         import json as _json
-        from agent.config import config, SAFETY_DEFAULTS
-        from agent.settings import (
+        from local_browser_agent.app.config import config, SAFETY_DEFAULTS
+        from local_browser_agent.app.settings import (
             load_settings_json,
             save_settings_json,
             encrypt_api_key,

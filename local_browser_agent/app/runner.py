@@ -22,13 +22,13 @@ from local_browser_agent.models import build_llm as _lib_build_llm
 from local_browser_agent.runner import extract_target_label as _extract_target_label  # noqa: F401
 from local_browser_agent.safety import GUARDRAIL_PROMPT  # noqa: F401  (re-exported)
 
-from agent.config import config
-from agent import db as history_db
-from agent import training_sink
-from agent.training_sink import TrainingSink
+from local_browser_agent.app.config import config
+from local_browser_agent.app import db as history_db
+from local_browser_agent.app import training_sink
+from local_browser_agent.app.training_sink import TrainingSink
 
 if TYPE_CHECKING:
-    from agent.config import Settings
+    from local_browser_agent.app.config import Settings
 
 logger = logging.getLogger(__name__)
 

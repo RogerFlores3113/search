@@ -16,7 +16,7 @@ from local_browser_agent.events import DoneEvent, ScreenshotEvent, StateEvent
 
 def test_import_does_not_import_app():
     code = ("import sys, local_browser_agent; "
-            "bad=[m for m in sys.modules if m=='agent' or m.startswith('agent.')]; "
+            "bad=[m for m in sys.modules if m=='local_browser_agent.app' or m.startswith('local_browser_agent.app.')]; "
             "sys.exit(1 if bad else 0)")
     assert subprocess.run([sys.executable, "-c", code]).returncode == 0
 

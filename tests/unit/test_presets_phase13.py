@@ -29,7 +29,7 @@ from httpx import AsyncClient, ASGITransport
 
 def test_preset_buttons_in_html():
     """PRESET-01: index.html must contain preset-row + three preset buttons."""
-    html = Path("agent/templates/index.html").read_text(encoding="utf-8")
+    html = Path("local_browser_agent/app/templates/index.html").read_text(encoding="utf-8")
     assert 'class="preset-row"' in html, (
         "index.html must contain class=\"preset-row\""
     )
@@ -57,7 +57,7 @@ def test_preset_buttons_in_html():
 
 def test_apply_preset_method_in_html():
     """PRESET-02: index.html must define applyPreset() with PRESET_TEMPLATES and slugToPromptId."""
-    html = Path("agent/templates/index.html").read_text(encoding="utf-8")
+    html = Path("local_browser_agent/app/templates/index.html").read_text(encoding="utf-8")
     assert "applyPreset(presetSlug)" in html, (
         "index.html must define applyPreset(presetSlug) method"
     )
@@ -91,7 +91,7 @@ def test_apply_preset_method_in_html():
 
 def test_apply_preset_sets_active_prompt_id():
     """PRESET-03 (frontend): applyPreset() must set this.activePromptId from slugToPromptId."""
-    html = Path("agent/templates/index.html").read_text(encoding="utf-8")
+    html = Path("local_browser_agent/app/templates/index.html").read_text(encoding="utf-8")
     assert "this.activePromptId = slugToPromptId[presetSlug]" in html, (
         "index.html applyPreset must set this.activePromptId = slugToPromptId[presetSlug]"
     )
@@ -114,7 +114,7 @@ def test_apply_preset_sets_active_prompt_id():
 
 def test_generic_prompt_eng01():
     """ENG-01: SEED_PROMPTS 'generic' entry must be a substantive structured prompt."""
-    from agent.settings import SEED_PROMPTS  # noqa: PLC0415
+    from local_browser_agent.app.settings import SEED_PROMPTS  # noqa: PLC0415
 
     entry = next((p for p in SEED_PROMPTS if p["id"] == "generic"), None)
     assert entry is not None, "SEED_PROMPTS must contain entry with id='generic'"
@@ -136,7 +136,7 @@ def test_generic_prompt_eng01():
 
 def test_apartment_prompt_eng02():
     """ENG-02: SEED_PROMPTS 'apartment' entry must reference target sites and structured fields."""
-    from agent.settings import SEED_PROMPTS  # noqa: PLC0415
+    from local_browser_agent.app.settings import SEED_PROMPTS  # noqa: PLC0415
 
     entry = next((p for p in SEED_PROMPTS if p["id"] == "apartment"), None)
     assert entry is not None, "SEED_PROMPTS must contain entry with id='apartment'"
@@ -161,7 +161,7 @@ def test_apartment_prompt_eng02():
 
 def test_job_prompt_eng03():
     """ENG-03: SEED_PROMPTS 'job' entry must enforce unauthenticated-only constraint."""
-    from agent.settings import SEED_PROMPTS  # noqa: PLC0415
+    from local_browser_agent.app.settings import SEED_PROMPTS  # noqa: PLC0415
 
     entry = next((p for p in SEED_PROMPTS if p["id"] == "job"), None)
     assert entry is not None, "SEED_PROMPTS must contain entry with id='job'"
@@ -193,7 +193,7 @@ def test_job_prompt_eng03():
 
 def test_candidate_prompt_eng04():
     """ENG-04: SEED_PROMPTS 'candidate' entry must be substantive with credibility signal."""
-    from agent.settings import SEED_PROMPTS  # noqa: PLC0415
+    from local_browser_agent.app.settings import SEED_PROMPTS  # noqa: PLC0415
 
     entry = next((p for p in SEED_PROMPTS if p["id"] == "candidate"), None)
     assert entry is not None, "SEED_PROMPTS must contain entry with id='candidate'"
@@ -227,7 +227,7 @@ async def db_dir(tmp_path, monkeypatch):
 
 async def test_prompt_id_column_migrated(db_dir):
     """DB migration: init_db() must add prompt_id column to runs table."""
-    from agent.db import init_db, DB_PATH  # noqa: PLC0415
+    from local_browser_agent.app.db import init_db, DB_PATH  # noqa: PLC0415
 
     await init_db()
     async with aiosqlite.connect(DB_PATH) as db:
@@ -240,7 +240,7 @@ async def test_prompt_id_column_migrated(db_dir):
 
 async def test_insert_run_accepts_prompt_id(db_dir):
     """DB migration: insert_run() must accept and persist prompt_id kwarg."""
-    from agent.db import init_db, insert_run, DB_PATH  # noqa: PLC0415
+    from local_browser_agent.app.db import init_db, insert_run, DB_PATH  # noqa: PLC0415
 
     await init_db()
     await insert_run(
@@ -270,7 +270,7 @@ async def test_insert_run_accepts_prompt_id(db_dir):
 
 def test_runner_snapshot_prompt_id():
     """PRESET-03 (backend): runner.py must snapshot active_prompt_id before agent runs."""
-    source = Path("agent/runner.py").read_text(encoding="utf-8")
+    source = Path("local_browser_agent/app/runner.py").read_text(encoding="utf-8")
     assert "snapshot_prompt_id" in source, (
         "runner.py must define snapshot_prompt_id local variable"
     )
@@ -294,8 +294,8 @@ def test_runner_snapshot_prompt_id():
 def test_agent_config_uses_selected_prompt_then_guardrails(monkeypatch_env):
     """PRESET-03 behavior: the selected prompt content becomes the system prompt extension and the
     library appends GUARDRAIL_PROMPT after it; an explicit id beats config.active_prompt_id."""
-    from agent.config import Settings
-    from agent.runner import GUARDRAIL_PROMPT, build_agent_config
+    from local_browser_agent.app.config import Settings
+    from local_browser_agent.app.runner import GUARDRAIL_PROMPT, build_agent_config
 
     cfg = Settings(active_prompt_id="a", prompts=[
         {"id": "a", "content": "AAA"}, {"id": "b", "content": "BBB"}, {"id": "c", "content": ""}])
@@ -314,7 +314,7 @@ def test_agent_config_uses_selected_prompt_then_guardrails(monkeypatch_env):
 
 async def test_run_endpoint_accepts_active_prompt_id(tmp_path, monkeypatch):
     """PRESET-03: /run endpoint must accept active_prompt_id form field and pass it to run_agent."""
-    source = Path("agent/main.py").read_text(encoding="utf-8")
+    source = Path("local_browser_agent/app/main.py").read_text(encoding="utf-8")
     assert "active_prompt_id: str = Form(" in source, (
         "main.py /run endpoint must declare active_prompt_id: str = Form(...) parameter"
     )
@@ -329,9 +329,9 @@ async def test_run_endpoint_accepts_active_prompt_id(tmp_path, monkeypatch):
         {"id": "apartment", "name": "Apartment Search", "content": "apt", "is_seed": True},
     ]
     settings_file.write_text(json.dumps({"prompts": seed_data, "active_prompt_id": "apartment"}))
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: settings_file)
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: settings_file)
 
-    from agent.main import app, DISCLAIMER_COOKIE_NAME, _disclaimer_serializer  # noqa: PLC0415
+    from local_browser_agent.app.main import app, DISCLAIMER_COOKIE_NAME, _disclaimer_serializer  # noqa: PLC0415
 
     disclaimer_cookies = {DISCLAIMER_COOKIE_NAME: _disclaimer_serializer().dumps("1")}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -351,7 +351,7 @@ async def test_run_endpoint_accepts_active_prompt_id(tmp_path, monkeypatch):
 
 def test_runs_fragment_renders_prompt_id():
     """runs_fragment.html must render the prompt_id field from the run record."""
-    source = Path("agent/templates/runs_fragment.html").read_text(encoding="utf-8")
+    source = Path("local_browser_agent/app/templates/runs_fragment.html").read_text(encoding="utf-8")
     assert "{% set _prompt_id = run.get('prompt_id'" in source, (
         "runs_fragment.html must define _prompt_id via run.get('prompt_id'...)"
     )

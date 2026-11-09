@@ -3,8 +3,8 @@ step_quality classification, converter quality gate + CLI, and training scaffold
 guardrails.
 
 All tests in this file are RED (failing) until Plan 02 wires:
-  - agent/runner.py log_step() to accept duration_ms and emit enriched fields
-  - agent/runner.py _rewrite_jsonl_run_success() helper for run-completion back-fill
+  - local_browser_agent/app/runner.py log_step() to accept duration_ms and emit enriched fields
+  - local_browser_agent/app/runner.py _rewrite_jsonl_run_success() helper for run-completion back-fill
   - training/converter.py CLI + quality gate + image extraction
   - training/train_nvidia.py VRAM detection + QLoRA + main()
   - training/train_apple.py Apple Silicon platform check + main()
@@ -40,8 +40,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import agent.runner  # noqa: F401
-import agent.training_sink
+import local_browser_agent.app.runner  # noqa: F401
+import local_browser_agent.app.training_sink
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ def _event(
 
 
 async def _write(event, provider: str, model_name: str = "claude-sonnet-4-5") -> None:
-    from agent.training_sink import TrainingSink
+    from local_browser_agent.app.training_sink import TrainingSink
 
     await TrainingSink(provider, model_name)(event)
 
@@ -212,7 +212,7 @@ def test_rewrite_jsonl_run_success_adds_field_to_all_matching_records(tmp_path):
         json.dumps({"run_id": "rB", "step_index": 0}) + "\n"
     )
 
-    agent.training_sink.rewrite_jsonl_run_success(path, "rA", True)  # type: ignore[attr-defined]
+    local_browser_agent.app.training_sink.rewrite_jsonl_run_success(path, "rA", True)  # type: ignore[attr-defined]
 
     records = _read_jsonl(path)
     assert records[0]["run_success"] is True
@@ -226,7 +226,7 @@ def test_rewrite_jsonl_run_success_writes_false_for_failed_run(tmp_path):
     path = tmp_path / "runs.jsonl"
     path.write_text(json.dumps({"run_id": "rX", "step_index": 0}) + "\n")
 
-    agent.training_sink.rewrite_jsonl_run_success(path, "rX", False)  # type: ignore[attr-defined]
+    local_browser_agent.app.training_sink.rewrite_jsonl_run_success(path, "rX", False)  # type: ignore[attr-defined]
 
     record = _read_jsonl(path)[0]
     assert record["run_success"] is False
@@ -240,7 +240,7 @@ def test_rewrite_jsonl_run_success_preserves_malformed_lines(tmp_path):
         json.dumps({"run_id": "rM", "step_index": 0}) + "\n"
     )
 
-    agent.training_sink.rewrite_jsonl_run_success(path, "rM", True)  # type: ignore[attr-defined]
+    local_browser_agent.app.training_sink.rewrite_jsonl_run_success(path, "rM", True)  # type: ignore[attr-defined]
 
     raw = path.read_text().splitlines()
     assert raw[0] == "not json at all", "malformed line must be preserved verbatim"
@@ -253,9 +253,9 @@ def test_rewrite_jsonl_run_success_idempotent(tmp_path):
     path = tmp_path / "runs.jsonl"
     path.write_text(json.dumps({"run_id": "rI", "step_index": 0}) + "\n")
 
-    agent.training_sink.rewrite_jsonl_run_success(path, "rI", True)  # type: ignore[attr-defined]
+    local_browser_agent.app.training_sink.rewrite_jsonl_run_success(path, "rI", True)  # type: ignore[attr-defined]
     after_first = path.read_text()
-    agent.training_sink.rewrite_jsonl_run_success(path, "rI", True)  # type: ignore[attr-defined]
+    local_browser_agent.app.training_sink.rewrite_jsonl_run_success(path, "rI", True)  # type: ignore[attr-defined]
     after_second = path.read_text()
     assert after_first == after_second, "rewrite must be idempotent"
 
@@ -264,7 +264,7 @@ def test_rewrite_jsonl_run_success_missing_file_noop(tmp_path):
     """TRAIN-03: rewrite against a non-existent path returns silently (no exception)."""
     missing = tmp_path / "does-not-exist.jsonl"
     # Must not raise
-    agent.training_sink.rewrite_jsonl_run_success(missing, "r0", True)  # type: ignore[attr-defined]
+    local_browser_agent.app.training_sink.rewrite_jsonl_run_success(missing, "r0", True)  # type: ignore[attr-defined]
 
 
 async def test_step_quality_clean_when_no_errors(training_dir):

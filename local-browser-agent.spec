@@ -16,14 +16,14 @@ import sys
 block_cipher = None
 
 a = Analysis(
-    ["agent/__main__.py"],
+    ["local_browser_agent/app/__main__.py"],
     pathex=["."],
     binaries=[],
     datas=[
         # Jinja2 templates — served by FastAPI at runtime
-        ("agent/templates", "agent/templates"),
+        ("local_browser_agent/app/templates", "local_browser_agent/app/templates"),
         # Static files (CSS + any other static assets)
-        ("agent/static", "agent/static"),
+        ("local_browser_agent/app/static", "local_browser_agent/app/static"),
     ],
     hiddenimports=[
         # uvicorn internals not auto-discovered by PyInstaller

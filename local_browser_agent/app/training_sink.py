@@ -12,7 +12,7 @@ from pathlib import Path
 
 from local_browser_agent.events import StepCompletedEvent
 
-from agent.paths import get_user_data_dir
+from local_browser_agent.app.paths import get_user_data_dir
 
 TRAINING_FILE = get_user_data_dir() / "training" / "runs.jsonl"
 

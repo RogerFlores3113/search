@@ -1,4 +1,4 @@
-"""Unit tests for run_agent in agent/runner.py (LOOP-02 through LOOP-06, MODEL-01 wiring).
+"""Unit tests for run_agent in local_browser_agent/app/runner.py (LOOP-02 through LOOP-06, MODEL-01 wiring).
 
 Tests use mocks to verify the construction chain and lifecycle contracts without
 requiring a live Chrome or Ollama instance.
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
-from agent.config import config as _default_config
+from local_browser_agent.app.config import config as _default_config
 
 
 # ---------------------------------------------------------------------------
@@ -55,13 +55,13 @@ async def test_run_agent_constructs_browser_session_with_chrome_channel(monkeypa
     MockAgent = MagicMock(return_value=mock_agent_instance)
     MockChatOllama = MagicMock()
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
 
     with patch("local_browser_agent.browser.BrowserProfile", MockBrowserProfile), \
          patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
          patch("browser_use.ChatOllama", MockChatOllama), \
          patch("local_browser_agent.runner.Agent", MockAgent):
-        from agent.runner import run_agent
+        from local_browser_agent.app.runner import run_agent
         await run_agent("test task")
 
     # BrowserProfile must be built with browser settings and prohibited_domains
@@ -92,12 +92,12 @@ async def test_run_agent_constructs_chat_ollama_with_num_ctx(monkeypatch):
     MockAgent = MagicMock(return_value=mock_agent_instance)
     MockChatOllama = MagicMock()
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
 
     with patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
          patch("browser_use.ChatOllama", MockChatOllama), \
          patch("local_browser_agent.runner.Agent", MockAgent):
-        from agent.runner import run_agent
+        from local_browser_agent.app.runner import run_agent
         await run_agent("test task")
 
     MockChatOllama.assert_called_once_with(
@@ -127,13 +127,13 @@ async def test_run_agent_wraps_in_wait_for(monkeypatch):
         captured_calls.append({"timeout": timeout})
         return await coro
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.asyncio.wait_for", fake_wait_for)
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.app.runner.asyncio.wait_for", fake_wait_for)
 
     with patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
          patch("browser_use.ChatOllama", MockChatOllama), \
          patch("local_browser_agent.runner.Agent", MockAgent):
-        from agent.runner import run_agent
+        from local_browser_agent.app.runner import run_agent
         await run_agent("test task")
 
     assert len(captured_calls) == 1
@@ -158,12 +158,12 @@ async def test_run_agent_calls_max_steps_25(monkeypatch):
     MockAgent = MagicMock(return_value=mock_agent_instance)
     MockChatOllama = MagicMock()
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
 
     with patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
          patch("browser_use.ChatOllama", MockChatOllama), \
          patch("local_browser_agent.runner.Agent", MockAgent):
-        from agent.runner import run_agent
+        from local_browser_agent.app.runner import run_agent
         await run_agent("test task")
 
     call_kwargs = mock_agent_instance.run.call_args
@@ -186,12 +186,12 @@ async def test_run_agent_calls_browser_kill_on_success(monkeypatch):
     MockAgent = MagicMock(return_value=mock_agent_instance)
     MockChatOllama = MagicMock()
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
 
     with patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
          patch("browser_use.ChatOllama", MockChatOllama), \
          patch("local_browser_agent.runner.Agent", MockAgent):
-        from agent.runner import run_agent
+        from local_browser_agent.app.runner import run_agent
         await run_agent("test task")
 
     mock_browser.kill.assert_awaited_once()
@@ -217,13 +217,13 @@ async def test_run_agent_calls_browser_kill_on_timeout(monkeypatch):
         coro.close()
         raise asyncio.TimeoutError()
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.asyncio.wait_for", raise_timeout)
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.app.runner.asyncio.wait_for", raise_timeout)
 
     with patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
          patch("browser_use.ChatOllama", MockChatOllama), \
          patch("local_browser_agent.runner.Agent", MockAgent):
-        from agent.runner import run_agent
+        from local_browser_agent.app.runner import run_agent
         # TimeoutError must NOT propagate — run_agent handles it as clean termination
         await run_agent("test task")
 
@@ -243,7 +243,7 @@ async def test_run_agent_calls_browser_kill_on_exception(monkeypatch):
     warnings when run_agent is launched via asyncio.create_task().
     """
     import asyncio
-    from agent.events import ErrorEvent, DoneEvent
+    from local_browser_agent.app.events import ErrorEvent, DoneEvent
 
     mock_browser = _make_mock_browser()
     MockBrowserSession = MagicMock(return_value=mock_browser)
@@ -253,14 +253,14 @@ async def test_run_agent_calls_browser_kill_on_exception(monkeypatch):
     mock_agent_instance.run = AsyncMock(side_effect=RuntimeError("agent error"))
     MockAgent = MagicMock(return_value=mock_agent_instance)
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
 
     queue: asyncio.Queue = asyncio.Queue()
 
     with patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
          patch("browser_use.ChatOllama", MockChatOllama), \
          patch("local_browser_agent.runner.Agent", MockAgent):
-        from agent.runner import run_agent
+        from local_browser_agent.app.runner import run_agent
         # run_agent must complete without raising — error is surfaced via queue
         await run_agent("test task", queue=queue)
 
@@ -289,12 +289,12 @@ async def test_run_agent_skips_browser_when_preflight_exits(monkeypatch):
     async def fake_preflight(cfg):
         sys.exit(1)
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", fake_preflight)
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", fake_preflight)
 
     with patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
          patch("browser_use.ChatOllama", MockChatOllama), \
          patch("local_browser_agent.runner.Agent", MockAgent):
-        from agent.runner import run_agent
+        from local_browser_agent.app.runner import run_agent
         with pytest.raises(SystemExit) as exc:
             await run_agent("test task")
 
@@ -308,10 +308,10 @@ async def test_run_agent_skips_browser_when_preflight_exits(monkeypatch):
 
 async def test_lifespan_creates_agent_task_when_pending_task_set(monkeypatch):
     """FastAPI lifespan must call run_agent with pending_task via asyncio.create_task."""
-    from agent.main import app, lifespan
+    from local_browser_agent.app.main import app, lifespan
 
     run_agent_mock = AsyncMock()
-    monkeypatch.setattr("agent.main.run_agent", run_agent_mock)
+    monkeypatch.setattr("local_browser_agent.app.main.run_agent", run_agent_mock)
 
     app.state.pending_task = "test task"
 
@@ -330,8 +330,8 @@ async def test_lifespan_creates_agent_task_when_pending_task_set(monkeypatch):
 
 def test_build_llm_returns_chat_ollama_for_ollama_provider(monkeypatch_env):
     """build_llm must return a ChatOllama instance when provider='ollama'."""
-    from agent.config import Settings
-    from agent.runner import build_llm
+    from local_browser_agent.app.config import Settings
+    from local_browser_agent.app.runner import build_llm
 
     cfg = Settings()
     with patch("browser_use.ChatOllama") as MockChatOllama:
@@ -347,8 +347,8 @@ def test_build_llm_returns_chat_anthropic_for_anthropic_provider(monkeypatch_env
     """build_llm must return a ChatAnthropic instance when provider='anthropic'."""
     monkeypatch_env.setenv("PROVIDER", "anthropic")
     monkeypatch_env.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
-    from agent.config import Settings
-    from agent.runner import build_llm
+    from local_browser_agent.app.config import Settings
+    from local_browser_agent.app.runner import build_llm
 
     cfg = Settings()
     with patch("browser_use.ChatAnthropic") as MockChatAnthropic:
@@ -363,8 +363,8 @@ def test_build_llm_returns_chat_litellm_for_openai_provider(monkeypatch_env):
     """build_llm must return a ChatLiteLLM instance when provider='openai'."""
     monkeypatch_env.setenv("PROVIDER", "openai")
     monkeypatch_env.setenv("OPENAI_API_KEY", "sk-openai-fake")
-    from agent.config import Settings
-    from agent.runner import build_llm
+    from local_browser_agent.app.config import Settings
+    from local_browser_agent.app.runner import build_llm
 
     cfg = Settings()
     with patch("browser_use.ChatLiteLLM") as MockChatLiteLLM:
@@ -378,8 +378,8 @@ def test_build_llm_returns_chat_litellm_for_openai_provider(monkeypatch_env):
 def test_build_llm_raises_for_unknown_provider(monkeypatch_env):
     """build_llm must raise ValueError for an unrecognised provider string."""
     monkeypatch_env.setenv("PROVIDER", "groq")
-    from agent.config import Settings
-    from agent.runner import build_llm
+    from local_browser_agent.app.config import Settings
+    from local_browser_agent.app.runner import build_llm
 
     with pytest.raises(ValueError, match="Unknown provider"):
         build_llm(Settings())
@@ -392,8 +392,8 @@ def test_build_llm_raises_for_unknown_provider(monkeypatch_env):
 async def test_preflight_raises_when_anthropic_key_missing(monkeypatch_env):
     """pre_flight_check must raise PreFlightError when provider=anthropic and key absent."""
     monkeypatch_env.setenv("PROVIDER", "anthropic")
-    from agent.config import Settings
-    from agent.runner import PreFlightError, pre_flight_check
+    from local_browser_agent.app.config import Settings
+    from local_browser_agent.app.runner import PreFlightError, pre_flight_check
 
     with pytest.raises(PreFlightError, match="Missing Anthropic API key"):
         await pre_flight_check(Settings())
@@ -404,8 +404,8 @@ async def test_preflight_raises_when_anthropic_key_invalid(monkeypatch_env):
     import anthropic as _anthropic
     monkeypatch_env.setenv("PROVIDER", "anthropic")
     monkeypatch_env.setenv("ANTHROPIC_API_KEY", "sk-ant-bad-key")
-    from agent.config import Settings
-    from agent.runner import PreFlightError, pre_flight_check
+    from local_browser_agent.app.config import Settings
+    from local_browser_agent.app.runner import PreFlightError, pre_flight_check
 
     mock_client = MagicMock()
     mock_client.models.list = AsyncMock(
@@ -425,8 +425,8 @@ async def test_preflight_raises_when_anthropic_key_invalid(monkeypatch_env):
 async def test_preflight_raises_when_openai_key_missing(monkeypatch_env):
     """pre_flight_check must raise PreFlightError when provider=openai and key absent."""
     monkeypatch_env.setenv("PROVIDER", "openai")
-    from agent.config import Settings
-    from agent.runner import PreFlightError, pre_flight_check
+    from local_browser_agent.app.config import Settings
+    from local_browser_agent.app.runner import PreFlightError, pre_flight_check
 
     with pytest.raises(PreFlightError, match="Missing OpenAI API key"):
         await pre_flight_check(Settings())
@@ -441,8 +441,8 @@ async def test_preflight_raises_when_openai_key_invalid(monkeypatch_env, httpx_m
         url="https://api.openai.com/v1/models",
         status_code=401,
     )
-    from agent.config import Settings
-    from agent.runner import PreFlightError, pre_flight_check
+    from local_browser_agent.app.config import Settings
+    from local_browser_agent.app.runner import PreFlightError, pre_flight_check
 
     with pytest.raises(PreFlightError, match="Invalid OpenAI API key"):
         await pre_flight_check(Settings())
@@ -454,15 +454,15 @@ async def test_preflight_raises_when_openai_key_invalid(monkeypatch_env, httpx_m
 # ---------------------------------------------------------------------------
 
 def test_app_config_pauses_on_captcha(monkeypatch_env):
-    from agent.config import Settings
-    from agent.runner import build_agent_config
+    from local_browser_agent.app.config import Settings
+    from local_browser_agent.app.runner import build_agent_config
 
     assert build_agent_config(Settings()).on_captcha == "pause"
 
 
 async def test_captcha_notice_printed_to_stdout(capsys):
     """A HumanNeededEvent prints the CAPTCHA notice telling the user to solve it and press Resume."""
-    from agent.runner import _console_sink
+    from local_browser_agent.app.runner import _console_sink
     from local_browser_agent.events import HumanNeededEvent, StateEvent
 
     await _console_sink(StateEvent(state="running"))
@@ -476,8 +476,8 @@ async def test_run_agent_captcha_pauses_then_resume_continues(monkeypatch, train
     """End to end through run_agent: a CAPTCHA error pauses the run (StateEvent paused on the
     control queue), the UI's Resume (BrowserAgent.resume via the on_agent hook) continues it."""
     import types
-    from agent.events import StateEvent
-    from agent.runner import run_agent
+    from local_browser_agent.app.events import StateEvent
+    from local_browser_agent.app.runner import run_agent
 
     holder = {}
     ran = []
@@ -513,7 +513,7 @@ async def test_run_agent_captcha_pauses_then_resume_continues(monkeypatch, train
             return self.history
 
     browser = _make_mock_browser()
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
     monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
     monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=browser))
     monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())

@@ -1,4 +1,4 @@
-"""Unit tests for the training JSONL sink in agent/training_sink.py (RUN-03 schema contract).
+"""Unit tests for the training JSONL sink in local_browser_agent/app/training_sink.py (RUN-03 schema contract).
 
 The sink consumes the library's StepCompletedEvent and writes one record per step to
 training/runs.jsonl (it replaced the old `log_step` on_step_end callback, which read the
@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from agent.training_sink import TrainingSink
+from local_browser_agent.app.training_sink import TrainingSink
 from local_browser_agent.events import StepCompletedEvent
 
 
@@ -104,7 +104,7 @@ class _FakeInteractedElement:
 
 
 def test_extract_target_label_prefers_ax_name():
-    from agent.runner import _extract_target_label
+    from local_browser_agent.app.runner import _extract_target_label
     el = _FakeInteractedElement(
         ax_name="Search button",
         node_name="BUTTON",
@@ -114,7 +114,7 @@ def test_extract_target_label_prefers_ax_name():
 
 
 def test_extract_target_label_falls_back_through_attributes():
-    from agent.runner import _extract_target_label
+    from local_browser_agent.app.runner import _extract_target_label
     # aria-label wins when ax_name is missing
     assert _extract_target_label(_FakeInteractedElement(
         attributes={"aria-label": "Close dialog", "title": "Close"},
@@ -131,7 +131,7 @@ def test_extract_target_label_falls_back_through_attributes():
 
 
 def test_extract_target_label_tag_fallback_for_interactive_elements():
-    from agent.runner import _extract_target_label
+    from local_browser_agent.app.runner import _extract_target_label
     el = _FakeInteractedElement(node_name="BUTTON", attributes={})
     assert _extract_target_label(el) == "<button>"
 
@@ -140,13 +140,13 @@ def test_extract_target_label_returns_none_for_unlabeled_div():
     """Non-interactive elements with no label provide no useful signal — None
     is honest (caller falls back to bare index).
     """
-    from agent.runner import _extract_target_label
+    from local_browser_agent.app.runner import _extract_target_label
     el = _FakeInteractedElement(node_name="DIV", attributes={})
     assert _extract_target_label(el) is None
 
 
 def test_extract_target_label_handles_none_and_empty():
-    from agent.runner import _extract_target_label
+    from local_browser_agent.app.runner import _extract_target_label
     assert _extract_target_label(None) is None
     assert _extract_target_label(_FakeInteractedElement()) is None
 
@@ -155,7 +155,7 @@ def test_extract_target_label_truncates_long_labels():
     """Long ARIA descriptions get clipped to keep narration rows + LoRA
     lines readable. Truncation marker is the ellipsis character.
     """
-    from agent.runner import _extract_target_label
+    from local_browser_agent.app.runner import _extract_target_label
     label = "A very long accessibility description " * 5  # ~190 chars
     out = _extract_target_label(_FakeInteractedElement(ax_name=label))
     assert out is not None
@@ -165,7 +165,7 @@ def test_extract_target_label_truncates_long_labels():
 
 def test_extract_target_label_accepts_dict_shape():
     """Tests and other fixtures may pass a dict instead of the dataclass."""
-    from agent.runner import _extract_target_label
+    from local_browser_agent.app.runner import _extract_target_label
     assert _extract_target_label({"ax_name": "Submit"}) == "Submit"
 
 

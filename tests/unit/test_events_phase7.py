@@ -1,7 +1,7 @@
 """Phase 7 RED test suite: background screenshot loop contract (SCR-01, SCR-02).
 
-All tests in this file are RED (failing) until Plan 02 wires agent/runner.py
-and agent/main.py. Tests cover every row in 07-VALIDATION.md.
+All tests in this file are RED (failing) until Plan 02 wires local_browser_agent/app/runner.py
+and local_browser_agent/app/main.py. Tests cover every row in 07-VALIDATION.md.
 
 Requirements covered: SCR-01 (background 500ms loop, JPEG quality=75,
 QueueFull drop, exception continuation, no-queue skip, immediate first
@@ -22,9 +22,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import agent.main
-import agent.runner
-from agent.events import DoneEvent, ScreenshotEvent, StateEvent
+import local_browser_agent.app.main
+import local_browser_agent.app.runner
+from local_browser_agent.app.events import DoneEvent, ScreenshotEvent, StateEvent
 
 
 # ---------------------------------------------------------------------------
@@ -90,14 +90,14 @@ async def test_screenshot_loop_emits_events(training_dir, monkeypatch_env):
     SCR-01: background loop runs during agent.run(), taking screenshots and
     placing ScreenshotEvent instances on the queue.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_history()
     mock_browser = _make_mock_browser()
     FakeAgentClass = _make_fake_agent_class(fake_agent)
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass):
@@ -132,7 +132,7 @@ async def test_screenshot_loop_first_capture_immediate(training_dir, monkeypatch
     SCR-01: first capture happens immediately on loop entry (no leading sleep).
     Strategy: track sequence of 'shot' vs 'sleep' events; first must be 'shot'.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     # Bounded queue: production uses maxsize=50; mirror that here so the loop
     # cannot accumulate ScreenshotEvents without limit if cancel is delayed.
@@ -174,11 +174,11 @@ async def test_screenshot_loop_first_capture_immediate(training_dir, monkeypatch
 
     FakeAgentClass = _make_fake_agent_class(fake_agent)
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass), \
-         patch("agent.runner.asyncio.sleep", _patched_sleep):
+         patch("local_browser_agent.app.runner.asyncio.sleep", _patched_sleep):
         await run_agent("test task", queue=queue)
 
     assert len(sequence) >= 1, "Expected at least one 'shot' or 'sleep' entry"
@@ -193,14 +193,14 @@ async def test_screenshot_loop_jpeg_quality(training_dir, monkeypatch_env):
 
     SCR-01: JPEG quality=75 is the required encoding for bandwidth efficiency.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_history()
     mock_browser = _make_mock_browser()
     FakeAgentClass = _make_fake_agent_class(fake_agent)
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass):
@@ -223,7 +223,7 @@ async def test_screenshot_loop_queue_full_drops_silently(training_dir, monkeypat
     Strategy: fill a maxsize=1 queue with a sentinel before run_agent; assert
     run_agent completes normally and QueueFull is never raised.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     sentinel = object()
     queue: asyncio.Queue = asyncio.Queue(maxsize=1)
@@ -235,7 +235,7 @@ async def test_screenshot_loop_queue_full_drops_silently(training_dir, monkeypat
 
     # run_agent must complete without raising asyncio.QueueFull
     try:
-        with patch("agent.runner.pre_flight_check", AsyncMock()), \
+        with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
              patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
              patch("browser_use.ChatOllama", MagicMock()), \
              patch("local_browser_agent.runner.Agent", FakeAgentClass):
@@ -263,7 +263,7 @@ async def test_screenshot_loop_exception_continues(training_dir, monkeypatch_env
     awaits an Event set by the script so the run_agent finally does not
     cancel the screenshot task before the script completes (~2s wall time).
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=50)
     fake_agent = _make_fake_agent_history()
@@ -299,7 +299,7 @@ async def test_screenshot_loop_exception_continues(training_dir, monkeypatch_env
             result.final_result.return_value = "done"
             return result
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", _WaitingFakeAgent):
@@ -329,7 +329,7 @@ async def test_screenshot_loop_timeout_continues(training_dir, monkeypatch_env):
     asyncio.sleep stays real; FakeAgent.run() awaits an Event set by the
     script so run_agent's finally does not cancel before the script ends.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=50)
     fake_agent = _make_fake_agent_history()
@@ -365,7 +365,7 @@ async def test_screenshot_loop_timeout_continues(training_dir, monkeypatch_env):
             result.final_result.return_value = "done"
             return result
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", _WaitingFakeAgent):
@@ -383,13 +383,13 @@ async def test_screenshot_loop_skipped_when_no_queue(training_dir, monkeypatch_e
     SCR-01: background loop is a UI feature only — skip for CLI path (no queue).
     Proof: take_screenshot is never awaited when queue=None.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     fake_agent = _make_fake_agent_history()
     mock_browser = _make_mock_browser()
     FakeAgentClass = _make_fake_agent_class(fake_agent)
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass):
@@ -411,7 +411,7 @@ async def test_screenshot_task_cancelled_before_browser_kill(training_dir, monke
     SCR-02: correct shutdown order prevents TargetClosedError from firing during
     cleanup. The gather must appear before kill in the call order.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     order_list: list[str] = []
@@ -425,7 +425,7 @@ async def test_screenshot_task_cancelled_before_browser_kill(training_dir, monke
 
     mock_browser.kill = AsyncMock(side_effect=_kill_with_order)
 
-    # Patch asyncio.gather inside agent.runner to record call order
+    # Patch asyncio.gather inside local_browser_agent.app.runner to record call order
     real_gather = asyncio.gather
 
     async def _gather_with_order(*args, **kwargs):
@@ -434,11 +434,11 @@ async def test_screenshot_task_cancelled_before_browser_kill(training_dir, monke
 
     FakeAgentClass = _make_fake_agent_class(fake_agent)
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass), \
-         patch("agent.runner.asyncio.gather", _gather_with_order):
+         patch("local_browser_agent.app.runner.asyncio.gather", _gather_with_order):
         await run_agent("test task", queue=queue)
 
     assert "gather" in order_list, (
@@ -460,7 +460,7 @@ async def test_screenshot_task_cancel_terminates_cleanly(training_dir, monkeypat
     If CancelledError were caught in the loop, gather would hang and this test would
     timeout via the outer asyncio.wait_for guard.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_history()
@@ -468,7 +468,7 @@ async def test_screenshot_task_cancel_terminates_cleanly(training_dir, monkeypat
     FakeAgentClass = _make_fake_agent_class(fake_agent)
 
     # asyncio.wait_for outer guard: run_agent must not hang
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass):
@@ -490,7 +490,7 @@ async def test_screenshot_event_not_emitted_by_log_step(training_dir, monkeypatc
     appear in inspect.getsource(run_agent).
     """
     # Source inspection: the removed lines must not be present
-    source = inspect.getsource(agent.runner.run_agent)
+    source = inspect.getsource(local_browser_agent.app.runner.run_agent)
     assert "history.screenshots()" not in source, (
         "run_agent source must NOT contain 'history.screenshots()' — "
         "this line was removed in D-05/D-06 (SCR-02). "
@@ -499,17 +499,17 @@ async def test_screenshot_event_not_emitted_by_log_step(training_dir, monkeypatc
 
 
 async def test_queue_is_bounded_maxsize_50():
-    """agent/main.py must construct asyncio.Queue(maxsize=50) in the /run handler.
+    """local_browser_agent/app/main.py must construct asyncio.Queue(maxsize=50) in the /run handler.
 
     SCR-02 + T-07-01: bounded queue prevents unbounded memory growth from the
     high-frequency screenshot producer (D-10, D-11).
     """
     import re
 
-    source = inspect.getsource(agent.main)
+    source = inspect.getsource(local_browser_agent.app.main)
     pattern = r"asyncio\.Queue\(\s*maxsize\s*=\s*50\s*\)"
     assert re.search(pattern, source) is not None, (
-        "agent/main.py must contain asyncio.Queue(maxsize=50) in the /run handler. "
+        "local_browser_agent/app/main.py must contain asyncio.Queue(maxsize=50) in the /run handler. "
         "Current source does not match pattern: asyncio.Queue(maxsize=50). "
         "This is required by D-10 (SCR-02) to bound queue memory usage."
     )
@@ -521,7 +521,7 @@ async def test_screenshot_event_b64_is_valid(training_dir, monkeypatch_env):
     SCR-01 + SCR-02: b64 field must be non-empty and decode to bytes starting with
     the JPEG SOI marker (0xFF 0xD8 0xFF).
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_history()
@@ -532,7 +532,7 @@ async def test_screenshot_event_b64_is_valid(training_dir, monkeypatch_env):
     )
     FakeAgentClass = _make_fake_agent_class(fake_agent)
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass):
@@ -582,7 +582,7 @@ async def test_screenshot_loop_sleeps_after_success():
     async def _record_sleep(seconds):
         sleeps.append(seconds)
 
-    with patch("agent.runner.asyncio.sleep", _record_sleep):
+    with patch("local_browser_agent.app.runner.asyncio.sleep", _record_sleep):
         with pytest.raises(asyncio.CancelledError):
             await _screenshot_loop(browser, QueueSink(queue))
 
@@ -614,7 +614,7 @@ async def test_screenshot_loop_backs_off_on_consecutive_failures():
     async def _record_sleep(seconds):
         sleeps.append(seconds)
 
-    with patch("agent.runner.asyncio.sleep", _record_sleep):
+    with patch("local_browser_agent.app.runner.asyncio.sleep", _record_sleep):
         with pytest.raises(asyncio.CancelledError):
             await _screenshot_loop(browser, QueueSink(queue))
 
@@ -644,7 +644,7 @@ async def test_screenshot_loop_backoff_resets_on_success():
     async def _record_sleep(seconds):
         sleeps.append(seconds)
 
-    with patch("agent.runner.asyncio.sleep", _record_sleep):
+    with patch("local_browser_agent.app.runner.asyncio.sleep", _record_sleep):
         with pytest.raises(asyncio.CancelledError):
             await _screenshot_loop(browser, QueueSink(queue))
 

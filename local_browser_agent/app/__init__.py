@@ -1,4 +1,4 @@
-"""local-browser-agent web app package.
+"""local-browser-agent web app (`local_browser_agent.app`).
 
 browser-use sends anonymized telemetry (and, by default, cloud sync follows it)
 unless told otherwise. This app promises that nothing leaves the machine except

@@ -42,7 +42,7 @@ def test_timestamp_color_is_visible():
     """FIX-01, D-01: .timestamp color must be var(--text-secondary) for
     readability. Currently var(--text-placeholder) which is too dim.
     """
-    css = Path("agent/static/style.css").read_text(encoding="utf-8")
+    css = Path("local_browser_agent/app/static/style.css").read_text(encoding="utf-8")
     # Find the .timestamp rule body
     ts_start = css.find(".timestamp {")
     assert ts_start != -1, "style.css must contain a .timestamp { rule"
@@ -65,7 +65,7 @@ def test_model_info_precedes_token():
     when a TokenEvent arrives before a model-info event.
     The assignment must be inside the handleToken function body itself.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     assert "handleToken" in html, (
         "index.html must contain handleToken function (FIX-02 D-03)"
     )
@@ -103,7 +103,7 @@ def test_narration_row_align_items():
     action badges (which are taller than inline text) are centred vertically.
     Currently uses align-items: baseline which causes misalignment.
     """
-    css = Path("agent/static/style.css").read_text(encoding="utf-8")
+    css = Path("local_browser_agent/app/static/style.css").read_text(encoding="utf-8")
     row_start = css.find(".narration-row {")
     assert row_start != -1, "style.css must contain .narration-row { rule"
     row_body = css[row_start: css.find("}", row_start) + 1]
@@ -124,7 +124,7 @@ def test_run_history_expand_indicator():
     """FIX-04, D-07: Run history rows must have CSS ::before indicators
     (triangle arrows) to signal expandability to users.
     """
-    css = Path("agent/static/style.css").read_text(encoding="utf-8")
+    css = Path("local_browser_agent/app/static/style.css").read_text(encoding="utf-8")
     assert ".run-history-item > details > summary::before" in css, (
         "style.css must define .run-history-item > details > summary::before (FIX-04 D-07)"
     )
@@ -151,7 +151,7 @@ def test_dark_green_theme_vars():
     for bg-dominant, bg-panel, border, and accent-green.
     Old neutral-dark values must be removed.
     """
-    css = Path("agent/static/style.css").read_text(encoding="utf-8")
+    css = Path("local_browser_agent/app/static/style.css").read_text(encoding="utf-8")
     # New green values must be present
     assert "--bg-dominant: #091209" in css, (
         "style.css must set --bg-dominant: #091209 (THEME-01 D-09)"
@@ -185,7 +185,7 @@ def test_action_badge_blue_unified():
     (#14532d green, #92400e amber, #374151 slate) must be absent from
     .action-badge-* rules.
     """
-    css = Path("agent/static/style.css").read_text(encoding="utf-8")
+    css = Path("local_browser_agent/app/static/style.css").read_text(encoding="utf-8")
     assert css.count("#1d4ed8") >= 4, (
         "style.css must contain #1d4ed8 at least 4 times (THEME-02 D-12 — unified blue)"
     )
@@ -211,7 +211,7 @@ def test_agent_status_div_present():
     """THEME-03, D-14: index.html must include an .agent-status div with
     Alpine x-show and a .spinner child, plus an agentStatusText() helper.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     assert 'class="agent-status"' in html, (
         "index.html must contain class=\"agent-status\" div (THEME-03 D-14)"
     )
@@ -230,7 +230,7 @@ def test_current_action_prop_declared():
     """THEME-03, D-15: Alpine component must declare currentAction property
     and handleActionDetail must mutate it for the status display.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     assert "currentAction:" in html, (
         "index.html Alpine component must declare currentAction: property (THEME-03 D-15)"
     )
@@ -243,7 +243,7 @@ def test_spinner_css_declared():
     """THEME-03, D-16: style.css must declare the spin keyframe animation
     and .spinner class with the animation applied.
     """
-    css = Path("agent/static/style.css").read_text(encoding="utf-8")
+    css = Path("local_browser_agent/app/static/style.css").read_text(encoding="utf-8")
     assert "@keyframes spin" in css, (
         "style.css must declare @keyframes spin (THEME-03 D-16)"
     )
@@ -264,14 +264,14 @@ def test_thought_area_div_present():
     """THEME-04, D-17: index.html must have a dedicated #thought-area /
     .thought-area container. style.css must declare .thought-area { rule.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     assert 'id="thought-area"' in html, (
         "index.html must contain id=\"thought-area\" container (THEME-04 D-17)"
     )
     assert 'class="thought-area"' in html, (
         "index.html must contain class=\"thought-area\" on the container (THEME-04 D-17)"
     )
-    css = Path("agent/static/style.css").read_text(encoding="utf-8")
+    css = Path("local_browser_agent/app/static/style.css").read_text(encoding="utf-8")
     assert ".thought-area {" in css, (
         "style.css must declare .thought-area { rule (THEME-04 D-17)"
     )
@@ -282,7 +282,7 @@ def test_thought_handler_targets_area():
     document.getElementById('thought-area') instead of appending to a
     narration row.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     assert "document.getElementById('thought-area')" in html, (
         "handleThought must use document.getElementById('thought-area') (THEME-04 D-18)"
     )
@@ -293,7 +293,7 @@ def test_thought_area_cleared_on_run():
     when a new run starts (state === 'running') so stale thoughts don't
     persist across runs.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     # Locate handleState body
     hs_start = html.find("handleState(")
     assert hs_start != -1, "index.html must define handleState( (THEME-04 D-19)"
@@ -316,7 +316,7 @@ def test_narration_feed_compressed():
     gap: 3px to give more screen space to the screenshot and thought blocks.
     Old values (max-height: 300px, gap: 6px) must be removed.
     """
-    css = Path("agent/static/style.css").read_text(encoding="utf-8")
+    css = Path("local_browser_agent/app/static/style.css").read_text(encoding="utf-8")
     feed_start = css.find(".narration-feed {")
     assert feed_start != -1, "style.css must contain .narration-feed { rule"
     feed_body = css[feed_start: css.find("}", feed_start) + 1]
@@ -338,7 +338,7 @@ def test_narration_row_padding():
     """THEME-05, D-22: .narration-row padding must be 4px 8px (tighter
     than the old var(--sp-sm) 10px) to compress the feed vertically.
     """
-    css = Path("agent/static/style.css").read_text(encoding="utf-8")
+    css = Path("local_browser_agent/app/static/style.css").read_text(encoding="utf-8")
     row_start = css.find(".narration-row {")
     assert row_start != -1, "style.css must contain .narration-row { rule"
     row_body = css[row_start: css.find("}", row_start) + 1]

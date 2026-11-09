@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from agent.paths import get_user_data_dir
+from local_browser_agent.app.paths import get_user_data_dir
 
 DB_PATH = get_user_data_dir() / "history.db"
 
@@ -70,7 +70,7 @@ async def insert_run(
 
     The aggregate fields (step_count..provider) are the UI's read model: computed
     once when the run finishes, written here, served straight to `/runs`. Keep
-    them in sync with `agent/runner.py` accumulation.
+    them in sync with `local_browser_agent/app/runner.py` accumulation.
     """
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(

@@ -1,4 +1,4 @@
-"""Unit tests for agent/db.py — init_db, insert_run, list_runs (RUN-01, RUN-02, T-03-01).
+"""Unit tests for local_browser_agent/app/db.py — init_db, insert_run, list_runs (RUN-01, RUN-02, T-03-01).
 
 Tests use a tmp_path fixture so data/history.db writes land in an isolated directory.
 All tests are async def without @pytest.mark.asyncio because asyncio_mode = "auto".
@@ -18,7 +18,7 @@ async def db_dir(tmp_path, monkeypatch):
 async def test_init_db_creates_runs_table(db_dir):
     """init_db must create the runs table with the required columns."""
     import aiosqlite
-    from agent.db import init_db, DB_PATH
+    from local_browser_agent.app.db import init_db, DB_PATH
 
     await init_db()
     assert DB_PATH.exists(), "DB file should exist after init_db()"
@@ -43,7 +43,7 @@ async def test_init_db_creates_runs_table(db_dir):
 
 async def test_insert_and_list_runs_roundtrip(db_dir):
     """insert_run then list_runs must return the row with matching data."""
-    from agent.db import init_db, insert_run, list_runs
+    from local_browser_agent.app.db import init_db, insert_run, list_runs
 
     await init_db()
     await insert_run(
@@ -79,7 +79,7 @@ async def test_insert_and_list_runs_roundtrip(db_dir):
 
 async def test_list_runs_respects_limit(db_dir):
     """list_runs(limit=10) must return at most 10 rows when 12 exist."""
-    from agent.db import init_db, insert_run, list_runs
+    from local_browser_agent.app.db import init_db, insert_run, list_runs
 
     await init_db()
     for i in range(12):
@@ -101,7 +101,7 @@ async def test_insert_run_uses_parameterized_query(db_dir):
 
     Verifies that parameterized ? placeholders are used (T-03-01 mitigation).
     """
-    from agent.db import init_db, insert_run, list_runs
+    from local_browser_agent.app.db import init_db, insert_run, list_runs
 
     await init_db()
 
@@ -126,7 +126,7 @@ async def test_aggregates_roundtrip(db_dir):
     """step_count, total_duration_s, total_cost_usd, model_name, provider
     round-trip through insert_run / list_runs unchanged.
     """
-    from agent.db import init_db, insert_run, list_runs
+    from local_browser_agent.app.db import init_db, insert_run, list_runs
 
     await init_db()
     await insert_run(
@@ -176,7 +176,7 @@ async def test_insert_run_defaults_when_aggregates_omitted(db_dir):
     """Existing callers that don't pass the aggregate kwargs (e.g. tests
     pre-dating the schema migration) still work; aggregates default to 0/None.
     """
-    from agent.db import init_db, insert_run, list_runs
+    from local_browser_agent.app.db import init_db, insert_run, list_runs
 
     await init_db()
     await insert_run(
@@ -200,7 +200,7 @@ async def test_init_db_migrates_existing_table(db_dir):
     in place via ALTER TABLE ADD COLUMN. Idempotent on a second init_db call.
     """
     import aiosqlite
-    from agent.db import DB_PATH, init_db
+    from local_browser_agent.app.db import DB_PATH, init_db
 
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:

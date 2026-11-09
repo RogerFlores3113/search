@@ -16,4 +16,4 @@ if ! command -v uv &> /dev/null; then
     exit 1
 fi
 
-exec uv run python -m agent "$@"
+exec uv run python -m local_browser_agent.app "$@"

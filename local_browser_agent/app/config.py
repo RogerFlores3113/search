@@ -68,7 +68,7 @@ class Settings(BaseSettings):
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         # Lazy import to avoid circular imports at module load time.
-        from agent.paths import get_settings_path
+        from local_browser_agent.app.paths import get_settings_path
 
         json_source = JsonConfigSettingsSource(settings_cls, json_file=get_settings_path())
         # Precedence: init > settings.json > env > .env > file secrets

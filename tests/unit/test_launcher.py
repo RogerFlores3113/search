@@ -1,4 +1,4 @@
-"""Tests for agent/launcher.py and frozen __main__.py (DIST-03)."""
+"""Tests for local_browser_agent/app/launcher.py and frozen __main__.py (DIST-03)."""
 from __future__ import annotations
 
 import sys
@@ -10,7 +10,7 @@ import pytest
 
 def test_schedule_browser_open_returns_timer():
     """schedule_browser_open() returns a threading.Timer instance with daemon=True."""
-    from agent.launcher import schedule_browser_open
+    from local_browser_agent.app.launcher import schedule_browser_open
 
     t = schedule_browser_open(delay=9999.0)  # long delay so it doesn't fire during test
     try:
@@ -24,7 +24,7 @@ def test_schedule_browser_open_calls_webbrowser(monkeypatch):
     """When the timer fires, webbrowser.open is called with the URL."""
     opened_urls = []
 
-    import agent.launcher as launcher_mod
+    import local_browser_agent.app.launcher as launcher_mod
     monkeypatch.setattr(launcher_mod.webbrowser, "open", lambda url: opened_urls.append(url))
 
     t = launcher_mod.schedule_browser_open(url="http://127.0.0.1:8080", delay=0.01)
@@ -42,7 +42,7 @@ def test_main_redirects_paths_when_frozen(monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
 
     # Stub uvicorn.run so it doesn't actually start a server
-    import agent.__main__ as main_mod
+    import local_browser_agent.app.__main__ as main_mod
     importlib.reload(main_mod)
 
     monkeypatch.setattr(main_mod.uvicorn, "run", lambda *a, **kw: None)
@@ -54,8 +54,8 @@ def test_main_redirects_paths_when_frozen(monkeypatch):
     main_mod.main()
 
     # After frozen main() runs, DB_PATH and TRAINING_FILE should point under user_data_dir
-    import agent.db as db_mod
-    import agent.training_sink as runner_mod
+    import local_browser_agent.app.db as db_mod
+    import local_browser_agent.app.training_sink as runner_mod
     user_dir = platformdirs.user_data_dir("local-browser-agent")
 
     assert str(db_mod.DB_PATH).startswith(user_dir)
@@ -68,7 +68,7 @@ def test_main_sets_chrome_missing_flag_when_chrome_absent(monkeypatch):
 
     monkeypatch.delattr(sys, "frozen", raising=False)
 
-    import agent.__main__ as main_mod
+    import local_browser_agent.app.__main__ as main_mod
     importlib.reload(main_mod)
 
     monkeypatch.setattr(main_mod.uvicorn, "run", lambda *a, **kw: None)
@@ -77,7 +77,7 @@ def test_main_sets_chrome_missing_flag_when_chrome_absent(monkeypatch):
 
     main_mod.main()
 
-    from agent.main import app
+    from local_browser_agent.app.main import app
     assert app.state.chrome_missing is True
 
     # Cleanup

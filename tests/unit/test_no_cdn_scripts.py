@@ -4,7 +4,7 @@ public CDN.
 If `templates/index.html` ever references `https://unpkg.com/...`,
 `https://cdn.jsdelivr.net/...`, or any other public CDN, this suite
 fails. The three required client deps are vendored into
-`agent/static/vendor/` (see that directory's README.md) and served
+`local_browser_agent/app/static/vendor/` (see that directory's README.md) and served
 locally via the FastAPI `/static/` mount.
 """
 from __future__ import annotations
@@ -14,8 +14,8 @@ from pathlib import Path
 from starlette.testclient import TestClient
 
 
-_INDEX = Path("agent/templates/index.html")
-_VENDOR = Path("agent/static/vendor")
+_INDEX = Path("local_browser_agent/app/templates/index.html")
+_VENDOR = Path("local_browser_agent/app/static/vendor")
 _REQUIRED_VENDOR_FILES = (
     "htmx.min.js",
     "htmx-ext-sse.js",
@@ -32,7 +32,7 @@ def test_index_template_references_no_public_cdn():
     for host in forbidden:
         assert host not in html, (
             f"index.html must not load scripts from {host}; vendor them under "
-            f"agent/static/vendor/ instead. See agent/static/vendor/README.md."
+            f"local_browser_agent/app/static/vendor/ instead. See local_browser_agent/app/static/vendor/README.md."
         )
 
 
@@ -62,14 +62,14 @@ def test_static_mount_serves_vendor_files():
     with a JS content-type. Catches a regression where the file exists
     on disk but is shadowed by a misconfigured mount.
     """
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     client = TestClient(app, raise_server_exceptions=True)
     for fname in _REQUIRED_VENDOR_FILES:
         resp = client.get(f"/static/vendor/{fname}")
         assert resp.status_code == 200, (
             f"/static/vendor/{fname} returned {resp.status_code}; check "
-            f"the StaticFiles mount in agent/main.py"
+            f"the StaticFiles mount in local_browser_agent/app/main.py"
         )
         ctype = resp.headers.get("content-type", "")
         assert "javascript" in ctype, (

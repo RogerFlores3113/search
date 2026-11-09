@@ -31,7 +31,7 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet
 
-from agent.paths import get_settings_path
+from local_browser_agent.app.paths import get_settings_path
 
 
 # ---------------------------------------------------------------------------

@@ -3,8 +3,8 @@
 These three scripts are vendored (not loaded from a CDN) so the app
 works offline AND so the runtime cannot be compromised by an unpkg
 breach or a DNS-level attack on the user's network. They ship inside
-`agent/static/vendor/` and are served from `/static/vendor/` by the
-FastAPI static mount in `agent/main.py`.
+`local_browser_agent/app/static/vendor/` and are served from `/static/vendor/` by the
+FastAPI static mount in `local_browser_agent/app/main.py`.
 
 If `templates/index.html` ever references `https://unpkg.com/...` again
 it should fail the regression assertion in
@@ -23,13 +23,13 @@ it should fail the regression assertion in
 When you bump a version, re-fetch and update the table above:
 
 ```bash
-cd agent/static/vendor
+cd local_browser_agent/app/static/vendor
 curl -fsSL https://unpkg.com/htmx.org@<VERSION>/dist/htmx.min.js     -o htmx.min.js
 curl -fsSL https://unpkg.com/htmx-ext-sse@<VERSION>/sse.js           -o htmx-ext-sse.js
 curl -fsSL https://unpkg.com/alpinejs@<VERSION>/dist/cdn.min.js      -o alpinejs.min.js
 sha256sum *.js
 ```
 
-Then update both this README and `agent/templates/index.html`. Commit
+Then update both this README and `local_browser_agent/app/templates/index.html`. Commit
 the vendored files alongside the template change so each version bump
 is a single atomic, auditable diff.

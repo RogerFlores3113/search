@@ -38,8 +38,8 @@ from jinja2 import Environment, FileSystemLoader
 
 
 def _render_runs_fragment(runs: list[dict]) -> str:
-    """Render agent/templates/runs_fragment.html directly via Jinja2."""
-    env = Environment(loader=FileSystemLoader("agent/templates"), autoescape=True)
+    """Render local_browser_agent/app/templates/runs_fragment.html directly via Jinja2."""
+    env = Environment(loader=FileSystemLoader("local_browser_agent/app/templates"), autoescape=True)
     tmpl = env.get_template("runs_fragment.html")
     return tmpl.render(runs=runs)
 
@@ -80,7 +80,7 @@ async def test_runs_endpoint_renders_api_aggregates(monkeypatch):
     total_cost_usd, model_name for an API-keyed run — sourced from the
     SQLite row, not from re-scanning training/runs.jsonl.
     """
-    import agent.main as main_mod
+    import local_browser_agent.app.main as main_mod
 
     async def _fake_list_runs(limit: int = 10) -> list[dict]:
         return [{
@@ -117,7 +117,7 @@ async def test_runs_endpoint_renders_ollama_null_cost(monkeypatch):
     total_cost_usd=NULL must render `local (no API cost)` and never
     coerce to `~$0.00`, `None`, `null`, or `NaN`.
     """
-    import agent.main as main_mod
+    import local_browser_agent.app.main as main_mod
 
     async def _fake_list_runs(limit: int = 10) -> list[dict]:
         return [{
@@ -153,8 +153,8 @@ async def test_runs_endpoint_does_not_read_training_jsonl(monkeypatch, tmp_path)
     write-only from the web layer. Point TRAINING_FILE at a missing path
     and confirm the endpoint still serves a 200.
     """
-    import agent.main as main_mod
-    import agent.training_sink as runner_mod
+    import local_browser_agent.app.main as main_mod
+    import local_browser_agent.app.training_sink as runner_mod
 
     monkeypatch.setattr(runner_mod, "TRAINING_FILE", tmp_path / "does-not-exist.jsonl")
 
@@ -204,7 +204,7 @@ def test_runs_fragment_api_cost_format():
 
 def test_runs_fragment_uses_details():
     """D-13: `runs_fragment.html` wraps each `<li>` in `<details><summary>`."""
-    src = Path("agent/templates/runs_fragment.html").read_text()
+    src = Path("local_browser_agent/app/templates/runs_fragment.html").read_text()
     assert "<details" in src, (
         "runs_fragment.html must wrap each run row in a <details> element (D-13)"
     )
@@ -217,7 +217,7 @@ def test_runs_fragment_detail_row():
     """D-15: Expanded body uses class `run-history-detail`, the middle-dot `·`
     separator, and the literal `steps` token.
     """
-    src = Path("agent/templates/runs_fragment.html").read_text()
+    src = Path("local_browser_agent/app/templates/runs_fragment.html").read_text()
     assert "run-history-detail" in src, (
         "runs_fragment.html must contain a `run-history-detail` block (D-15)"
     )
@@ -249,9 +249,9 @@ def test_runs_fragment_missing_data():
 
 def test_index_has_header_ticker():
     """D-01 / D-04: `<span class="header-ticker">` with `aria-live="polite"`
-    is present inside `agent/templates/index.html`.
+    is present inside `local_browser_agent/app/templates/index.html`.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     assert 'class="header-ticker"' in html, (
         "index.html must include a `<span class=\"header-ticker\">` (D-01)"
     )
@@ -264,7 +264,7 @@ def test_index_has_token_handlers():
     """D-22: Alpine `agentUI()` declares `handleToken` and `handleModelInfo`
     methods for the new SSE bridges.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     assert "handleToken" in html, (
         "index.html must declare a `handleToken` method on agentUI() (D-22)"
     )
@@ -277,7 +277,7 @@ def test_action_badge_assets_present():
     """D-22 / D-11: Alpine `agentUI()` declares `handleActionDetail` and
     `handleThought`; narration rows carry `data-step` for badge-race lookup.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     assert "handleActionDetail" in html, (
         "index.html must declare `handleActionDetail` (D-22)"
     )
@@ -293,7 +293,7 @@ def test_new_sse_bridges_inside_container():
     """D-22 + Phase 3 D-11: four new `sse-swap` bridges (`token`, `model_info`,
     `thought`, `action_detail`) are descendants of `#sse-container`.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
 
     # Locate the #sse-container opening tag. Phase 3 D-11 locks bridge
     # placement: `htmx-ext-sse` only delivers to descendants.
@@ -324,7 +324,7 @@ def test_handle_action_detail_renders_description():
     the user sees only the badge + step number with no signal as to WHAT
     was clicked, navigated to, or typed.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     assert "_buildActionDescription" in html, (
         "index.html must declare a _buildActionDescription helper"
     )
@@ -338,7 +338,7 @@ def test_action_description_covers_each_action_type():
     field carrying the user signal: navigate→url, click→target/label,
     type→value, scroll→value.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     for needed in (
         "Navigating to ",
         "Clicking ",
@@ -358,7 +358,7 @@ def test_action_description_prefers_target_label_over_index():
     prefer target_label when present and fall back to `element #N` only
     when no label was sent.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     assert "d.target_label" in html, (
         "_buildActionDescription must read d.target_label from the event"
     )
@@ -380,7 +380,7 @@ def test_action_badge_palette_hex():
     respective .action-badge-* class declarations.
     The `action-badge-` class prefix must also still be present.
     """
-    css = Path("agent/static/style.css").read_text()
+    css = Path("local_browser_agent/app/static/style.css").read_text()
     for hex_val in ("#1d4ed8",):
         assert hex_val in css, (
             f"style.css must contain unified blue palette hex {hex_val} (THEME-02 D-12 — unified blue palette)"
@@ -412,7 +412,7 @@ def test_summary_marker_reset_present():
     flex layout for run-history rows survives the `<details>` wrap. Requires
     BOTH `list-style: none` AND `::-webkit-details-marker` + `display: none`.
     """
-    css = Path("agent/static/style.css").read_text()
+    css = Path("local_browser_agent/app/static/style.css").read_text()
     assert "list-style: none" in css, (
         "style.css must include `list-style: none` for summary reset (D-14)"
     )
@@ -433,7 +433,7 @@ def test_no_data_url_in_index():
     """D-19: the old `data:image/png;base64,` assignment must be DELETED from
     index.html as part of the Blob lifecycle rewrite.
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     assert "data:image/png;base64," not in html, (
         "index.html must NOT contain `data:image/png;base64,` after D-19 rewrite"
     )
@@ -444,7 +444,7 @@ def test_handle_screenshot_blob_lifecycle():
     `URL.createObjectURL` + `URL.revokeObjectURL`, and the MIME is `image/jpeg`
     (Phase 7 emits JPEG q=75, not PNG — D-21 fixes the prior misassumption).
     """
-    html = Path("agent/templates/index.html").read_text()
+    html = Path("local_browser_agent/app/templates/index.html").read_text()
     for needle in (
         "URL.createObjectURL",
         "URL.revokeObjectURL",

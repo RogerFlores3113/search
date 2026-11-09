@@ -91,7 +91,7 @@ The screenshot loop only runs when at least one sink wants screenshots (a trace-
 
 `StepCompletedEvent` (run_id, step, screenshot_b64, action fields, thoughts, tokens, cost, duration_ms, error,
 run_has_errors) is delivered only to sinks that set `wants_step_events = True`; the built-in sinks do not, so
-it never reaches a UI queue. Use it to build a training/trace sink (the web app's `agent/training_sink.py` does).
+it never reaches a UI queue. Use it to build a training/trace sink (the web app's `local_browser_agent/app/training_sink.py` does).
 `BrowserAgent(..., preflight=async fn)` runs a check after the start events and before the browser is built;
 an exception ends the run with status `"error"`. `agent.is_active` / `agent.is_paused` report control state.
 
@@ -143,3 +143,7 @@ Claude Desktop (`claude_desktop_config.json`):
   }
 }
 ```
+
+## Upgrading from the `agent` package
+
+The web app used to ship as a second top-level package, `agent`. It now lives inside the library package: old `agent.*` imports are `local_browser_agent.app.*` (for example `agent.main` is now `local_browser_agent.app.main`). Launch it with `python -m local_browser_agent.app` (or the `lba-app` console script). `import local_browser_agent` never imports the app. The distribution name (`local-browser-agent`) and user data locations are unchanged.
