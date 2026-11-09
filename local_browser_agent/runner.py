@@ -7,22 +7,25 @@ import dataclasses
 import logging
 import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
 from browser_use import Agent
 
 from local_browser_agent.browser import build_browser_session
+from local_browser_agent.captcha import looks_like_captcha
 from local_browser_agent.config import AgentConfig
 from local_browser_agent.events import (
     ActionDetailEvent,
     DoneEvent,
     ErrorEvent,
+    HumanNeededEvent,
     ModelInfoEvent,
     ProgressEvent,
     ScreenshotEvent,
     StateEvent,
+    StepCompletedEvent,
     SummaryEvent,
     ThoughtEvent,
     TokenEvent,
@@ -128,16 +131,21 @@ class BrowserAgent:
 
     ``sinks`` are async callables receiving event dataclasses. ``approval`` is
     ``async (ActionRequest) -> bool`` asked before a gated (commerce) click.
+    ``preflight`` is an optional ``async () -> None`` run after the start events and
+    before the browser is built; an exception from it ends the run with status "error".
     """
 
     def __init__(self, config: AgentConfig | None = None, *, sinks: Iterable[Any] = (),
-                 approval: ApprovalCallback | None = None) -> None:
+                 approval: ApprovalCallback | None = None,
+                 preflight: Callable[[], Awaitable[None]] | None = None) -> None:
         self.config = config or AgentConfig()
         self.sinks = list(sinks)
         self.approval = approval
+        self.preflight = preflight
         self._agent: Any = None
         self._running = False
         self._stop_requested = False
+        self._paused = False
         self._bg: set[asyncio.Task] = set()
 
     # ---- control -------------------------------------------------------
@@ -149,24 +157,39 @@ class BrowserAgent:
         self._bg.add(task)
         task.add_done_callback(self._bg.discard)
 
+    @property
+    def is_active(self) -> bool:
+        """True once the underlying browser-use agent exists (pause/resume/stop take effect)."""
+        return self._agent is not None
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused
+
     def pause(self) -> None:
         if self._agent is not None:
             self._agent.pause()
+            self._paused = True
             self._fire(StateEvent(state="paused"))
 
     def resume(self) -> None:
         if self._agent is not None:
             self._agent.resume()
+            self._paused = False
             self._fire(StateEvent(state="running"))
 
     def stop(self) -> None:
         self._stop_requested = True
+        self._paused = False
         if self._agent is not None:
             self._agent.stop()
 
     # ---- events --------------------------------------------------------
     async def _emit(self, event: Any) -> None:
+        step_event = isinstance(event, StepCompletedEvent)
         for sink in self.sinks:
+            if step_event and not getattr(sink, "wants_step_events", False):
+                continue
             try:
                 await sink(event)
             except Exception as e:  # a failing sink must never crash a run
@@ -181,10 +204,12 @@ class BrowserAgent:
             raise RuntimeError("BrowserAgent is already running a task; use one instance per concurrent run")
         self._running = True
         self._stop_requested = False
+        self._paused = False
         try:
             return await self._run(task, start_url)
         finally:
             self._running = False
+            self._paused = False
             self._agent = None
 
     async def _run(self, task: str, start_url: str | None) -> RunResult:
@@ -203,6 +228,9 @@ class BrowserAgent:
         history: Any = None
         timed_out = False
         error_msg: str | None = None
+        captcha_msg: str | None = None
+        thoughts: dict[int, dict[str, str | None]] = {}
+        want_step_events = any(getattr(s, "wants_step_events", False) for s in self.sinks)
         browser = None
         screenshot_task = None
         agent = None
@@ -216,6 +244,12 @@ class BrowserAgent:
         await self._emit(ModelInfoEvent(provider=provider, model_name=model_name))
 
         async def _pre_step(browser_state, agent_output, step_num: int) -> None:
+            thoughts[step_num] = {
+                "thinking": agent_output.thinking or None,
+                "evaluation_previous_goal": agent_output.evaluation_previous_goal or None,
+                "next_goal": agent_output.next_goal or None,
+                "memory": agent_output.memory or None,
+            }
             await self._emit(ThoughtEvent(
                 step=step_num,
                 thinking=agent_output.thinking or None,
@@ -225,7 +259,7 @@ class BrowserAgent:
             ))
 
         async def _on_step_end(agent_instance) -> None:
-            nonlocal step_start, cost_total, cost_seen, usage_seen
+            nonlocal step_start, cost_total, cost_seen, usage_seen, captcha_msg
             duration_ms = int((time.monotonic() - step_start) * 1000)
             hist = agent_instance.history
             idx = hist.number_of_steps()  # 1-indexed
@@ -234,14 +268,20 @@ class BrowserAgent:
             action_type = next((k for k in last if k != "interacted_element"), "unknown") if last else "unknown"
             inner = last.get(action_type) if isinstance(last.get(action_type), dict) else {}
             target = str(inner["index"]) if "index" in inner else None
-            value = inner.get("text") or inner.get("query") or inner.get("keys") or None
+            if target is None and last.get("action_target") not in (None, ""):
+                target = str(last["action_target"])
+            value = inner.get("text") or inner.get("query") or inner.get("keys") or last.get("action_value") or None
             url = inner.get("url") or None
             label = extract_target_label(last.get("interacted_element")) if last else None
             step_error = None
+            captcha_hit = False
             for r in (getattr(agent_instance.state, "last_result", None) or []):
-                if getattr(r, "error", None):
-                    step_error = r.error
-                    break
+                err = getattr(r, "error", None)
+                if err:
+                    if step_error is None:
+                        step_error = err
+                    if looks_like_captcha(str(err)):
+                        captcha_hit = True
             if step_error:
                 errors.append(step_error)
             steps.append(StepRecord(index=idx, action_type=action_type, target_label=label,
@@ -273,10 +313,55 @@ class BrowserAgent:
                                                step_duration_ms=duration_ms))
             await self._emit(ProgressEvent(step=idx, max_steps=cfg.max_steps))
             await self._emit(TokenEvent(step=idx, **tok))
+
+            if want_step_events:
+                shot = ""
+                try:
+                    shots = hist.screenshots()
+                    shot = (shots[-1] if shots else "") or ""
+                except Exception as e:
+                    logger.debug("step screenshot read failed: %s", e)
+                th = thoughts.get(idx, {})
+                try:
+                    run_has_errors = bool(hist.has_errors())
+                except Exception:
+                    run_has_errors = bool(errors)
+                await self._emit(StepCompletedEvent(
+                    run_id=run_id, step=idx, screenshot_b64=shot, action_type=action_type, target=target,
+                    target_label=label, value=steps[-1].value, url=url,
+                    thinking=th.get("thinking"), evaluation_previous_goal=th.get("evaluation_previous_goal"),
+                    next_goal=th.get("next_goal"), memory=th.get("memory"),
+                    prompt_tokens=tok["prompt_tokens"], completion_tokens=tok["completion_tokens"],
+                    cost_usd=tok["cost_usd"], duration_ms=duration_ms, error=step_error,
+                    run_has_errors=run_has_errors,
+                ))
+
+            if captcha_hit and captcha_msg is None:
+                page_url = None
+                try:
+                    seen = [u for u in hist.urls() if u and u != "about:blank"]
+                    page_url = seen[-1] if seen else None
+                except Exception:
+                    pass
+                where = f" at {page_url}" if page_url else ""
+                note = f"Human verification required (CAPTCHA or bot check detected{where})"
+                await self._emit(HumanNeededEvent(reason="captcha", url=page_url, message=note))
+                if cfg.on_captcha == "pause":
+                    # Pause, never solve: the browser-use loop waits before the next step until
+                    # resume() (or stop()) is called, e.g. after the person solves it in Chrome.
+                    agent_instance.pause()
+                    self._paused = True
+                    await self._emit(StateEvent(state="paused"))
+                else:
+                    captcha_msg = note
+                    errors.append(note)
+                    agent_instance.stop()
             step_start = time.monotonic()
 
         try:
             try:
+                if self.preflight is not None:
+                    await self.preflight()
                 llm = build_llm(cfg.model)
                 browser = build_browser_session(cfg.browser, cfg.safety)
                 tools = GuardedTools(
@@ -312,7 +397,7 @@ class BrowserAgent:
                     )
                 except asyncio.TimeoutError:
                     timed_out = True
-                    error_msg = f"Run timed out after {cfg.timeout_s:g}s"
+                    error_msg = f"Session timeout ({cfg.timeout_s:g}s)"
                     history = getattr(agent, "history", None)
             except Exception as e:
                 error_msg = f"{type(e).__name__}: {e}" if str(e) == "" else str(e)
@@ -353,6 +438,8 @@ class BrowserAgent:
                 status = "error"
             elif timed_out:
                 status = "timeout"
+            elif captcha_msg:
+                status = "failed"
             elif stopped:
                 status = "stopped"
             elif success_flag is True:
@@ -377,6 +464,7 @@ class BrowserAgent:
                 blocked_actions=list(blocked),
             )
         finally:
+            error_msg = error_msg or captcha_msg
             if error_msg:
                 await self._emit(ErrorEvent(message=error_msg))
                 await self._emit(StateEvent(state="error"))

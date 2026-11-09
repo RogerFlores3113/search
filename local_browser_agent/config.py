@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
@@ -76,6 +76,7 @@ class AgentConfig(BaseModel):
     system_prompt_extension: str | None = None
     use_judge: bool = False
     calculate_cost: bool = True
+    on_captcha: Literal["fail", "pause"] = "fail"
 
     @classmethod
     def from_env(cls, prefix: str = "LBA_", env: Mapping[str, str] | None = None) -> AgentConfig:

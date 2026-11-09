@@ -65,4 +65,4 @@ from local_browser_agent import (
 - P0 (step 2): telemetry off (done in step 1); library package and config objects; `BrowserAgent` / `RunResult`; event sinks.
 - P1 (step 2): provider registry; browser backends; tool-level commerce gate; CLI + MCP server; docs and example.
 - P2 (step 3): local fixture site; state-based checkers; `lba eval` runner with JSON/Markdown output; harness self-test in CI; real-model baseline.
-- P3 (follow-up): move the web app onto `BrowserAgent`; rename the app package; CAPTCHA resume; eval in CI on a cheap model.
+- P3 (follow-up): ~~move the web app onto `BrowserAgent`~~ (done); rename the app package; ~~CAPTCHA resume~~ (done, `on_captcha="pause"`); eval in CI on a cheap model.

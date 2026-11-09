@@ -15,10 +15,12 @@ from local_browser_agent.events import (  # noqa: E402
     ActionDetailEvent,
     DoneEvent,
     ErrorEvent,
+    HumanNeededEvent,
     ModelInfoEvent,
     ProgressEvent,
     ScreenshotEvent,
     StateEvent,
+    StepCompletedEvent,
     SummaryEvent,
     ThoughtEvent,
     TokenEvent,
@@ -55,4 +57,5 @@ __all__ = [
     "QueueSink", "JsonlTraceSink", "CallbackSink",
     "ScreenshotEvent", "StateEvent", "ProgressEvent", "SummaryEvent", "ErrorEvent", "DoneEvent",
     "TokenEvent", "ModelInfoEvent", "ThoughtEvent", "ActionDetailEvent",
+    "HumanNeededEvent", "StepCompletedEvent",
 ]

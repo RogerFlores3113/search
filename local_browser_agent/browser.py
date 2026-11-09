@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from browser_use.browser.profile import BrowserProfile
+from browser_use.browser.session import BrowserSession
+
 from local_browser_agent.config import BrowserConfig, SafetyPolicy
 
 
 def build_browser_profile(browser: BrowserConfig, safety: SafetyPolicy) -> Any:
-    from browser_use.browser.profile import BrowserProfile
-
     kwargs: dict[str, Any] = dict(
         prohibited_domains=sorted(safety.blocked_domains),
         headless=browser.headless,
@@ -31,8 +32,6 @@ def build_browser_profile(browser: BrowserConfig, safety: SafetyPolicy) -> Any:
 
 
 def build_browser_session(browser: BrowserConfig, safety: SafetyPolicy) -> Any:
-    from browser_use.browser.session import BrowserSession
-
     session = BrowserSession(browser_profile=build_browser_profile(browser, safety))
     session.llm_screenshot_size = (browser.llm_screenshot_width, browser.llm_screenshot_height)
     return session

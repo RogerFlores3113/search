@@ -79,7 +79,50 @@ class ActionDetailEvent:
     step_duration_ms: Optional[int] = None
 
 
+@dataclass
+class HumanNeededEvent:
+    """The run needs a person (CAPTCHA / human-verification page). Never auto-solved."""
+
+    type: Literal["human_needed"] = "human_needed"
+    reason: str = "captcha"
+    url: Optional[str] = None
+    message: str = ""
+
+
+@dataclass
+class StepCompletedEvent:
+    """Everything known about one finished step (for trace/training sinks).
+
+    Only delivered to sinks that set ``wants_step_events = True``; it carries the
+    step screenshot, so the built-in queue/trace sinks do not receive it.
+    ``step`` is 1-indexed. ``run_has_errors`` is cumulative over the run;
+    ``error`` is this step's own error (None when the step was clean).
+    """
+
+    type: Literal["step_completed"] = "step_completed"
+    run_id: str = ""
+    step: int = 0
+    screenshot_b64: str = ""
+    action_type: str = "unknown"
+    target: Optional[str] = None
+    target_label: Optional[str] = None
+    value: Optional[str] = None
+    url: Optional[str] = None
+    thinking: Optional[str] = None
+    evaluation_previous_goal: Optional[str] = None
+    next_goal: Optional[str] = None
+    memory: Optional[str] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    cost_usd: Optional[float] = None
+    duration_ms: Optional[int] = None
+    error: Optional[str] = None
+    run_has_errors: bool = False
+
+
 __all__ = [
+    "HumanNeededEvent",
+    "StepCompletedEvent",
     "ScreenshotEvent",
     "StateEvent",
     "ProgressEvent",

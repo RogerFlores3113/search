@@ -21,7 +21,7 @@ logger = logging.getLogger("local_browser_agent")
 EventSink = Callable[[Any], Awaitable[None]]
 
 # Lifecycle events the consumer cannot recover from if dropped.
-CONTROL_EVENT_TYPES = frozenset({"state", "model_info", "summary", "error_msg", "done"})
+CONTROL_EVENT_TYPES = frozenset({"state", "model_info", "summary", "error_msg", "done", "human_needed"})
 _CONTROL_PUT_TIMEOUT_S = 2.0
 
 
@@ -34,6 +34,7 @@ class QueueSink:
     """
 
     wants_screenshots = True
+    wants_step_events = False
 
     def __init__(self, data_q: asyncio.Queue, control_q: asyncio.Queue | None = None) -> None:
         self.data_q = data_q
