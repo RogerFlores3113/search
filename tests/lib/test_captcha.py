@@ -150,3 +150,21 @@ async def test_no_captcha_no_event(patched):
     res = await BrowserAgent(AgentConfig(), sinks=[CallbackSink(events.append)]).run("t")
     assert res.status == "success"
     assert not any(isinstance(e, HumanNeededEvent) for e in events)
+
+
+async def test_screenshot_loop_stops_even_when_cancel_is_swallowed():
+    """Regression: on Python 3.11 wait_for could eat the cancel and hang teardown."""
+    from local_browser_agent.runner import _screenshot_loop
+
+    shots = []
+
+    async def emit(e):
+        shots.append(e)
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(_screenshot_loop(FakeBrowser(), emit, stop))
+    await asyncio.sleep(0)
+    stop.set()
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=2)
+    assert done, "screenshot loop kept running after stop + cancel"

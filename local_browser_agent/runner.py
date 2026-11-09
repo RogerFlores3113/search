@@ -106,18 +106,20 @@ def extract_target_label(interacted_element: object) -> str | None:
     return None
 
 
-async def _screenshot_loop(browser: Any, emit) -> None:
+async def _screenshot_loop(browser: Any, emit, stop: asyncio.Event | None = None) -> None:
     """Emit a JPEG ScreenshotEvent every ~0.5s with exponential back-off on failure.
 
     CancelledError is deliberately not caught so teardown can cancel it before
-    the browser is killed.
+    the browser is killed. ``stop`` is a second way out: on Python 3.11
+    ``asyncio.wait_for`` can swallow a cancel that lands as the inner call
+    finishes, which used to leave this loop (and teardown) running forever, so
+    the per-shot timeout uses ``asyncio.timeout`` and the loop also checks ``stop``.
     """
     failures = 0
-    while True:
+    while stop is None or not stop.is_set():
         try:
-            data = await asyncio.wait_for(
-                browser.take_screenshot(format="jpeg", quality=75), timeout=_SCREENSHOT_TIMEOUT_S
-            )
+            async with asyncio.timeout(_SCREENSHOT_TIMEOUT_S):
+                data = await browser.take_screenshot(format="jpeg", quality=75)
             await emit(ScreenshotEvent(b64=base64.b64encode(data).decode()))
             failures = 0
             await asyncio.sleep(SCREENSHOT_INTERVAL_S)
@@ -233,6 +235,7 @@ class BrowserAgent:
         want_step_events = any(getattr(s, "wants_step_events", False) for s in self.sinks)
         browser = None
         screenshot_task = None
+        screenshot_stop = asyncio.Event()
         agent = None
 
         try:
@@ -389,7 +392,9 @@ class BrowserAgent:
                 if self._stop_requested:
                     agent.stop()
                 if self.sinks and self._wants_screenshots():
-                    screenshot_task = asyncio.create_task(_screenshot_loop(browser, self._emit))
+                    screenshot_task = asyncio.create_task(
+                        _screenshot_loop(browser, self._emit, screenshot_stop)
+                    )
                 try:
                     history = await asyncio.wait_for(
                         agent.run(max_steps=cfg.max_steps, on_step_end=_on_step_end),
@@ -407,8 +412,11 @@ class BrowserAgent:
             finally:
                 # Cancel the screenshot loop BEFORE tearing down the browser.
                 if screenshot_task is not None:
+                    screenshot_stop.set()
                     screenshot_task.cancel()
-                    await asyncio.gather(screenshot_task, return_exceptions=True)
+                    done, _ = await asyncio.wait({screenshot_task}, timeout=_SCREENSHOT_TIMEOUT_S + 1)
+                    if not done:
+                        logger.warning("screenshot loop did not stop in time; continuing teardown")
                 if browser is not None:
                     try:
                         if cfg.browser.keep_alive or cfg.browser.cdp_url:

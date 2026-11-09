@@ -406,10 +406,10 @@ async def test_screenshot_loop_skipped_when_no_queue(training_dir, monkeypatch_e
 # ---------------------------------------------------------------------------
 
 async def test_screenshot_task_cancelled_before_browser_kill(training_dir, monkeypatch_env):
-    """screenshot_task.cancel() + gather must complete before browser.kill() is awaited.
+    """screenshot_task.cancel() + wait must complete before browser.kill() is awaited.
 
     SCR-02: correct shutdown order prevents TargetClosedError from firing during
-    cleanup. The gather must appear before kill in the call order.
+    cleanup. The wait must appear before kill in the call order.
     """
     from local_browser_agent.app.runner import run_agent
 
@@ -425,12 +425,12 @@ async def test_screenshot_task_cancelled_before_browser_kill(training_dir, monke
 
     mock_browser.kill = AsyncMock(side_effect=_kill_with_order)
 
-    # Patch asyncio.gather inside local_browser_agent.app.runner to record call order
-    real_gather = asyncio.gather
+    # Patch asyncio.wait (used by the library teardown) to record call order
+    real_wait = asyncio.wait
 
-    async def _gather_with_order(*args, **kwargs):
-        order_list.append("gather")
-        return await real_gather(*args, **kwargs)
+    async def _wait_with_order(*args, **kwargs):
+        order_list.append("wait")
+        return await real_wait(*args, **kwargs)
 
     FakeAgentClass = _make_fake_agent_class(fake_agent)
 
@@ -438,17 +438,17 @@ async def test_screenshot_task_cancelled_before_browser_kill(training_dir, monke
          patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
          patch("browser_use.ChatOllama", MagicMock()), \
          patch("local_browser_agent.runner.Agent", FakeAgentClass), \
-         patch("local_browser_agent.app.runner.asyncio.gather", _gather_with_order):
+         patch("local_browser_agent.runner.asyncio.wait", _wait_with_order):
         await run_agent("test task", queue=queue)
 
-    assert "gather" in order_list, (
-        f"asyncio.gather must be called in the finally block; order_list={order_list}"
+    assert "wait" in order_list, (
+        f"asyncio.wait must be called in the finally block; order_list={order_list}"
     )
     assert "kill" in order_list, (
         f"browser.kill must be called in the finally block; order_list={order_list}"
     )
-    assert order_list.index("gather") < order_list.index("kill"), (
-        f"asyncio.gather (task cancellation) must happen BEFORE browser.kill; "
+    assert order_list.index("wait") < order_list.index("kill"), (
+        f"asyncio.wait (task cancellation) must happen BEFORE browser.kill; "
         f"order_list={order_list}"
     )
 
