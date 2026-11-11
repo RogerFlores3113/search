@@ -117,7 +117,8 @@ def test_money_does_not_gate(label):
 
 # ---- 3. quadratic regexes
 @pytest.mark.parametrize("label", ["a" + " " * 50000 + "b", "a" + "." * 50000 + "b", "a" + "(" * 50000,
-                                   "delete " + " " * 50000 + "account", "a" + "!" * 50000 + "b"])
+                                   "delete " + " " * 50000 + "account", "a" + "!" * 50000 + "b"],
+                         ids=["spaces", "dots", "parens", "spaced-delete", "bangs"])  # Windows caps env vars at 32k
 def test_pathological_labels_are_fast(label):
     t = time.perf_counter()
     is_irreversible_label(label)
