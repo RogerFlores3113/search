@@ -109,13 +109,17 @@ name as the model name.
 ## Browser options
 
 `BrowserConfig(headless=False, channel="chrome", executable_path=None, cdp_url=None, user_data_dir=None,
-window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_height=640, keep_alive=False)`
+window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_height=640, keep_alive=False, allow_downloads=False)`
 
 - **Attach to a running browser:** start Chrome with `--remote-debugging-port=9222` and set
   `BrowserConfig(cdp_url="http://127.0.0.1:9222")`. The agent attaches and does not kill your browser at the end.
 - `cdp_url` must be an `http(s)` or `ws(s)` URL with a host.
 - `keep_alive=True` also leaves a launched browser open after the run.
 - `user_data_dir` reuses a Chrome profile (logins). Use a dedicated directory.
+- The browser is launched with no extra permissions (no clipboard read/write, no notifications) and with downloads
+  and PDF auto-download off. `allow_downloads=True` turns downloads back on.
+- `LBA_ALLOW_TELEMETRY=1` only takes effect if `local_browser_agent` is imported before `browser_use` (the package
+  sets the telemetry env vars at import time); otherwise set `ANONYMIZED_TELEMETRY` / `BROWSER_USE_CLOUD_SYNC` yourself.
 
 ## Safety policy
 
@@ -126,8 +130,8 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
   `allow_local_network=True` / `LBA_ALLOW_LOCAL_NETWORK=1`), `localhost`, the local suffixes `*.localhost`, `*.local`,
   `*.internal`, `*.lan`, `*.home.arpa`, `*.localdomain`, `*.intranet`, and single-label names such as `intranet` or
   `printer`. Suffixes are blocked in the browser profile (so link clicks and redirects are covered) and in the
-  navigation tool. **Not caught:** DNS names that resolve to private addresses (e.g. `nip.io`-style names), because no
-  DNS lookups are done. Use `allowed_domains` when you need strict isolation. A local `start_url` or `allowed_domains`
+  navigation tool. **Not caught:** DNS names that resolve to loopback or private addresses (`localtest.me`, `*.nip.io`,
+  `*.sslip.io`, ...), because no DNS lookups are done. Use `allowed_domains` when you need strict isolation. A local `start_url` or `allowed_domains`
   entry is rejected unless you set `allow_local_network=True` (`LBA_ALLOW_LOCAL_NETWORK=1`), which is meant for
   local test fixtures and dev servers (the eval suite turns it on for its fixture server).
 - **`approval_timeout_s=120.0`** is how long a gated action waits for the approval callback; on timeout it is denied.
@@ -140,7 +144,16 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
   otherwise the run returns `status="error"`, `error_kind="start_url_blocked"` before anything is launched.
 
 - `blocked_domains` always includes `SAFETY_DEFAULTS` (banks, payments, government, medical, password managers); extra entries are added, none can be removed (also via `model_copy(update=...)`). Entries are lowercased with trailing dots stripped.
-- `allowed_domains` restricts navigation to those domains. Blocked domains win: an allowed domain equal to or under a blocked one is dropped, and a list that is left empty raises `ValueError`.
+- **Host canonicalisation:** before any domain, IP or local-network check a host is canonicalised like Chrome does
+  (percent-decoding, NFKC, zero-width/format characters removed, `。` `．` `｡` read as dots, lowercase, trailing dot
+  removed, IDNA/punycode). A host that cannot be canonicalised is denied.
+- **Link targets:** a click on a link or form button whose `href` / `formaction` / form `action` points at a blocked
+  domain, a local address or a browser-internal scheme (`chrome:`, `file:`, `view-source:`, ...) is denied like a
+  `navigate` action. Relative links, `javascript:`, `mailto:` and `tel:` are not treated as navigations.
+- **Enter / Space** on a focused control are checked against the live focused element; when it cannot be read they
+  are gated unless the last known focus was a text field.
+- `allowed_domains` restricts navigation to those domains. Public suffixes such as `*.co.uk` or `com.au` are rejected;
+  name a specific site (`*.example.co.uk`). Blocked domains win: an allowed domain equal to or under a blocked one is dropped, and a list that is left empty raises `ValueError`.
 - The guardrail prompt is appended to the system prompt.
 - **Commerce gate:** click actions whose target label matches a commerce pattern ("Buy now", "Checkout", "Place order", "Pay", ...) are blocked in the tool layer, independent of the model. If you pass `approval=async (ActionRequest) -> bool`, it is asked first (`ActionRequest` has `action_name, params, element_label, url`); returning `True` lets the click through. Without a callback the click is blocked, the agent gets an error, and the attempt is listed in `RunResult.blocked_actions`.
 - The element label is read from the accessibility name / aria-label / text of the clicked element via `browser_session.get_element_by_index`; coordinate clicks and unlabeled elements cannot be gated.

@@ -87,7 +87,7 @@ def test_profile_raises_when_chrome_missing(monkeypatch):
 def test_blocked_domains_cover_subdomains_and_case():
     prof = build_browser_profile(BrowserConfig(), SafetyPolicy(blocked_domains=["Evil.COM.", "bad.org"]))
     pd = set(prof.prohibited_domains)
-    assert {"evil.com", "*.evil.com", "bad.org", "*.bad.org", "paypal.com", "*.paypal.com"} <= pd
+    assert {"*.evil.com", "*.evil.com.", "*.bad.org", "*.paypal.com", "*.paypal.com."} <= pd
 
 
 def test_allow_list_cannot_reenable_blocked():

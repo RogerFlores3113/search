@@ -29,7 +29,7 @@ def _profile(**safety):
 def test_local_network_blocked_by_default():
     p = _profile()
     assert p.block_ip_addresses is True
-    assert {"localhost", "*.localhost"} <= set(p.prohibited_domains)
+    assert {"*.localhost", "*.localhost."} <= set(p.prohibited_domains)
     assert "chrome://*" in p.prohibited_domains and "chrome-extension://*" in p.prohibited_domains
 
 
