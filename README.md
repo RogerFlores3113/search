@@ -12,7 +12,33 @@ A local AI browser agent — type any natural language task, the agent drives yo
 
 ---
 
-## Getting Started (Linux / WSL2 / Windows)
+## Download and run
+
+No Python or terminal needed.
+
+1. Open the [releases page](https://github.com/rogerflores3113/search/releases) and download the latest build for your computer: `local-browser-agent-mac.zip` (Mac) or `local-browser-agent-windows.zip` (Windows).
+2. Install [Google Chrome](https://www.google.com/chrome/) if you don't have it. The agent drives your own Chrome and does not bundle a browser.
+3. Unzip the download.
+
+**On a Mac.** Open `local-browser-agent.app`. The app is signed ad hoc and is not notarized by Apple, so Gatekeeper says it "cannot be opened because the developer cannot be verified". Right-click (or Control-click) the app, choose **Open**, then confirm **Open**. Alternatively, open it once, go to **System Settings > Privacy & Security** and click **Open Anyway**. You only need to do this once.
+
+**On Windows.** Open the unzipped `local-browser-agent` folder and run `local-browser-agent.exe`. The exe is unsigned, so Windows SmartScreen may show "Windows protected your PC". Click **More info**, then **Run anyway**.
+
+**First run.** The app starts a small server on your own computer and opens your default browser at `http://127.0.0.1:8080`. Then:
+
+1. Read the safety notice and accept it to unlock the task box.
+2. Open **Settings** (the gear icon) and choose how the agent thinks: **Ollama** (runs on your computer, free, needs [Ollama](https://ollama.com) installed) or an **Anthropic** or **OpenAI** account, in which case paste your API key.
+3. Type a task and press Run. A Chrome window opens and you can watch each step stream into the page.
+
+If Chrome is not installed, the page says so and still lets you open Settings. Install Chrome, press **Check again**, and carry on.
+
+---
+
+## Development
+
+Everything below is for people running from a source checkout.
+
+### Getting started from source (Linux / WSL2 / Windows)
 
 ### Prerequisites
 
@@ -83,7 +109,7 @@ Each folder contains `history.db` (session history), `training/runs.jsonl` (agen
 
 ---
 
-## Development
+### Development commands
 
 ```bash
 # Set up

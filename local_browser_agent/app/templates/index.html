@@ -614,6 +614,7 @@
           // loadOllamaModels() is intentionally excluded — it is expensive and
           // belongs only when the panel opens.
           this.loadSettings();
+          {% if open_settings %}this.openSettings();{% endif %}
         },
 
         badgeClass() {

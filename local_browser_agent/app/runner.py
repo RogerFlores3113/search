@@ -106,6 +106,17 @@ def _model_config(cfg: "Settings") -> ModelConfig:
     return ModelConfig(provider=provider)
 
 
+def _friendly_config_error(cfg: "Settings", exc: Exception) -> str:
+    """One plain sentence for an invalid stored setting (never raw pydantic text)."""
+    text = str(exc).lower()
+    provider = cfg.provider.lower()
+    if "base_url" in text or "url" in text:
+        if provider == "ollama":
+            return "Your Ollama address isn't a valid web address. Open Settings and fix it."
+        return "One of your saved web addresses isn't valid. Open Settings and fix it."
+    return "One of your saved settings isn't valid, so the run could not start. Open Settings, check them and save again."
+
+
 def build_agent_config(cfg: "Settings", active_prompt_id: str | None = None) -> AgentConfig:
     """AgentConfig for one run, snapshotting everything from the app settings."""
     prompt_id = active_prompt_id if active_prompt_id else cfg.active_prompt_id
@@ -315,7 +326,17 @@ async def run_agent(
     snapshot_model = _resolve_model_name(config)
     snapshot_prompt_id = active_prompt_id if active_prompt_id else config.active_prompt_id
 
-    cfg = build_agent_config(config, snapshot_prompt_id)
+    config_problem: str | None = None
+    try:
+        cfg = build_agent_config(config, snapshot_prompt_id)
+    except Exception as e:  # noqa: BLE001 - any invalid stored setting becomes a friendly message
+        config_problem = _friendly_config_error(config, e)
+        # Placeholder config so the run still gets a run_id, an error event and a history row;
+        # pre-flight raises config_problem before anything is launched.
+        cfg = AgentConfig(
+            model=ModelConfig(provider="ollama"),
+            browser=BrowserConfig(headless=False, channel="chrome", keep_alive=False),
+        )
     sinks: list = []
     stopped_in_preflight = False
     if queue is not None:
@@ -329,6 +350,8 @@ async def run_agent(
 
     async def _preflight() -> None:
         nonlocal stopped_in_preflight
+        if config_problem:
+            raise PreFlightError(config_problem)
         # With an explicit binary or an attach URL we never look for a system Chrome.
         own_browser = bool(cfg.browser.cdp_url or cfg.browser.executable_path)
         if not own_browser and not chrome_is_installed():
