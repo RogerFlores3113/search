@@ -145,6 +145,10 @@ def _config_for_run(config: Any, task: EvalTask, host: str, timeout_s: float | N
     except Exception:  # frozen models: rebuild via pydantic model_copy
         safety = cfg.safety.model_copy(update={"allowed_domains": [host]})
         cfg = cfg.model_copy(update={"safety": safety})
+    try:  # fixtures are served from 127.0.0.1, so the local-network block must be off
+        cfg.safety.allow_local_network = True
+    except Exception:
+        pass
     if timeout_s is not None and hasattr(cfg, "timeout_s"):
         try:
             cfg.timeout_s = timeout_s

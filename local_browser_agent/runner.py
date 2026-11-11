@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import dataclasses
+import inspect
 import logging
 import time
 import uuid
@@ -12,9 +13,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from browser_use import Agent
+from pydantic import ValidationError
 
-from local_browser_agent.browser import build_browser_session
+from local_browser_agent.browser import build_browser_session, start_url_problem
 from local_browser_agent.captcha import looks_like_captcha
+from local_browser_agent.chrome import ChromeNotFoundError
 from local_browser_agent.config import AgentConfig
 from local_browser_agent.events import (
     ActionDetailEvent,
@@ -30,7 +33,7 @@ from local_browser_agent.events import (
     ThoughtEvent,
     TokenEvent,
 )
-from local_browser_agent.models import build_llm, resolve_model_name
+from local_browser_agent.models import PreFlightError, build_llm, resolve_model_name
 from local_browser_agent.redact import redact, redact_url
 from local_browser_agent.safety import ActionRequest, ApprovalCallback, GuardedTools  # noqa: F401
 
@@ -38,6 +41,8 @@ logger = logging.getLogger("local_browser_agent")
 
 SINK_TIMEOUT_S = 5.0  # a hung event sink is logged and dropped after this long
 TEARDOWN_TIMEOUT_S = 10.0  # bound on stopping/killing the browser
+STOP_GRACE_S = 2.0  # after stop(), let the current step finish this long, then cancel it
+SINK_MAX_TIMEOUTS = 3  # a sink that times out this many times in a row is dropped for the run
 _TICK_S = 0.1  # supervisor poll interval (timeout clock / stop checks)
 _CONNECTION_ERROR_MARKERS = (
     "all connection attempts failed", "connect call failed", "connection refused",
@@ -48,6 +53,20 @@ _SCREENSHOT_BACKOFF_CAP_S = 4.0
 _SCREENSHOT_TIMEOUT_S = 3.0
 _LABEL_MAX_LEN = 80
 _LABEL_TAG_FALLBACK = frozenset({"button", "a", "input", "textarea", "select"})
+
+
+# RunResult.error_kind values:
+#   chrome_missing     no Chrome/Chromium found (and no cdp_url / executable_path)
+#   preflight          provider/API-key/model check failed (PreFlightError or a custom preflight)
+#   config             invalid configuration found while building the LLM or browser
+#   cdp_connect        could not attach to Chrome at BrowserConfig.cdp_url
+#   timeout            AgentConfig.timeout_s elapsed
+#   captcha            CAPTCHA / human verification stopped the run (on_captcha="fail")
+#   stopped            stop() was called
+#   start_url_blocked  start_url is not http(s), blocked, outside allowed_domains or local
+#   agent_error        any other error during the run
+ERROR_KINDS = ("chrome_missing", "preflight", "config", "cdp_connect", "timeout", "captcha",
+               "stopped", "start_url_blocked", "agent_error")
 
 
 @dataclass
@@ -75,6 +94,8 @@ class RunResult:
     errors: list[str] = field(default_factory=list)
     urls_visited: list[str] = field(default_factory=list)
     blocked_actions: list[str] = field(default_factory=list)
+    # Why the run ended badly (None on success / plain agent failure). One of ERROR_KINDS.
+    error_kind: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -157,6 +178,10 @@ class BrowserAgent:
         self._stop_requested = False
         self._paused = False
         self._bg: set[asyncio.Task] = set()
+        self._run_id = ""
+        self._main_task: asyncio.Future | None = None
+        self._sink_timeouts: dict[int, int] = {}
+        self._sinks_dropped: set[int] = set()
 
     # ---- control -------------------------------------------------------
     def _fire(self, event: Any) -> None:
@@ -189,6 +214,9 @@ class BrowserAgent:
             self._fire(StateEvent(state="running"))
 
     def stop(self) -> None:
+        """Stop the run. The current step gets ``STOP_GRACE_S`` to finish, then the in-flight
+        action (model call, browser action or pending approval) is cancelled, so a stopped run
+        ends within a few seconds and returns ``status="stopped"``."""
         self._stop_requested = True
         self._paused = False
         if self._agent is not None:
@@ -204,16 +232,33 @@ class BrowserAgent:
 
     async def _emit(self, event: Any) -> None:
         step_event = isinstance(event, StepCompletedEvent)
+        if self._run_id and getattr(event, "run_id", None) == "":
+            event.run_id = self._run_id
+        etype = getattr(event, "type", type(event).__name__)
         for sink in self.sinks:
+            key = id(sink)
+            if key in self._sinks_dropped:
+                continue
             if step_event and not getattr(sink, "wants_step_events", False):
                 continue
             try:
                 async with asyncio.timeout(SINK_TIMEOUT_S):
                     await sink(event)
+                self._sink_timeouts[key] = 0
             except TimeoutError:
-                logger.warning("event sink %r timed out after %gs; event dropped", sink, SINK_TIMEOUT_S)
+                n = self._sink_timeouts.get(key, 0) + 1
+                self._sink_timeouts[key] = n
+                if key in self._sinks_dropped:
+                    continue  # dropped by a concurrent emit while this one was waiting
+                if n >= SINK_MAX_TIMEOUTS:
+                    self._sinks_dropped.add(key)
+                    logger.warning("event sink %r timed out %d times in a row (last on %r event, limit %gs); "
+                                   "dropping it for the rest of the run", sink, n, etype, SINK_TIMEOUT_S)
+                else:
+                    logger.debug("event sink %r timed out on %r event after %gs", sink, etype, SINK_TIMEOUT_S)
             except Exception as e:  # a failing sink must never crash a run
-                logger.warning("event sink %r failed: %s", sink, self._redact(str(e)))
+                logger.warning("event sink %r failed on %r event: %s", sink, etype,
+                               self._redact(str(e)), exc_info=True)
 
     def _wants_screenshots(self) -> bool:
         return any(getattr(s, "wants_screenshots", True) for s in self.sinks)
@@ -225,17 +270,21 @@ class BrowserAgent:
         self._running = True
         self._stop_requested = False
         self._paused = False
+        self._sink_timeouts = {}
+        self._sinks_dropped = set()
         try:
             return await self._run(task, start_url)
         finally:
             self._running = False
             self._paused = False
             self._agent = None
+            self._main_task = None
 
     async def _run(self, task: str, start_url: str | None) -> RunResult:
         cfg = self.config
         provider = cfg.model.provider.lower()
         run_id = str(uuid.uuid4())
+        self._run_id = run_id
         t0 = time.monotonic()
         steps: list[StepRecord] = []
         errors: list[str] = []
@@ -256,6 +305,9 @@ class BrowserAgent:
         screenshot_stop = asyncio.Event()
         agent = None
         conn_msg: str | None = None
+        error_kind: str | None = None
+        phase = "build"
+        start_err = start_url_problem(start_url, cfg.safety) if start_url else None
         fatal: BaseException | None = None
         # Cost tracking fetches pricing data over the network. The runner honours
         # ``cfg.calculate_cost`` as-is; the field's default (True) lives in config.py.
@@ -401,19 +453,25 @@ class BrowserAgent:
             try:
                 async def _main() -> None:
                     nonlocal browser, agent, screenshot_task, history
-                    nonlocal fatal
+                    nonlocal fatal, error_msg, error_kind, phase
+                    if start_err:
+                        # Nothing is launched (no preflight, LLM or browser) for a bad start_url.
+                        error_msg, error_kind = start_err, "start_url_blocked"
+                        return
                     if self.preflight is not None:
+                        phase = "preflight"
                         try:
                             await self.preflight()
                         except (SystemExit, KeyboardInterrupt) as exc:
                             # A task would hand these to the event loop; re-raise from run() instead.
                             fatal = exc
                             return
+                        phase = "build"
                     if self._stop_requested:
                         return  # stop() during preflight: build neither the Agent nor the browser
                     llm = build_llm(cfg.model)
                     browser = build_browser_session(cfg.browser, cfg.safety)
-                    tools = GuardedTools(
+                    tool_kwargs: dict[str, Any] = dict(
                         patterns=cfg.safety.commerce_patterns,
                         gate_commerce_clicks=cfg.safety.gate_commerce_clicks,
                         allow_evaluate=cfg.safety.allow_evaluate,
@@ -421,6 +479,9 @@ class BrowserAgent:
                         approval=self.approval,
                         blocked_log=blocked,
                     )
+                    if "allow_local_network" in inspect.signature(GuardedTools.__init__).parameters:
+                        tool_kwargs["allow_local_network"] = cfg.safety.allow_local_network
+                    tools = GuardedTools(**tool_kwargs)
                     parts = [p for p in (cfg.system_prompt_extension, cfg.safety.guardrail_prompt) if p]
                     kwargs: dict[str, Any] = dict(
                         task=task,
@@ -437,6 +498,7 @@ class BrowserAgent:
                         kwargs["initial_actions"] = [{"navigate": {"url": start_url, "new_tab": False}}]
                     agent = Agent(**kwargs)
                     self._agent = agent
+                    phase = "run"
                     if self._stop_requested:
                         agent.stop()
                     if self.sinks and self._wants_screenshots():
@@ -448,6 +510,9 @@ class BrowserAgent:
                 # timeout_s covers the whole run (preflight, build, agent loop). The clock is
                 # paused while the run is paused (e.g. on_captcha="pause" waiting for a human).
                 main_task = asyncio.ensure_future(_main())
+                self._main_task = main_task
+                stop_at: float | None = None
+                stop_cancelled = False
                 deadline = time.monotonic() + cfg.timeout_s
                 last_tick = time.monotonic()
                 try:
@@ -460,9 +525,18 @@ class BrowserAgent:
                         if remaining <= 0:
                             timed_out = True
                             break
-                        if self._stop_requested and agent is None:
-                            main_task.cancel()  # stop() before the agent exists: abort preflight
+                        if self._stop_requested:
+                            stop_at = now if stop_at is None else stop_at
+                            if agent is None or now - stop_at >= STOP_GRACE_S:
+                                # Cancel the in-flight action (preflight, model call, browser
+                                # action, pending approval) instead of waiting for it.
+                                stop_cancelled = True
+                                main_task.cancel()
+                                await asyncio.wait({main_task}, timeout=TEARDOWN_TIMEOUT_S)
+                                break
                         await asyncio.wait({main_task}, timeout=min(remaining, _TICK_S))
+                    if stop_cancelled:
+                        history = getattr(agent, "history", None)
                     if timed_out:
                         error_msg = f"Session timeout ({cfg.timeout_s:g}s)"
                         if agent is not None:
@@ -473,7 +547,7 @@ class BrowserAgent:
                         main_task.cancel()
                         await asyncio.wait({main_task}, timeout=TEARDOWN_TIMEOUT_S)
                         history = getattr(agent, "history", None)
-                    elif not main_task.cancelled():
+                    elif main_task.done() and not main_task.cancelled():
                         main_task.result()  # re-raise a real failure
                     if fatal is not None:
                         raise fatal
@@ -482,7 +556,18 @@ class BrowserAgent:
                         main_task.cancel()
             except Exception as e:
                 error_msg = self._redact(f"{type(e).__name__}: {e}" if str(e) == "" else str(e))
-                error_msg = _cdp_connect_message(str(e)) or error_msg
+                cdp_msg = _cdp_connect_message(str(e))
+                error_msg = cdp_msg or error_msg
+                if cdp_msg:
+                    error_kind = "cdp_connect"
+                elif isinstance(e, ChromeNotFoundError):
+                    error_kind = "chrome_missing"
+                elif isinstance(e, PreFlightError) or phase == "preflight":
+                    error_kind = "preflight"
+                elif phase == "build" and isinstance(e, (ValueError, ValidationError)):
+                    error_kind = "config"
+                else:
+                    error_kind = "agent_error"
                 logger.warning("run %s failed: %s", run_id, error_msg)
                 if agent is not None:
                     history = getattr(agent, "history", None)
@@ -524,14 +609,19 @@ class BrowserAgent:
 
             if conn_msg and not error_msg:
                 error_msg = conn_msg
+                error_kind = "cdp_connect"
             if error_msg and not timed_out:
                 status = "error"
+                error_kind = error_kind or "agent_error"
             elif timed_out:
                 status = "timeout"
+                error_kind = "timeout"
             elif captcha_msg:
                 status = "failed"
+                error_kind = "captcha"
             elif stopped:
                 status = "stopped"
+                error_kind = "stopped"
             elif success_flag is True:
                 status = "success"
             else:
@@ -552,6 +642,7 @@ class BrowserAgent:
                 errors=errors,
                 urls_visited=urls,
                 blocked_actions=list(blocked),
+                error_kind=error_kind,
             )
         finally:
             error_msg = error_msg or captcha_msg
