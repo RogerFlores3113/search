@@ -304,6 +304,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             print(f"lba run: error: {e}", file=sys.stderr)
     if result.status == "success":
         return EXIT_OK
+    if result.error_kind == "config":
+        return EXIT_USAGE  # invalid configuration found once the run started: same code as before it
     return EXIT_ENV if result.error_kind in ENV_ERROR_KINDS else EXIT_FAILED
 
 

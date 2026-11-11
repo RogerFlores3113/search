@@ -209,10 +209,19 @@ def test_cli_environment_failures_exit_3(kind, monkeypatch):
     assert cli.main(["run", "x", "--no-preflight"]) == 3
 
 
-@pytest.mark.parametrize("kind", ["agent_error", "timeout", "config", "captcha", None])
+@pytest.mark.parametrize("kind", ["agent_error", "timeout", "captcha", None])
 def test_cli_other_failures_exit_1(kind, monkeypatch):
     async def fake(task, cfg=None, **kw):
         return RunResult(run_id="r", task=task, status="failed", success=False, errors=["x"], error_kind=kind)
 
     monkeypatch.setattr(local_browser_agent, "run_task", fake)
     assert cli.main(["run", "x", "--no-preflight"]) == 1
+
+
+def test_cli_config_error_during_run_exits_2(monkeypatch):
+    """A config error found once the run started is still a usage problem, as in ``lba eval``."""
+    async def fake(task, cfg=None, **kw):
+        return RunResult(run_id="r", task=task, status="error", success=False, errors=["bad"], error_kind="config")
+
+    monkeypatch.setattr(local_browser_agent, "run_task", fake)
+    assert cli.main(["run", "x", "--no-preflight"]) == 2

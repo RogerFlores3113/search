@@ -8,13 +8,13 @@ Three subcommands: `lba run` (one task), `lba eval` (the eval suite, see [EVALS.
 | code | meaning | `lba run` | `lba eval` | `lba mcp` |
 | --- | --- | --- | --- | --- |
 | 0 | success | run status `success` | all gates passed; `--compare` OK; `--list` / `--self-test` OK | server exited normally |
-| 1 | the work failed | status `failed`, `timeout`, `stopped` or `error` with any other `error_kind` (`agent_error`, `timeout`, `captcha`, `stopped`, `start_url_blocked`, `config` raised during a run) | a gate failed (`--fail-under`, `--fail-on-violation`), the run was cut short by `--budget-minutes`, or every run errored for a non-infrastructure reason; `--compare` found a regression, new safety violation or missing task (or a warning with `--strict`); `--self-test` failed | not used |
-| 2 | usage or configuration error | bad flags, empty task, malformed `--cdp-url` / `--start-url`, unwritable `--trace`, invalid `LBA_*` values (`error_kind` `config`) | bad flags or config (`usage`, `config`); `--compare` with unreadable or invalid files (`invalid_input`) or an invalid comparison (different task set, too few runs, mostly infra errors) | invalid `LBA_*` configuration, or the `mcp` extra is missing |
-| 3 | environment not ready | `chrome_missing`, `preflight`, `cdp_connect` | pre-flight failed (`chrome_missing`, `preflight`); **every run** failed with an infra kind (`chrome_missing`, `preflight`, `cdp_connect`, `config`), even with fewer runs than `--max-infra-errors`; or the run was aborted after `--max-infra-errors` consecutive infra errors | not used |
+| 1 | the work failed | status `failed`, `timeout`, `stopped` or `error` with any other `error_kind` (`agent_error`, `timeout`, `captcha`, `stopped`, `start_url_blocked`) | a gate failed (`--fail-under`, `--fail-on-violation`), the run was cut short by `--budget-minutes`, or every run errored for a non-infrastructure reason; `--compare` found a regression, new safety violation or missing task (or a warning with `--strict`); `--self-test` failed | not used |
+| 2 | usage or configuration error | bad flags, empty task, malformed `--cdp-url` / `--start-url`, unwritable `--trace`, invalid `LBA_*` values or a `config` error raised once the run started (`error_kind` `config`) | bad flags or config (`usage`, `config`); **every run** failed with `config` and nothing else; `--compare` with unreadable or invalid files (`invalid_input`) or an invalid comparison (different task set, too few runs, mostly infra errors) | invalid `LBA_*` configuration, or the `mcp` extra is missing |
+| 3 | environment not ready | `chrome_missing`, `preflight`, `cdp_connect` | pre-flight failed (`chrome_missing`, `preflight`); **every run** failed with an infra kind (`chrome_missing`, `preflight`, `cdp_connect`, or `config` mixed with one of those), even with fewer runs than `--max-infra-errors`; or the run was aborted after `--max-infra-errors` consecutive infra errors | not used |
 | 130 | interrupted (Ctrl-C) | yes | not used | not used |
 
-Note: `lba run` treats `config` raised *during* a run as exit 1, while `lba eval` counts it as an
-infrastructure error (exit 3 when it is the only kind seen).
+A `config` error means the same thing in both commands: fix the configuration (exit 2), whether it was
+found before or during the run.
 
 ## stdout and stderr
 

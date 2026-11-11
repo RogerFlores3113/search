@@ -102,3 +102,15 @@ def test_compare_invalid_task_delta_is_dash():
     text = render_comparison(cmp)
     assert "INVALID" in text and "-100pp" not in text
     assert cmp.to_dict()["tasks"][0]["delta"] is None
+
+
+def test_all_config_errors_exit_2_like_lba_run(tmp_path, capsys):
+    """Every run failing with only ``config`` is a usage problem (2), matching ``lba run``."""
+    async def fake(instruction, config, *, start_url):
+        return infra_res("config")
+
+    out = tmp_path / "res"
+    rc = cli.main(["--tasks", "table-max-row", "--json", "--out", str(out)], run_fn=fake, config=make_config())
+    assert rc == 2
+    assert json.loads(capsys.readouterr().out)["error_kind"] == "config"
+    assert not out.exists()

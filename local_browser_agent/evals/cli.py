@@ -418,7 +418,9 @@ def main(
             errors = [f"every run failed with {', '.join(infra_kinds)}; no valid results"]
         if not args.quiet:
             _print_summary(result, human)
-        return _fail(args, EXIT_ENV, infra_kinds[0], errors,
+        # Only bad configuration: a usage problem (exit 2), as in ``lba run``; anything else is the environment (3).
+        code = EXIT_USAGE if infra_kinds == ["config"] else EXIT_ENV
+        return _fail(args, code, infra_kinds[0], errors,
                      error_kinds=infra_kinds if len(infra_kinds) > 1 else None)
     out_path = str(out_dir.resolve())
     if not args.quiet:
