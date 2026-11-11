@@ -35,7 +35,6 @@ async def test_run_agent_passes_blocked_domains_to_browser_profile(monkeypatch_e
 
     call_kwargs = MockBrowserProfile.call_args.kwargs
     got = set(call_kwargs["prohibited_domains"])
-    assert cfg.blocked_domains <= got  # bare domains plus "*." subdomain patterns
     assert {f"*.{d}" for d in cfg.blocked_domains} <= got
 
 

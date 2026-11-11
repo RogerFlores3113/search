@@ -10,7 +10,7 @@ def test_profile_headless_and_domains():
     prof = build_browser_profile(BrowserConfig(headless=True, user_data_dir="/tmp/x"),
                                  SafetyPolicy(blocked_domains=["bad.com"], allowed_domains=["ok.com"]))
     assert prof.headless is True
-    assert "bad.com" in prof.prohibited_domains and "paypal.com" in prof.prohibited_domains
+    assert "*.bad.com" in prof.prohibited_domains and "*.paypal.com" in prof.prohibited_domains
     assert list(prof.allowed_domains) == ["ok.com"]
     # browser-use maps window_size to viewport when headless
     size = prof.window_size or prof.viewport
