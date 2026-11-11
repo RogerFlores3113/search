@@ -263,14 +263,14 @@ class _AppQueueSink(QueueSink):
 
     async def __call__(self, event) -> None:
         if isinstance(event, ModelInfoEvent):
-            event = ModelInfoEvent(provider=self._label, model_name=event.model_name)
+            event = ModelInfoEvent(provider=self._label, model_name=event.model_name, run_id=event.run_id)
         elif self._stopped_before_start():
             # Stop pressed during pre-flight is the user's choice, not a failure: no red
             # error, and the state ends as "stopped" (matching the history row).
             if isinstance(event, ErrorEvent):
                 return
             if isinstance(event, StateEvent) and event.state in ("error", "complete"):
-                event = StateEvent(state="stopped")
+                event = StateEvent(state="stopped", run_id=event.run_id)
         await super().__call__(event)
 
 

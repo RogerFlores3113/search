@@ -1,34 +1,63 @@
 """Frozen-aware path resolution for local-browser-agent (DIST-01).
 
-Dev mode:   ./data/  (relative to project root, current behavior)
-Frozen app: ~/Library/Application Support/local-browser-agent/
+Data directory, first match wins:
+  1. $LBA_DATA_DIR (any mode)
+  2. Frozen app, or a pip/wheel install: platformdirs.user_data_dir("local-browser-agent")
+  3. Source checkout (the package's parent directory holds this project's pyproject.toml):
+     <repo>/data, independent of the current working directory
 
 Source: PyInstaller runtime-information docs + platformdirs docs
 See: .planning/phases/04-distribution/04-RESEARCH.md Pattern 1
 """
 from __future__ import annotations
 
+import os
 import secrets
 import sys
 from pathlib import Path
 
 APP_NAME = "local-browser-agent"
+DATA_DIR_ENV = "LBA_DATA_DIR"
+
+
+def _source_checkout_root() -> Path | None:
+    """The project root when running from a source checkout, else None."""
+    root = Path(__file__).resolve().parent.parent.parent
+    pyproject = root / "pyproject.toml"
+    try:
+        if not pyproject.is_file():
+            return None
+        text = pyproject.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    import re
+    if re.search(r'^\s*name\s*=\s*["\']local-browser-agent["\']', text, re.MULTILINE):
+        return root
+    return None
 
 
 def get_user_data_dir() -> Path:
-    """Return writable data directory.
+    """Return writable data directory (history.db, secret.bin, training/runs.jsonl).
 
-    Dev mode:   ./data/  (relative to project root, current behavior)
-    Frozen app: ~/Library/Application Support/local-browser-agent/
-                (or platform equivalent via platformdirs)
+    Resolution order:
+      1. ``LBA_DATA_DIR`` environment variable, in every mode.
+      2. Frozen app or installed package: ``platformdirs.user_data_dir`` (for example
+         ~/Library/Application Support/local-browser-agent/ on macOS,
+         ~/.local/share/local-browser-agent/ on Linux).
+      3. Source checkout: ``<repo>/data`` (absolute, so the current directory does not matter).
 
     Always calls mkdir(parents=True, exist_ok=True) so callers never have to.
     """
-    if getattr(sys, "frozen", False):
-        from platformdirs import user_data_dir
-        base = Path(user_data_dir(APP_NAME))
+    override = os.environ.get(DATA_DIR_ENV, "").strip()
+    if override:
+        base = Path(override).expanduser().resolve()
     else:
-        base = Path("data")
+        checkout = None if getattr(sys, "frozen", False) else _source_checkout_root()
+        if checkout is not None:
+            base = checkout / "data"
+        else:
+            from platformdirs import user_data_dir
+            base = Path(user_data_dir(APP_NAME))
     base.mkdir(parents=True, exist_ok=True)
     return base
 

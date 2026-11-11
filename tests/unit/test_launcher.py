@@ -34,10 +34,13 @@ def test_schedule_browser_open_calls_webbrowser(monkeypatch):
     assert opened_urls == ["http://127.0.0.1:8080"]
 
 
-def test_main_redirects_paths_when_frozen(monkeypatch):
+def test_main_redirects_paths_when_frozen(monkeypatch, tmp_path):
     """When sys.frozen=True, calling main() triggers path redirect side-effects."""
     import importlib
     import platformdirs
+
+    monkeypatch.delenv("LBA_DATA_DIR", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
 

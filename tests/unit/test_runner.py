@@ -302,22 +302,19 @@ async def test_run_agent_skips_browser_when_preflight_exits(monkeypatch):
 # FastAPI lifespan creates agent task when pending_task is set
 # ---------------------------------------------------------------------------
 
-async def test_lifespan_creates_agent_task_when_pending_task_set(monkeypatch):
-    """FastAPI lifespan must call run_agent with pending_task via asyncio.create_task."""
+async def test_lifespan_does_not_start_boot_task_itself(monkeypatch):
+    """The boot task starts from the first page load via the tracked path, not in lifespan."""
     from local_browser_agent.app.main import app, lifespan
 
     run_agent_mock = AsyncMock()
     monkeypatch.setattr("local_browser_agent.app.main.run_agent", run_agent_mock)
-
-    app.state.pending_task = "test task"
+    monkeypatch.setattr(app.state, "pending_task", "test task", raising=False)
 
     async with lifespan(app):
-        # yield happens — give the created task a chance to start
         await asyncio.sleep(0)
 
-    run_agent_mock.assert_awaited_once()
-    assert run_agent_mock.await_args.args == ("test task",)
-    assert callable(run_agent_mock.await_args.kwargs["on_agent"])  # pause/stop reach the run
+    run_agent_mock.assert_not_awaited()
+    assert app.state.pending_task == "test task"
 
 
 # ---------------------------------------------------------------------------
