@@ -16,6 +16,7 @@ from local_browser_agent.safety import (
     SAFETY_DEFAULTS,
     allowed_matches_blocked,
     normalize_allowed_domain,
+    normalize_blocked_domain,
 )
 
 
@@ -174,7 +175,8 @@ class BrowserConfig(BaseModel):
 
 
 def _norm_domain(d: Any) -> str:
-    return str(d).strip().lower().rstrip(".")
+    """Normalised blocked domain; "" for a blank entry, ValueError for one with no valid host."""
+    return normalize_blocked_domain(d) if str(d).strip() else ""
 
 
 class SafetyPolicy(BaseModel):

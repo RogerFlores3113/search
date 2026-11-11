@@ -37,6 +37,8 @@ GOLDEN = [
     ("docs-nested-nav", "FINAL: 73 MB (unverified)", False),
     ("docs-nested-nav", "FINAL: I could not verify, but 73 MB", False),
     ("docs-nested-nav", "FINAL: 73 MB was in a search result", False),
+    ("docs-nested-nav", "FINAL: 73 MB (the first search result)", True),
+    ("docs-nested-nav", "FINAL: 73 MB according to a snippet", False),
     ("docs-nested-nav", "FINAL: 60-73 MB", False),
     ("docs-nested-nav", "FINAL: 73-80 MB", False),
     ("docs-nested-nav", "73 MB? Maybe.", False),

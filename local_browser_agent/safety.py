@@ -250,6 +250,20 @@ _HOST_DOTS = str.maketrans({"\u3002": ".", "\uff0e": ".", "\uff61": ".", "\u2024
 _HOST_FORBIDDEN_RE = re.compile(r"[\s/\\?#@%<>^|\"'`{}\[\]]")
 
 
+def _idna_encode(h: str) -> str:
+    """IDNA-encode like Chrome (UTS46 non-transitional, so ``ß`` stays ``xn--zca``) when ``idna`` is available."""
+    if h.isascii():
+        return h.encode("idna").decode("ascii")
+    try:
+        import idna  # noqa: PLC0415
+    except ImportError:
+        return h.encode("idna").decode("ascii")
+    try:
+        return idna.encode(h, uts46=True, transitional=False).decode("ascii")
+    except idna.IDNAError as e:
+        raise UnicodeError(str(e)) from e
+
+
 def canonical_host(host: str | None) -> str | None:
     """Canonical form of a URL host, the way Chrome resolves it. None when it cannot be canonicalised.
 
@@ -281,8 +295,8 @@ def canonical_host(host: str | None) -> str | None:
     if not h or _HOST_FORBIDDEN_RE.search(h) or any(unicodedata.category(c) in ("Cc", "Zs", "Zl", "Zp") for c in h):
         return None
     try:
-        h = h.encode("idna").decode("ascii")
-    except UnicodeError:
+        h = _idna_encode(h)
+    except (UnicodeError, ValueError):
         return None
     return h.lower().rstrip(".") or None
 
@@ -340,6 +354,40 @@ def normalize_allowed_domain(raw: Any) -> str:
         raise ValueError(f"allowed domain {raw!r} is a public suffix that covers unrelated sites; "
                          "name a specific site like 'example.co.uk'")
     return ("*." + host) if wildcard else host
+
+
+def normalize_blocked_domain(raw: Any) -> str:
+    """Normalise a blocked-domain entry to a bare canonical (punycode) hostname.
+
+    Scheme, userinfo, port, path, query, fragment, a ``*.`` / ``.`` prefix and trailing dots are
+    stripped, so ``"*.evil.com"``, ``"https://evil.com/x"`` and ``"evil.com:8080"`` all become
+    ``"evil.com"``.
+
+    Raises:
+        ValueError: when no valid host remains.
+    """
+    d = str(raw).strip().lower()
+    d = _SCHEME_RE.sub("", d)
+    for sep in "/\\?#":
+        d = d.split(sep, 1)[0]
+    d = d.rsplit("@", 1)[-1]
+    if not d.startswith("["):
+        d = re.sub(r":\d*$", "", d)
+    d = d.rstrip(".")
+    while d.startswith(("*.", ".")):
+        d = d[2:] if d.startswith("*.") else d[1:]
+    canon = canonical_host(d) if d else None
+    if not canon or "*" in canon:
+        raise ValueError(f"blocked domain {raw!r} has no valid hostname")
+    return canon
+
+
+def try_normalize_blocked_domain(raw: Any) -> str | None:
+    """Like :func:`normalize_blocked_domain` but returns None for an empty or invalid entry."""
+    try:
+        return normalize_blocked_domain(raw)
+    except ValueError:
+        return None
 
 
 def host_is_blocked(host: str | None, blocked: Iterable[str]) -> bool:
@@ -579,6 +627,9 @@ def is_commerce_url(url: str | None, broad: bool = False) -> bool:
     if joined[0] == "subscribe":  # /subscribe/pro, /subscribe/plan/annual, ...
         return len(rest) <= 3
     return len(rest) == 1 and (rest[0] in _URL_ROOT_ACTIONS or bool(_ID_RE.match(segments[1].casefold())))
+
+
+_TARGET_DEPTH = 8  # ancestor levels inspected for link/form destinations on a click
 
 
 def _attrs(node: Any) -> dict[str, str]:
@@ -870,8 +921,24 @@ _LIVE_JS = """function() {
   if (typeof el.value === 'string' && el.value && ['submit', 'button', 'image', 'reset'].includes(t)) a.value = el.value.slice(0, 300);
   const f = el.closest ? el.closest('form') : null;
   const txt = String(el.innerText || el.textContent || '').slice(0, 300);
-  return JSON.stringify({tag: String(el.tagName || '').toLowerCase(), attrs: a, text: txt, form: f ? attrs(f) : null});
+  const chain = [];
+  const keep = ['href', 'formaction', 'data-href', 'action', 'type'];
+  let p = el.parentElement;
+  for (let i = 0; p && i < 8; i++, p = p.parentElement) {
+    const o = {}; for (const k of keep) if (p.hasAttribute && p.hasAttribute(k)) o[k] = String(p.getAttribute(k)).slice(0, 2000);
+    chain.push({tag: String(p.tagName || '').toLowerCase(), attrs: o});
+  }
+  return JSON.stringify({tag: String(el.tagName || '').toLowerCase(), attrs: a, text: txt, form: f ? attrs(f) : null, chain: chain});
 }"""
+
+
+def _walk_up(node: Any):
+    cur = node
+    for _ in range(40):
+        if cur is None:
+            return
+        yield cur
+        cur = getattr(cur, "parent_node", None)
 
 
 def _node_from_live(data: dict[str, Any]) -> Any:
@@ -880,8 +947,19 @@ def _node_from_live(data: dict[str, Any]) -> Any:
         form = SimpleNamespace(node_name="form", attributes=data["form"], ax_node=None, node_value="",
                                parent_node=None, get_all_children_text=lambda: "")
     text = str(data.get("text") or "")
+    parent = form
+    chain = data.get("chain")
+    if isinstance(chain, list):  # ancestors, nearest first; rebuild the parent links (closest form kept)
+        parent = None
+        for item in reversed([c for c in chain if isinstance(c, dict)]):
+            parent = SimpleNamespace(node_name=str(item.get("tag") or ""), attributes=dict(item.get("attrs") or {}),
+                                     ax_node=None, node_value="", parent_node=parent,
+                                     get_all_children_text=lambda: "")
+        if form is not None and not any(_tag(c) == "form" for c in _walk_up(parent)):
+            form.parent_node = parent
+            parent = form
     return SimpleNamespace(node_name=str(data.get("tag") or ""), attributes=dict(data.get("attrs") or {}),
-                           ax_node=None, node_value="", parent_node=form, get_all_children_text=lambda: text)
+                           ax_node=None, node_value="", parent_node=parent, get_all_children_text=lambda: text)
 
 
 async def _read_live_object(cdp: Any, object_id: str) -> Any:
@@ -980,7 +1058,8 @@ class GuardedTools(Tools):
         self._lba_allow_evaluate = allow_evaluate
         self._lba_allow_local = allow_local_network
         self._lba_approval_timeout = approval_timeout_s if approval_timeout_s and approval_timeout_s > 0 else None
-        self._lba_blocked = frozenset(SAFETY_DEFAULTS | {str(d).strip().lower().rstrip(".") for d in blocked_domains})
+        self._lba_blocked = frozenset(
+            SAFETY_DEFAULTS | {n for d in blocked_domains if (n := try_normalize_blocked_domain(d))})
         self._lba_warned_no_live = False
         self._lba_text_focus = False  # last known focused element was a text field
         self.blocked_actions: list[str] = blocked_log if blocked_log is not None else []
@@ -1038,8 +1117,6 @@ class GuardedTools(Tools):
             finally:
                 if task is not None and not task.done():
                     task.cancel()
-        if approved:
-            return None
         if approved:
             return None
         self.blocked_actions.append(desc)
@@ -1113,17 +1190,31 @@ class GuardedTools(Tools):
 
     @staticmethod
     def _lba_targets(node: Any) -> list[str]:
-        """href / formaction / form action values on a click target (and its form)."""
+        """href / formaction / data-href / form action values on a click target and on its ancestors.
+
+        A click on a child (``<span>``, ``<img>``) of a link or button activates it, so the chain is
+        walked up to ``_TARGET_DEPTH`` levels; a submit control found on the way also contributes its form's
+        ``action``.
+        """
         out: list[str] = []
-        for key in ("href", "formaction", "data-href"):
-            v = _attrs(node).get(key)
-            if isinstance(v, str) and v.strip():
-                out.append(v)
-        form = _ancestor_form(node) if _is_submit_like(node) else None
-        if form is not None:
-            v = _attrs(form).get("action")
-            if isinstance(v, str) and v.strip():
-                out.append(v)
+        cur = node
+        for _ in range(_TARGET_DEPTH):
+            if cur is None:
+                break
+            for key in ("href", "formaction", "data-href"):
+                v = _attrs(cur).get(key)
+                if isinstance(v, str) and v.strip():
+                    out.append(v)
+            if _tag(cur) == "form":
+                v = _attrs(cur).get("action")
+                if isinstance(v, str) and v.strip():
+                    out.append(v)
+            elif _is_submit_like(cur):
+                form = _ancestor_form(cur)
+                v = _attrs(form).get("action") if form is not None else None
+                if isinstance(v, str) and v.strip():
+                    out.append(v)
+            cur = getattr(cur, "parent_node", None)
         return out
 
     async def _lba_blocked_click(self, action: Any, browser_session: Any) -> ActionResult | None:
@@ -1295,11 +1386,10 @@ class GuardedTools(Tools):
                                  url=url, reason=reason)
         if name in INPUT_ACTIONS:
             text = params.get("text")
-            if not isinstance(text, str) or not _TRAILING_NEWLINE_RE.search(text):
-                self._lba_text_focus = True  # typing needs a focused text field
-                return None
             node, ok = await self._lba_node(params, browser_session)
-            self._lba_text_focus = ok
+            self._lba_text_focus = ok and _is_text_field(node)
+            if not isinstance(text, str) or not _TRAILING_NEWLINE_RE.search(text):
+                return None
             url, url_ok = await self._lba_url(browser_session)
             if not ok:
                 reason = "input target could not be resolved (failing closed)"

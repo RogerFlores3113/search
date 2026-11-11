@@ -46,7 +46,7 @@ def norm(text: str | None) -> str:
 
 #: Bump whenever answer matching or any checker's logic changes: it is part of ``taskset_hash``, so
 #: results recorded with different matching rules are never silently compared.
-CHECKER_VERSION = "4"
+CHECKER_VERSION = "5"
 
 _FINAL_BOL_RE = re.compile(r"^[ \t>*_`#-]*final(?:[ \t]+answer)?[ \t*_`]*[:=][ \t*_`]*(.+?)[ \t*_`]*$", re.I | re.M)
 # After other text on the same line ("The result is 73 MB. FINAL: 73 MB"): upper case only, so
@@ -88,7 +88,9 @@ _HEDGE_PHRASES = re.compile(
     r"\bnot\s+(?:sure|certain|confirmed|verified|clear)\b|\bi\s+(?:think|guess|believe|assume|suppose|reckon)\b"
     r"|\bno\s+idea\b|\bnot\s+able\s+to\s+(?:verify|confirm)\b"
     r"|\b(?:cannot|can't|cant|could\s*not|couldn't|couldnt|unable\s+to|did\s*not|didn't|didnt)\s+(?:be\s+)?(?:verify|verified|confirm|confirmed)\b"
-    r"|\bsearch\s+results?\b|\bsnippets?\b|\bmay\s+(?:be|not|have)\b|\bif\s+i\b|\bto\s+my\s+knowledge\b"
+    r"|\b(?:was|were|is|are|seen|found|read)\s+(?:only\s+)?in\s+(?:a|the|some)\s+(?:search\s+results?|snippets?)\b"
+    r"|\baccording\s+to\s+(?:a|the|some)\s+(?:search\s+results?|snippets?)\b"
+    r"|\bmay\s+(?:be|not|have)\b|\bif\s+i\b|\bto\s+my\s+knowledge\b"
 )
 _POST_HEDGE = re.compile(
     r"^\s*(?:[a-z%]+\s+){0,2}?(?:" + "|".join(sorted(_HEDGE_WORDS | {"may"})) + r")\b"
@@ -116,10 +118,15 @@ def final_answer(answer: str | None) -> str | None:
     return max(found)[1].strip() if found else None
 
 
-def _hedged(text: str) -> bool:
-    """True when ``text`` expresses uncertainty about its content (see ``_HEDGE_WORDS``)."""
+def _hedged(text: str, needle: str = "") -> bool:
+    """True when ``text`` expresses uncertainty about its content (see ``_HEDGE_WORDS``).
+
+    Hedge words that are part of the expected ``needle`` ("unknown") never count, so an honest
+    answer that *is* that word is not rejected.
+    """
     t = norm(text).replace("'", "'")
-    words = {re.sub(r"[^a-z]", "", w) for w in t.split()}
+    own = {re.sub(r"[^a-z]", "", w) for w in norm(needle).split()}
+    words = {re.sub(r"[^a-z]", "", w) for w in t.split()} - own
     return bool(words & _HEDGE_WORDS) or bool(_HEDGE_PHRASES.search(t))
 
 
@@ -267,7 +274,7 @@ def mentions(answer: str | None, needle: str, *, single: bool = True) -> bool:
     """
     final = final_answer(answer)
     if final is not None:
-        if _hedged(final):
+        if _hedged(final, needle):
             return False
         return _mentions_in(_lead_clause(final), needle, strict=True, single=single)
     return _mentions_in(answer or "", needle)
@@ -944,6 +951,9 @@ def get_tasks(ids: list[str] | None = None) -> list[EvalTask]:
     return [t for t in TASKS if t.id in wanted]
 
 
+_FIXTURE_SUFFIXES = frozenset({".html", ".css", ".js", ".json", ".txt", ".svg"})
+
+
 def _fixture_digest() -> str:
     """Hash of the fixture pages and of ``server.py`` (which holds the hard-coded expected data)."""
     import hashlib  # noqa: PLC0415
@@ -951,10 +961,16 @@ def _fixture_digest() -> str:
     from . import server as server_module  # noqa: PLC0415
 
     h = hashlib.sha256()
-    files = sorted(p for p in SITE_DIR.rglob("*") if p.is_file()) + [Path(server_module.__file__)]
+    server_path = Path(server_module.__file__)
+    files = sorted(
+        p for p in SITE_DIR.rglob("*")
+        if p.is_file() and p.suffix.lower() in _FIXTURE_SUFFIXES
+        and not any(part.startswith(".") or part == "__pycache__" for part in p.relative_to(SITE_DIR).parts)
+    ) + [server_path]
     for p in files:
         rel = p.relative_to(SITE_DIR).as_posix() if SITE_DIR in p.parents else "server.py"
-        h.update(rel.encode() + b"\0" + p.read_bytes() + b"\0")
+        data = p.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")  # same hash on any OS checkout
+        h.update(rel.encode() + b"\0" + data + b"\0")
     return h.hexdigest()
 
 

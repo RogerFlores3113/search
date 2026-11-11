@@ -16,6 +16,7 @@ from local_browser_agent.safety import (
     canonical_host,
     host_is_blocked,
     normalize_allowed_domain,
+    try_normalize_blocked_domain,
 )
 
 # Non-web schemes the agent must never reach (chrome://settings/passwords, extensions, devtools).
@@ -86,7 +87,7 @@ def start_url_problem(url: str, safety: SafetyPolicy) -> str | None:
 
 
 def _norm_domain(d: str) -> str:
-    return str(d).strip().lower().rstrip(".").removeprefix("*.")
+    return try_normalize_blocked_domain(d) or ""
 
 
 def blocked_patterns(blocked_domains) -> list[str]:

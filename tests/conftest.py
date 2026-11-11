@@ -8,7 +8,7 @@ import pytest
 
 # Module-level data paths (db.DB_PATH, training_sink.TRAINING_FILE) are computed at import
 # time: point them at a throwaway directory so the suite never touches <repo>/data.
-os.environ.setdefault("LBA_DATA_DIR", tempfile.mkdtemp(prefix="lba-test-data-"))
+os.environ["LBA_DATA_DIR"] = tempfile.mkdtemp(prefix="lba-test-data-")
 
 
 @pytest.fixture(autouse=True)
