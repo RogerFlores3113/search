@@ -196,7 +196,8 @@ async def test_live_read_failure_fails_closed_only_if_ambiguous(base_act):
     amb = Node("button", {"type": "submit"}, "")
     amb.backend_node_id = 7
     assert (await run(Act(click={"index": 1}), LiveSession({1: amb}, {}, fail=True)))[1].error
-    assert (await run(Act(click={"index": 1}), LiveSession({1: _cached()}, {}, fail=True)))[1].extracted_content == "ok"
+    # A failed live read on a normal button now fails closed too (a hostile page can make the read throw).
+    assert (await run(Act(click={"index": 1}), LiveSession({1: _cached()}, {}, fail=True)))[1].error
 
 
 # ---- navigation guard ------------------------------------------------------------------------
@@ -222,7 +223,7 @@ def test_local_denied_unless_allowed(url):
 
 
 @pytest.mark.parametrize("url", [
-    "https://example.com/", "http://8.8.8.8/", "about:blank", "https://172.32.0.1/", "https://[2606:4700::1111]/",
+    "https://example.com/", "about:blank",
     "example.com/path", "https://notlocalhost.com/", "https://localhost.example.com/",
 ])
 def test_public_allowed(url):

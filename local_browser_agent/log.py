@@ -100,7 +100,8 @@ def configure_logging(level: str = "warning", *, color: bool | None = None,
             color = sys.stderr.isatty()
         except Exception:
             color = False
-    # browser-use reads this when it is first imported.
+    # browser-use reads this only when its own logging setup runs (BROWSER_USE_SETUP_LOGGING is
+    # off by default here); the levels below are what actually applies.
     os.environ["BROWSER_USE_LOGGING_LEVEL"] = tp if tp in ("debug", "info") else "result"
     try:
         import browser_use.logging_config  # noqa: F401  (importing browser_use sets up its handlers)

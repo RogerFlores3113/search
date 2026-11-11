@@ -62,6 +62,7 @@ environment); a missing key is reported by `check_provider` / `build_llm` and na
 | `LBA_BLOCKED_DOMAINS` | comma list | unset | extra blocked domains (added to `SAFETY_DEFAULTS`) |
 | `LBA_ALLOW_EVALUATE` | bool | `false` | let the agent run page JavaScript without approval (off by default because scripts can submit forms) |
 | `LBA_ALLOW_LOCAL_NETWORK` | bool | `false` | let the browser reach localhost, private and link-local addresses (see Safety policy) |
+| `LBA_APPROVAL_TIMEOUT_S` | float (>= 0) | `120` | seconds to wait for an approval before the gated action is denied; `0` waits forever |
 | `LBA_ALLOW_TELEMETRY` | `1` | unset | read at import; `1` stops the import from forcing telemetry / cloud-sync / cost-map settings off |
 
 Booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. By default importing the package forces
@@ -118,14 +119,20 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 
 ## Safety policy
 
-`SafetyPolicy(blocked_domains, allowed_domains=None, guardrail_prompt=GUARDRAIL_PROMPT, gate_commerce_clicks=True, commerce_patterns=[...], allow_evaluate=False, allow_local_network=False)`
+`SafetyPolicy(blocked_domains, allowed_domains=None, guardrail_prompt=GUARDRAIL_PROMPT, gate_commerce_clicks=True, commerce_patterns=[...], allow_evaluate=False, allow_local_network=False, approval_timeout_s=120.0)`
 
-- **`allow_local_network=False` (default)** keeps the agent's browser off your machine and LAN: `localhost`,
-  `*.localhost` and **every IP-address URL** are blocked (loopback such as the local web app on `127.0.0.1:8080`,
-  private ranges, router admin pages, cloud metadata at `169.254.169.254`). browser-use cannot tell private from
-  public IP literals, so `http://8.8.8.8/` is blocked too; use hostnames. A local `start_url` or `allowed_domains`
+- **`allow_local_network=False` (default)** keeps the agent's browser off your machine and LAN. The block covers
+  IP literals (every IP-address URL, public ones such as `http://8.8.8.8/` included: use a hostname, or set
+  `allow_local_network=True` / `LBA_ALLOW_LOCAL_NETWORK=1`), `localhost`, the local suffixes `*.localhost`, `*.local`,
+  `*.internal`, `*.lan`, `*.home.arpa`, `*.localdomain`, `*.intranet`, and single-label names such as `intranet` or
+  `printer`. Suffixes are blocked in the browser profile (so link clicks and redirects are covered) and in the
+  navigation tool. **Not caught:** DNS names that resolve to private addresses (e.g. `nip.io`-style names), because no
+  DNS lookups are done. Use `allowed_domains` when you need strict isolation. A local `start_url` or `allowed_domains`
   entry is rejected unless you set `allow_local_network=True` (`LBA_ALLOW_LOCAL_NETWORK=1`), which is meant for
   local test fixtures and dev servers (the eval suite turns it on for its fixture server).
+- **`approval_timeout_s=120.0`** is how long a gated action waits for the approval callback; on timeout it is denied.
+  `None` or `0` waits forever; negative values are rejected. A `TimeoutError` raised by the callback itself is reported as
+  "approval callback failed", not as a timeout.
 - **Non-web schemes:** `chrome://`, `chrome-extension://`, `devtools://` and similar are blocked at the browser layer,
   and `file:` / `view-source:` are rejected by browser-use (no hostname). browser-use always allows `data:` and `blob:`
   URLs; those are only stopped by the tool-layer navigation gate, not by the browser profile.

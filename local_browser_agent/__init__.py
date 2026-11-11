@@ -18,8 +18,10 @@ else:
     os.environ.setdefault("BROWSER_USE_CLOUD_SYNC", "false")
     os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 # browser-use's package import otherwise replaces the root logger's handlers with a
-# StderrHandler(INFO). Skip that unless the user chose a value; the CLI (log.py) opts back in
-# with BROWSER_USE_SETUP_LOGGING=true / browser_use.logging_config.setup_logging().
+# StderrHandler(INFO). Skip that unless the user chose a value. With setup disabled,
+# BROWSER_USE_LOGGING_LEVEL has no effect; the CLI / MCP entry points call
+# log.configure_logging(), which installs its own stderr handler on the browser_use loggers and
+# sets their level directly.
 os.environ.setdefault("BROWSER_USE_SETUP_LOGGING", "false")
 
 try:

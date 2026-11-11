@@ -480,6 +480,7 @@ class BrowserAgent:
                         approval=self.approval,
                         blocked_log=blocked,
                         allow_local_network=cfg.safety.allow_local_network,
+                        approval_timeout_s=cfg.safety.approval_timeout_s,
                     )
                     tools = GuardedTools(**tool_kwargs)
                     parts = [p for p in (cfg.system_prompt_extension, cfg.safety.guardrail_prompt) if p]

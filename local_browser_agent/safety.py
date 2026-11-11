@@ -598,7 +598,8 @@ _TRAILING_NEWLINE_RE = re.compile(r"[\r\n]\s*\Z")
 # --- Navigation guard --------------------------------------------------------------------
 _OPAQUE_SCHEME_RE = re.compile(r"^([a-z][a-z0-9+.\-]*):", re.IGNORECASE)
 _HOSTPORT_RE = re.compile(r"^\d+(?:[/?#]|$)")
-_LOCAL_SUFFIXES = (".localhost", ".local", ".internal", ".localdomain", ".home.arpa")
+_LOCAL_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".localdomain", ".home.arpa", ".intranet")
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
 
 
 def _parse_loose_ipv4(host: str) -> ipaddress.IPv4Address | None:
@@ -628,22 +629,70 @@ def _parse_loose_ipv4(host: str) -> ipaddress.IPv4Address | None:
     return ipaddress.IPv4Address(value)
 
 
+def _parse_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    h = host.strip().lower().rstrip(".").strip("[]")
+    try:
+        return ipaddress.ip_address(h)
+    except ValueError:
+        return _parse_loose_ipv4(h)
+
+
 def _host_is_local(host: str) -> bool:
     h = host.strip().lower().rstrip(".")
     if not h:
         return True
     if h == "localhost" or h.endswith(_LOCAL_SUFFIXES):
         return True
-    ip: ipaddress.IPv4Address | ipaddress.IPv6Address | None
-    try:
-        ip = ipaddress.ip_address(h)
-    except ValueError:
-        ip = _parse_loose_ipv4(h)
+    ip = _parse_ip(h)
     if ip is None:
-        return False
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+        return "." not in h and ":" not in h  # single-label names (intranet, printer) resolve on the LAN
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip in _NAT64:  # 64:ff9b::/96 embeds an IPv4 address in the low 32 bits
+            ip = ipaddress.IPv4Address(ip.packed[-4:])
     return not ip.is_global or ip.is_multicast
+
+
+def navigation_candidate(dest: str) -> tuple[str | None, str | None]:
+    """Normalise ``dest`` the way Chrome does. Returns ``(candidate_url, denial)``.
+
+    Backslashes become slashes, control characters are dropped, extra slashes after the scheme
+    are collapsed and a schemeless address counts as ``https://``. ``candidate_url`` is None for
+    ``about:blank`` (always allowed) and when ``denial`` is set (non-http(s) scheme or unparsable).
+    """
+    raw = "".join(c for c in dest if unicodedata.category(c) != "Cc").strip().replace("\\", "/")
+    if not raw or raw.lower() in ("about:blank", "about:blank#"):
+        return None, None
+    m = _OPAQUE_SCHEME_RE.match(raw)
+    if m and not _HOSTPORT_RE.match(raw[m.end():]):
+        scheme = m.group(1).lower()
+        if scheme not in ("http", "https"):
+            return None, (f"Blocked by safety policy: {scheme}: URLs are not allowed. "
+                          "Only http(s) websites can be opened; choose another page.")
+        candidate = f"{scheme}://" + raw[m.end():].lstrip("/")
+    elif raw.startswith("//"):
+        candidate = "https:" + raw
+    else:
+        candidate = "https://" + raw  # schemeless or host:port
+    try:
+        host = urlsplit(candidate).hostname
+    except ValueError:
+        host = None
+    if not host:
+        return None, "Blocked by safety policy: the address could not be parsed. Choose another page."
+    return candidate, None
+
+
+def navigation_host(dest: str) -> str | None:
+    """Hostname Chrome would navigate to for ``dest`` (None when none can be determined)."""
+    candidate, _ = navigation_candidate(dest)
+    if candidate is None:
+        return None
+    try:
+        return urlsplit(candidate).hostname
+    except ValueError:
+        return None
 
 
 def navigation_denial(dest: str, allow_local_network: bool = False) -> str | None:
@@ -651,32 +700,23 @@ def navigation_denial(dest: str, allow_local_network: bool = False) -> str | Non
 
     Non-http(s) schemes (chrome://, file:, data:, javascript:, view-source:, devtools://, about:
     other than about:blank, ...) are always denied. Loopback, private, link-local and other
-    non-public addresses (literal IPs only, no DNS lookups) are denied unless
-    ``allow_local_network`` is True.
+    non-public addresses (IP literals, localhost, ``*.local``-style suffixes and single-label
+    names; no DNS lookups) are denied unless ``allow_local_network`` is True, which also lifts the
+    blanket ban on IP-address URLs.
     """
-    raw = "".join(c for c in dest if unicodedata.category(c) != "Cc").strip().replace("\\", "/")
-    if not raw or raw.lower() in ("about:blank", "about:blank#"):
+    candidate, denial = navigation_candidate(dest)
+    if denial is not None:
+        return denial
+    if candidate is None:
         return None
-    m = _OPAQUE_SCHEME_RE.match(raw)
-    if m and not _HOSTPORT_RE.match(raw[m.end():]):
-        scheme = m.group(1).lower()
-        if scheme not in ("http", "https"):
-            return (f"Blocked by safety policy: {scheme}: URLs are not allowed. "
-                    "Only http(s) websites can be opened; choose another page.")
-        candidate = f"{scheme}://" + raw[m.end():].lstrip("/")
-    elif raw.startswith("//"):
-        candidate = "https:" + raw
-    else:
-        candidate = "http://" + raw  # schemeless or host:port
-    try:
-        host = urlsplit(candidate).hostname
-    except ValueError:
-        return "Blocked by safety policy: the address could not be parsed. Choose another page."
-    if host is None:
-        return None
-    if not allow_local_network and _host_is_local(host):
-        return (f"Blocked by safety policy: {host} is a local or private network address. "
-                "Only public websites can be opened; choose another page.")
+    host = urlsplit(candidate).hostname or ""
+    if not allow_local_network:
+        if _parse_ip(host) is not None:
+            return (f"Blocked by safety policy: IP-address URLs ({host}) are blocked by this agent's safety "
+                    "policy; use a hostname, or set allow_local_network=True / LBA_ALLOW_LOCAL_NETWORK=1.")
+        if _host_is_local(host):
+            return (f"Blocked by safety policy: {host} is a local or private network address. "
+                    "Only public websites can be opened; choose another page.")
     return None
 
 
@@ -717,6 +757,30 @@ async def _read_live_object(cdp: Any, object_id: str) -> Any:
     return _node_from_live(json.loads(res["result"]["value"]))
 
 
+_NON_COMMERCE_INPUT_TYPES = frozenset({
+    "checkbox", "radio", "text", "search", "email", "tel", "url", "password", "number", "date", "range",
+    "color", "file", "datetime-local", "month", "week", "time"})
+
+
+def _commerce_capable(node: Any) -> bool:
+    """False only for elements that clearly cannot trigger a purchase (checkbox, text field, ...).
+
+    Buttons, links, submit/button/image inputs, role=button/link elements and anything unknown count
+    as capable, so a failed live re-read on them fails closed.
+    """
+    try:
+        tag = str(getattr(node, "node_name", "") or "").lower()
+        attrs = getattr(node, "attributes", None) or {}
+        role = str(attrs.get("role", "")).lower()
+        if role in ("button", "link", "menuitem"):
+            return True
+        if tag in ("input", "textarea", "select"):
+            return tag == "input" and str(attrs.get("type", "text")).lower() not in _NON_COMMERCE_INPUT_TYPES
+        return tag not in ("div", "span", "p", "li", "label")
+    except Exception:  # pragma: no cover - defensive
+        return True
+
+
 class GuardedTools(Tools):
     """Tools that gate irreversible actions: commerce clicks, Enter/newline submits on
     checkout pages, JavaScript evaluation and navigation to checkout/payment URLs.
@@ -747,6 +811,7 @@ class GuardedTools(Tools):
         self._lba_allow_local = allow_local_network
         self._lba_approval_timeout = approval_timeout_s if approval_timeout_s and approval_timeout_s > 0 else None
         self._lba_blocked = frozenset(SAFETY_DEFAULTS | {str(d).strip().lower().rstrip(".") for d in blocked_domains})
+        self._lba_warned_no_live = False
         self.blocked_actions: list[str] = blocked_log if blocked_log is not None else []
 
     async def _lba_url(self, browser_session: Any) -> tuple[str | None, bool]:
@@ -777,22 +842,35 @@ class GuardedTools(Tools):
         """Ask for approval; return an error ActionResult when denied, None when approved."""
         approved = False
         timed_out = False
-        if self._lba_approval is not None:
-            try:
-                pending = self._lba_approval(req)
-                res = await (asyncio.wait_for(pending, self._lba_approval_timeout)
-                             if self._lba_approval_timeout else pending)
-                # Only an explicit True (or {"approved": True}) counts; "no", 1 or a Mock do not.
-                approved = res is True or (isinstance(res, dict) and res.get("approved") is True)
-            except TimeoutError:
-                logger.warning("approval callback timed out after %ss, denying", self._lba_approval_timeout)
-                timed_out = True
-            except Exception as e:
-                logger.warning("approval callback failed, denying: %s", e)
-        if approved:
-            return None
         desc = req.action_name + (f" on {req.element_label!r}" if req.element_label else "") + (
             f" at {req.url}" if req.url else "")
+        if self._lba_approval is not None:
+            task: asyncio.Future[Any] | None = None
+            try:
+                task = asyncio.ensure_future(self._lba_approval(req))
+                if self._lba_approval_timeout:
+                    await asyncio.wait({task}, timeout=self._lba_approval_timeout)
+                else:
+                    await asyncio.wait({task})
+                if not task.done():  # our own timeout; a TimeoutError raised by the callback lands below
+                    logger.warning("approval callback timed out after %ss, denying", self._lba_approval_timeout)
+                    timed_out = True
+                else:
+                    res = task.result()
+                    # Only an explicit True (or {"approved": True}) counts; "no", 1 or a Mock do not.
+                    approved = res is True or (isinstance(res, dict) and res.get("approved") is True)
+            except asyncio.CancelledError:
+                self.blocked_actions.append(f"{desc} (run stopped while awaiting approval)")
+                raise
+            except Exception as e:
+                logger.warning("approval callback failed, denying: %s", e)
+            finally:
+                if task is not None and not task.done():
+                    task.cancel()
+        if approved:
+            return None
+        if approved:
+            return None
         self.blocked_actions.append(desc)
         why = f" ({req.reason})" if req.reason else ""
         if timed_out:
@@ -832,10 +910,7 @@ class GuardedTools(Tools):
             if denial is not None:
                 self.blocked_actions.append(f"{name} at {dest}")
                 return ActionResult(error=denial)
-            try:
-                host = urlsplit(dest.strip()).hostname
-            except ValueError:
-                continue
+            host = navigation_host(dest)
             if host_is_blocked(host, self._lba_blocked):
                 self.blocked_actions.append(f"{name} at {dest}")
                 return ActionResult(error=f"Blocked by safety policy: {host} is a blocked domain. "
@@ -912,8 +987,13 @@ class GuardedTools(Tools):
                 if live_reason is not None and reason is None:
                     reason, label = f"live page element changed: {live_reason}", live_label
                 ambiguous = ambiguous or not live_label or _in_form_submit(live)
-            elif state == "failed" and reason is None and ambiguous:
-                reason = "live element could not be re-read and the cached one is ambiguous (failing closed)"
+            elif state == "failed" and reason is None and (
+                    ambiguous or _commerce_capable(node) or is_commerce_url(url)):
+                reason = "live element could not be re-read, so its current label is unknown (failing closed)"
+            elif state == "unavailable" and not self._lba_warned_no_live:
+                self._lba_warned_no_live = True
+                logger.warning("live element re-read is unavailable (no CDP session); commerce gating uses the "
+                               "cached page snapshot only")
             if reason is None and not url_ok and ambiguous:
                 reason = "page URL could not be read for an unlabeled/submit control (failing closed)"
         if reason is None:
@@ -926,7 +1006,8 @@ class GuardedTools(Tools):
             return await self._lba_classify_click(name, params, browser_session)
         if name in NAVIGATE_ACTIONS:
             dest = params.get("url")
-            if isinstance(dest, str) and is_commerce_url(dest):
+            candidate = navigation_candidate(dest)[0] if isinstance(dest, str) else None
+            if candidate is not None and is_commerce_url(candidate):
                 return ActionRequest(action_name=name, params=dict(params), url=dest,
                                      reason="navigation to a checkout/payment URL")
             return None

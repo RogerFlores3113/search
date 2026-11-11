@@ -22,22 +22,25 @@ INTERNAL_SCHEME_PATTERNS = (
     "chrome://*", "chrome-extension://*", "chrome-untrusted://*", "chrome-search://*",
     "chrome-error://*", "devtools://*", "edge://*", "brave://*",
 )
-LOCAL_HOST_PATTERNS = ("localhost", "*.localhost", "*.localhost.")
+LOCAL_SUFFIXES = ("localhost", "local", "internal", "lan", "home.arpa", "localdomain", "intranet")
+# Names only: IP literals are rejected by block_ip_addresses, and single-label hostnames
+# ("intranet", "printer") cannot be expressed as patterns (the tool-layer navigation guard denies them).
+LOCAL_HOST_PATTERNS = ("localhost",) + tuple(p for s in LOCAL_SUFFIXES for p in (f"*.{s}", f"*.{s}."))
 
 
 def is_local_host(host: str | None) -> bool:
-    """True for ``localhost``, ``*.localhost`` and any IP-address literal (browser-use's
-    ``block_ip_addresses`` cannot distinguish private from public IP literals)."""
+    """True for ``localhost``, local-only suffixes (``*.local``, ``*.internal``, ``*.lan``, ...),
+    single-label hostnames and any IP-address literal (all blocked unless local access is allowed)."""
     h = (host or "").strip().lower().rstrip(".").strip("[]")
     if not h:
         return False
-    if h == "localhost" or h.endswith(".localhost"):
+    if h == "localhost" or any(h.endswith("." + s) for s in LOCAL_SUFFIXES):
         return True
     try:
         ipaddress.ip_address(h)
         return True
     except ValueError:
-        return False
+        return "." not in h
 
 
 def _allowed_covers(entry: str, host: str) -> bool:

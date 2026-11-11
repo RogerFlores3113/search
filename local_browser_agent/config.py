@@ -196,10 +196,14 @@ class SafetyPolicy(BaseModel):
         allow_local_network: Let the agent's browser reach ``localhost``, loopback, private
             and link-local addresses (the local web app, router admin pages, cloud metadata
             at 169.254.169.254). Off by default. While off, the browser blocks ``localhost``,
-            ``*.localhost`` and every IP-address URL (browser-use cannot tell public IP
-            literals from private ones, so ``http://8.8.8.8/`` is blocked too; use a
-            hostname), and ``start_url`` / ``allowed_domains`` entries that are local are
+            ``*.localhost`` / ``*.local`` / ``*.internal`` / ``*.lan`` / ``*.home.arpa`` /
+            ``*.localdomain`` / ``*.intranet``, single-label hostnames and every IP-address URL
+            (``http://8.8.8.8/`` is blocked too; use a hostname). DNS names that resolve to
+            private addresses are NOT caught (no DNS lookups); use ``allowed_domains`` for
+            strict isolation. Also ``start_url`` / ``allowed_domains`` entries that are local are
             rejected. Set it only for local test fixtures or dev servers.
+        approval_timeout_s: Seconds to wait for the approval callback before the gated action is
+            denied. ``None`` or ``0`` waits forever; must be ``>= 0``. Default 120.
     """
 
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
@@ -211,6 +215,14 @@ class SafetyPolicy(BaseModel):
     commerce_patterns: list[str] = Field(default_factory=lambda: list(DEFAULT_COMMERCE_PATTERNS))
     allow_evaluate: bool = False
     allow_local_network: bool = False
+    approval_timeout_s: float | None = 120.0
+
+    @field_validator("approval_timeout_s")
+    @classmethod
+    def _check_approval_timeout(cls, v: float | None) -> float | None:
+        if v is not None and v < 0:
+            raise ValueError("approval_timeout_s must be >= 0 (0 or None waits forever)")
+        return v
 
     @field_validator("blocked_domains", mode="before")
     @classmethod
@@ -317,6 +329,7 @@ class AgentConfig(BaseModel):
         - ``LBA_ALLOWED_DOMAINS`` / ``LBA_BLOCKED_DOMAINS`` (comma separated)
         - ``LBA_ALLOW_EVALUATE`` (bool): run page JavaScript without approval
         - ``LBA_ALLOW_LOCAL_NETWORK`` (bool): let the browser reach localhost / private addresses
+        - ``LBA_APPROVAL_TIMEOUT_S`` (float, >= 0): seconds to wait for an approval; 0 waits forever
 
         Booleans accept 1/0, true/false, yes/no, on/off (any case). ``ANTHROPIC_API_KEY`` /
         ``OPENAI_API_KEY`` are used when the provider matches and ``LBA_API_KEY`` is unset.
@@ -391,6 +404,8 @@ class AgentConfig(BaseModel):
             safety["allow_evaluate"] = b
         if (b := flag("ALLOW_LOCAL_NETWORK")) is not None:
             safety["allow_local_network"] = b
+        if (t := num("APPROVAL_TIMEOUT_S", float, "a number")) is not None:
+            safety["approval_timeout_s"] = t
 
         top: dict[str, Any] = {}
         if (i := num("MAX_STEPS", int, "an integer")) is not None:

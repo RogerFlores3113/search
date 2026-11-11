@@ -32,7 +32,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"lba {_version()}")
     sub = p.add_subparsers(dest="command", required=True)
 
-    r = sub.add_parser("run", help="run one natural-language browser task")
+    r = sub.add_parser(
+        "run", help="run one natural-language browser task",
+        epilog="Safety: IP-address URLs, localhost and local network names are blocked unless "
+               "LBA_ALLOW_LOCAL_NETWORK=1; use a hostname.")
     r.add_argument("task", help="what the agent should do")
     r.add_argument("--provider", help="ollama | anthropic | openai | openai_compatible | litellm (default: $LBA_PROVIDER or ollama)")
     r.add_argument("--model", help="model name (default depends on provider)")
