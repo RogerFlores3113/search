@@ -122,7 +122,11 @@ is the signal to look at its page by hand.
 Requires Chrome and a model. Like `lba run`, `lba eval` starts from the `LBA_PROVIDER`, `LBA_MODEL`,
 `LBA_BASE_URL` and `LBA_API_KEY` environment variables (and `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
 for those providers); `--provider`, `--model`, `--base-url` and `--api-key-env` override them. A
-provider and model must come from one or the other. The browser is headless unless `--headed`.
+provider and model must come from one or the other. Unlike `lba run` (which defaults to `ollama` and its
+default model), `lba eval` deliberately has no default: a result file records the model it measured and is
+compared against other baselines, so an accidental default must never produce one. The `LBA_*` variables are
+validated first, so an invalid one (`LBA_PROVIDER=nope`, `LBA_MAX_STEPS=0`) is reported by name with
+`error_kind` `config` before the missing-model message. The browser is headless unless `--headed`.
 The runner restricts navigation to the fixture host
 (`SafetyPolicy.allowed_domains=["127.0.0.1"]`, applied to a copy of the config per run).
 
@@ -155,8 +159,12 @@ the explanation and the exit code is 3. Each infra error prints one `[INFRA]` li
 result file's `errors`). When every run was an infra error the summary says `no valid runs (infra errors)`
 instead of a 0% success rate. A `timeout` is **not** an infra error: a model that hangs is a real
 failure, counted as a failed run in the summary, in `--compare` and in the all-infra checks. Infra errors are
-status `error` or an `error_kind` of `chrome_missing`, `preflight`, `cdp_connect` or `config` (`runner.py`
-`INFRA_ERROR_KINDS` and `compare.py` use the same rule).
+runs whose `error_kind` is `chrome_missing`, `preflight`, `cdp_connect` or `config` (`runner.py`
+`INFRA_ERROR_KINDS`). A run with `error_kind` `agent_error` is a real failure: it prints `[FAIL]`, counts in
+`n_valid` and the success rate, and is not an infra error in the summary, the exit codes or `--compare`.
+Backward compatibility: a run record with status `error` and **no** `error_kind` (a result file from before
+`error_kind` existed) stays an infra error. The progress labels, summary, `n_valid`, `--compare` and exit
+codes all use this one definition (`runner.is_infra_error`).
 
 Before any task runs, a real run checks once that Chrome can be found (`executable_path` /
 `cdp_url` from the config are respected; nothing is launched or installed) and that the model
@@ -217,8 +225,8 @@ holds a table of golden verdicts (answer -> pass/fail per task) so verdict chang
 `meta.task_hashes` stores one such hash per task.
 Results with different hashes measured different suites or judged them differently. Each run record
 carries `error_kind` (`chrome_missing`, `preflight`, `cdp_connect`, `config`, `timeout`, `agent_error`
-or null) and each task summary an `infra_errors` count (runs with status `error` or an
-infrastructure `error_kind`).
+or null) and each task summary an `infra_errors` count (runs with an infrastructure `error_kind`, or status
+`error` with no `error_kind` in old files).
 
 ### Comparing two runs
 

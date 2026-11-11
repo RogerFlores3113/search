@@ -35,8 +35,14 @@ INFRA_ERROR_KINDS = frozenset({"chrome_missing", "preflight", "cdp_connect", "co
 
 
 def is_infra_error(status: str | None, error_kind: str | None) -> bool:
-    """A run that says nothing about the model: errored or failed to set up (a timeout is a real failure)."""
-    return status == "error" or error_kind in INFRA_ERROR_KINDS
+    """A run that says nothing about the model: its ``error_kind`` is in ``INFRA_ERROR_KINDS``.
+
+    A ``timeout`` or ``agent_error`` is a real failure, not infrastructure. Backward compatibility: a
+    result file from before ``error_kind`` existed has ``status`` "error" and no kind; that stays infra.
+    """
+    if error_kind is None:
+        return status == "error"
+    return error_kind in INFRA_ERROR_KINDS
 
 
 @dataclass
@@ -323,7 +329,7 @@ async def run_suite(
                 instruction = task.render(server.base_url)
                 rec = await _run_one(run, config, task, rep, instruction, server, timeout_s, max_steps)
                 records.append(rec)
-                infra_streak = infra_streak + 1 if rec.error_kind in INFRA_ERROR_KINDS else 0
+                infra_streak = infra_streak + 1 if rec.infra_error else 0
                 if report:
                     report.append_run(rec, Path(out_dir))
                 if progress:

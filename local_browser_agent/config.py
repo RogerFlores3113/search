@@ -31,6 +31,47 @@ def _safe_url(v: Any) -> Any:
     return redact_url(v) if isinstance(v, str) and v else v
 
 
+#: Environment variable names (without the prefix) read by ``AgentConfig.from_env``, keyed by the
+#: pydantic field path they feed. Used to name the variable in validation errors.
+_ENV_FIELD_VARS: dict[str, str] = {
+    "model.provider": "PROVIDER", "model.model": "MODEL", "model.api_key": "API_KEY",
+    "model.base_url": "BASE_URL", "model.temperature": "TEMPERATURE",
+    "browser.channel": "CHANNEL", "browser.executable_path": "EXECUTABLE_PATH", "browser.cdp_url": "CDP_URL",
+    "browser.user_data_dir": "USER_DATA_DIR", "browser.headless": "HEADLESS", "browser.keep_alive": "KEEP_ALIVE",
+    "safety.allowed_domains": "ALLOWED_DOMAINS", "safety.blocked_domains": "BLOCKED_DOMAINS",
+    "safety.allow_evaluate": "ALLOW_EVALUATE", "safety.allow_local_network": "ALLOW_LOCAL_NETWORK",
+    "safety.approval_timeout_s": "APPROVAL_TIMEOUT_S",
+    "max_steps": "MAX_STEPS", "timeout_s": "TIMEOUT_S", "use_vision": "USE_VISION", "use_judge": "USE_JUDGE",
+}
+
+#: ``LBA_*`` names used elsewhere in the repo (not read by ``from_env``); they never warn as unknown.
+_INTERNAL_ENV_NAMES = frozenset({"DATA_DIR", "ALLOW_TELEMETRY", "MCP_STRICT"})
+
+
+def unknown_env_warnings(prefix: str = "LBA_", env: Mapping[str, str] | None = None) -> list[str]:
+    """One message per ``{prefix}*`` variable that nothing reads, with a did-you-mean suggestion.
+
+    Warnings only: a typo like ``LBA_TIMEOUT`` (for ``LBA_TIMEOUT_S``) is otherwise silently ignored.
+    """
+    import difflib
+
+    e = os.environ if env is None else env
+    known = sorted(set(_ENV_FIELD_VARS.values()) | _INTERNAL_ENV_NAMES)
+    out: list[str] = []
+    for name in sorted(e):
+        if not name.startswith(prefix):
+            continue
+        bare = name[len(prefix):]
+        if bare in known:
+            continue
+        near = difflib.get_close_matches(bare, known, n=1, cutoff=0.6)
+        if not near:
+            near = [k for k in known if k.startswith(bare) or bare.startswith(k)][:1]
+        hint = f"; did you mean {prefix}{near[0]}?" if near else ""
+        out.append(f"warning: unknown environment variable {name} is ignored{hint}")
+    return out
+
+
 class ModelConfig(BaseModel):
     """Which LLM to use.
 
@@ -461,7 +502,18 @@ class AgentConfig(BaseModel):
                 return factory(**kwargs)
             except ValueError as exc:  # a pydantic ValidationError is a ValueError
                 for ln in format_validation_error(exc).splitlines():
-                    problems.append(f"{label}.{ln}" if label and ": " in ln else ln)
+                    field, sep, msg = ln.partition(": ")
+                    path = f"{label}.{field}" if label and sep else field
+                    var = _ENV_FIELD_VARS.get(path) if sep else None
+                    if var is None:
+                        problems.append(f"{label}.{ln}" if label and sep else ln)
+                        continue
+                    # Name the variable the user set, not the pydantic field ("LBA_MAX_STEPS (max_steps): ...").
+                    got = ""
+                    if field in kwargs and var != "API_KEY":
+                        shown = _safe_url(kwargs[field]) if var == "BASE_URL" else kwargs[field]
+                        got = f" (got {shown!r})"
+                    problems.append(f"{prefix}{var} ({field}): {msg}{got}")
                 return None
 
         model_cfg = build(ModelConfig, model, "model")

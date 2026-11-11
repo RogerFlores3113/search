@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
-from .runner import DEFAULT_MAX_INFRA_ERRORS, INFRA_ERROR_KINDS
+from .runner import DEFAULT_MAX_INFRA_ERRORS
 from .tasks import FINAL_SUFFIX, TASKS, get_tasks
 
 PREFIX = "lba eval: error:"
@@ -366,6 +366,20 @@ def _main(
         quiet_logs = args.quiet or args.json
         configure_logging("error" if quiet_logs else "warning", third_party="off" if quiet_logs else None)
     if config is None:
+        from local_browser_agent.cli import _config_problems, warn_unknown_env  # noqa: PLC0415
+
+        warn_unknown_env()
+        # Validate every LBA_* variable first so all environment problems are reported, not just a missing model.
+        # An invalid environment value is an error even when the matching flag is also given.
+        from local_browser_agent import AgentConfig  # noqa: PLC0415
+
+        env_problems: list[str] = []
+        try:
+            AgentConfig.from_env()
+        except ValueError as exc:
+            env_problems = _config_problems(exc)
+        if env_problems:
+            return _fail(args, EXIT_USAGE, "config", env_problems, prefix="invalid configuration: ")
         if not (args.provider or os.environ.get("LBA_PROVIDER")) or not (args.model or os.environ.get("LBA_MODEL")):
             return _fail(args, EXIT_USAGE, "config", [
                 "a provider and model are required for a real run "
@@ -408,8 +422,8 @@ def _main(
     def progress(rec: Any) -> None:
         if args.quiet:
             return
-        if rec.error_kind in INFRA_ERROR_KINDS:  # one line; details are in the result file
-            print(f"[INFRA] {rec.task_id} #{rec.repeat} {rec.error_kind}", file=human, flush=True)
+        if rec.infra_error:  # one line; details are in the result file
+            print(f"[INFRA] {rec.task_id} #{rec.repeat} {rec.error_kind or 'error'}", file=human, flush=True)
             return
         flag = "PASS" if rec.passed else "FAIL"
         print(f"[{flag}] {rec.task_id} #{rec.repeat} score={rec.score:.2f} steps={rec.steps}", file=human, flush=True)
@@ -470,9 +484,9 @@ def _main(
 
 def _all_infra_kinds(result: Any) -> list[str]:
     """Distinct ``error_kind`` values (in order) when every run failed for an environment reason, else ``[]``."""
-    if not result.runs or not all(r.error_kind in INFRA_ERROR_KINDS for r in result.runs):
+    if not result.runs or not all(r.infra_error for r in result.runs):
         return []
-    return list(dict.fromkeys(r.error_kind for r in result.runs))
+    return list(dict.fromkeys(r.error_kind or "error" for r in result.runs))
 
 
 def _gate(result: Any, args: argparse.Namespace) -> int:
@@ -481,7 +495,7 @@ def _gate(result: Any, args: argparse.Namespace) -> int:
     if result.meta.get("infra_abort"):
         print(f"gate: {result.meta['infra_abort']}", file=sys.stderr)
         return EXIT_ENV
-    if result.runs and all(r.status == "error" or r.infra_error for r in result.runs):
+    if result.runs and all(r.status == "error" for r in result.runs):
         print("gate: every run errored; the results say nothing about the model", file=sys.stderr)
         code = 1
     if not result.meta.get("complete", True):

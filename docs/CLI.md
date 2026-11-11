@@ -20,6 +20,13 @@ command-line flag or value (unknown flag, empty task, malformed `--cdp-url` / `-
 `lba eval`. With `--json`, even an argparse error (unknown flag, missing task) produces the JSON document,
 with `error_kind` `usage`, whatever the position or abbreviation of `--json` (`--jso` works too).
 
+An invalid `LBA_*` value is an error even when the matching flag is also given: flags do not override an
+invalid environment value. Config error lines name the variable, e.g. `LBA_MAX_STEPS (max_steps): Input should
+be greater than or equal to 1 (got 0)`. `lba eval` checks every `LBA_*` variable first, so all environment
+problems are reported together. An `LBA_*` variable that nothing reads (for example `LBA_TIMEOUT`) prints one
+`warning: unknown environment variable LBA_TIMEOUT is ignored; did you mean LBA_TIMEOUT_S?` line on stderr
+(not an error) in `lba run`, `lba eval` and `lba mcp`.
+
 Handling the exit code in a shell:
 
 ```sh

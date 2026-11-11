@@ -125,6 +125,14 @@ def _valid_cdp_url(url: str) -> bool:
     return _valid_url(url, ("http", "https", "ws", "wss"))
 
 
+def warn_unknown_env() -> None:
+    """One stderr line per unknown ``LBA_*`` variable (a typo is otherwise silently ignored). Never an error."""
+    from local_browser_agent.config import unknown_env_warnings
+
+    for line in unknown_env_warnings():
+        print(line, file=sys.stderr)
+
+
 def _config_problems(exc: BaseException) -> list[str]:
     """One message per problem, without a repeated field name ("cdp_url: cdp_url must be ..." -> "cdp_url: must be ...")."""
     from local_browser_agent.log import format_validation_error
@@ -393,6 +401,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         e.parser.print_usage(sys.stderr)
         print(f"{e.parser.prog}: error: {e.message}", file=sys.stderr)
         return EXIT_USAGE
+    if args.command in ("run", "mcp"):
+        warn_unknown_env()
     if args.command == "run":
         from local_browser_agent.log import quiet_filters
 

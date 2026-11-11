@@ -8,7 +8,7 @@
   either file marked incomplete, or (with ``--strict``) any warning
 * 2 - the comparison is not meaningful or the input is unusable: unreadable/malformed file, a
   different ``taskset_hash`` (unless ``--allow-taskset-change``), tasks whose runs were mostly
-  infrastructure errors (status "error" or a kind of chrome_missing, preflight, cdp_connect or config;
+  infrastructure errors (an error_kind of chrome_missing, preflight, cdp_connect or config, or status "error" with no error_kind in old files;
   a `timeout` is a real failure, not infrastructure) or that have infra errors and no passes with
   infra errors >= real failures (INVALID), a task present with zero runs, NaN/inf scores or rates, or fewer candidate runs than the baseline had (default) or than
   ``--min-n`` on a task. A candidate that ran only a subset of the baseline's tasks is
@@ -104,7 +104,8 @@ def _infra_counts(data: dict[str, Any], label: str = "", warnings: list[str] | N
         for r in runs:
             if not isinstance(r, dict) or r.get("task_id") not in counts:
                 continue
-            if r.get("status") in _INFRA_STATUSES or r.get("error_kind") in _INFRA_KINDS:
+            kind = r.get("error_kind")
+            if kind in _INFRA_KINDS or (kind is None and r.get("status") in _INFRA_STATUSES):
                 counts[r["task_id"]] += 1
         if warnings is not None:
             for tid, n in counts.items():
