@@ -9,7 +9,7 @@
 
 import sys
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
 
@@ -27,6 +27,9 @@ a = Analysis(
     # non-Python files on its own; `--smoke` verifies they are present.
     + collect_data_files("browser_use"),
     hiddenimports=[
+        # Every local_browser_agent module: app/__main__.py's --smoke (and the MCP/CLI entry
+        # points) import some of them via importlib, which PyInstaller's analysis cannot see.
+        *collect_submodules("local_browser_agent"),
         # uvicorn internals not auto-discovered by PyInstaller
         "uvicorn.logging",
         "uvicorn.loops",

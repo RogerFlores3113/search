@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing
+import socket
 import sys
 
 import uvicorn
@@ -59,6 +60,7 @@ REQUIRED_STATIC = (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lba-app",
+        allow_abbrev=False,
         description=(
             "Start the local-browser-agent web UI. It drives your own Chrome from this "
             "machine; the server only accepts requests addressed to localhost."
@@ -66,7 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "task", nargs="*",
-        help="optional task to run immediately when the server starts (dev convenience)",
+        help="optional task to run immediately when the server starts (dev convenience); "
+             "put -- before a task that starts with a dash",
     )
     parser.add_argument("--host", default="127.0.0.1",
                         help="interface to bind (loopback only; default: 127.0.0.1)")
@@ -78,6 +81,19 @@ def build_parser() -> argparse.ArgumentParser:
                              "prompt file is present, then exit 0 (non-zero on failure); "
                              "starts no server and no browser")
     return parser
+
+
+def _port_free(host: str, port: int) -> bool:
+    """True when ``host:port`` can be bound right now (same options uvicorn binds with)."""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        if sys.platform != "win32":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
 
 
 def smoke_check() -> list[str]:
@@ -167,10 +183,17 @@ def main(argv: list[str] | None = None) -> int:
       - Logging is set up to user_data_dir/app.log so errors are visible with console=False
     """
     parser = build_parser()
-    args, _unknown = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
+    # parse_args (not parse_known_args): a typo such as "--prot 18769" must be an error,
+    # not a silently ignored flag or a task string.
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     if args.host not in LOCAL_HOSTS:
         parser.error("--host must be a loopback address (127.0.0.1, localhost or ::1)")
+    if not 1 <= args.port <= 65535:
+        parser.error("--port must be between 1 and 65535")
+    task = " ".join(args.task).strip()
+    if args.task and not task:
+        parser.error("the task is empty; give a task or omit it")
 
     if args.smoke:
         return run_smoke()
@@ -197,9 +220,24 @@ def main(argv: list[str] | None = None) -> int:
     host_for_url = "[::1]" if args.host == "::1" else args.host
     url = f"http://{host_for_url}:{args.port}"
 
+    # Detect a busy port before anything else: otherwise uvicorn only logs the bind error
+    # and a browser would still be opened on whatever else is listening there.
+    if not _port_free(args.host, args.port):
+        message = (
+            f"Port {args.port} is already in use, so the app cannot start. local-browser-agent "
+            f"may already be running at {url}. Close the other copy, or choose another "
+            f"port with --port."
+        )
+        if sys.stderr is not None:
+            print(message, file=sys.stderr)
+        if getattr(sys, "frozen", False):
+            import logging
+            logging.getLogger(__name__).error(message)
+        return 1
+
     # (a) Preserve existing dev-mode task-string behavior
-    if args.task:
-        app.state.pending_task = " ".join(args.task)
+    if task:
+        app.state.pending_task = task
     elif not getattr(sys, "frozen", False):
         print(f"Open {url} to start a run.")
 

@@ -64,7 +64,15 @@ jobs:
         run: uv run pyinstaller local-browser-agent.spec
 
       - name: Smoke test frozen app (--smoke)
-        run: dist/local-browser-agent.app/Contents/MacOS/local-browser-agent --smoke
+        run: |
+          # --smoke imports everything and checks bundled templates/static/browser_use prompt
+          # files, then exits without starting a server or a browser. The windowed build has no
+          # console, so print the report it leaves in the user data dir.
+          set +e
+          dist/local-browser-agent.app/Contents/MacOS/local-browser-agent --smoke
+          code=$?
+          cat "$HOME/Library/Application Support/local-browser-agent/smoke.log" 2>/dev/null
+          exit $code
 
       - name: Ad-hoc codesign
         run: codesign --force --deep -s - dist/local-browser-agent.app

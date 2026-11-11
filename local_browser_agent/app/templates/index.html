@@ -28,6 +28,7 @@
     async accept() {
       const r = await fetch('/accept-disclaimer', {method: 'POST', headers: lbaHeaders()});
       if (r.ok) this.disclaimerAccepted = true;
+      else lbaReportFailure(r.status, await r.text());
     }
   }">
 
@@ -205,8 +206,8 @@
               <button class="btn btn-neutral"
                       hx-post="/pause"
                       hx-swap="none"
-                      :disabled="state !== 'running' && state !== 'paused'"
-                      x-text="state === 'paused' ? 'Resume' : 'Pause'"></button>
+                      :disabled="(state !== 'running' && state !== 'paused') || (state === 'running' && !agentActive)"
+                      x-text="state === 'running' && !agentActive ? 'Starting…' : (state === 'paused' ? 'Resume' : 'Pause')"></button>
               <button class="btn btn-destructive"
                       hx-post="/stop"
                       hx-swap="none"
@@ -421,7 +422,54 @@
 
   </div><!-- /disclaimer gate -->
 
+  <div id="lba-notice" role="alert" aria-live="assertive" hidden
+       style="position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:200;max-width:560px;width:calc(100% - 24px);background:#7f1d1d;color:#fff;border:1px solid #b91c1c;border-radius:8px;padding:10px 14px;font-size:0.9rem;line-height:1.4;box-shadow:0 4px 16px rgba(0,0,0,0.5);">
+    <span id="lba-notice-text"></span>
+    <button type="button" id="lba-notice-reload" hidden onclick="window.location.reload()"
+            style="margin-left:10px;background:#fff;color:#7f1d1d;border:0;border-radius:6px;padding:4px 10px;cursor:pointer;font-weight:600;">Reload</button>
+    <button type="button" aria-label="Dismiss" onclick="lbaHideNotice()"
+            style="margin-left:6px;background:transparent;color:#fff;border:0;cursor:pointer;font-size:1.1rem;line-height:1;">&times;</button>
+  </div>
+
   <script>
+    function lbaShowNotice(message, reload) {
+      const box = document.getElementById('lba-notice');
+      if (!box) return;
+      document.getElementById('lba-notice-text').textContent = message;
+      document.getElementById('lba-notice-reload').hidden = !reload;
+      box.hidden = false;
+    }
+    function lbaHideNotice() {
+      const box = document.getElementById('lba-notice');
+      if (box) box.hidden = true;
+    }
+    // Turn a failed HTTP response into a visible message. `body` is the raw response text.
+    function lbaReportFailure(status, body) {
+      let data = {};
+      try { data = JSON.parse(body) || {}; } catch (e) { /* not JSON */ }
+      const detail = typeof data.detail === 'string' ? data.detail : '';
+      if (status === 403 && (/token/i.test(detail) || /invalid host|cross-origin/i.test(detail))) {
+        // The token is regenerated every time the app starts: this page belongs to an older run of the app.
+        lbaShowNotice('This page is out of date. Reload to continue.', true);
+      } else if (status === 403 && data.status === 'disclaimer_required') {
+        lbaShowNotice(detail || 'Please accept the notice first.', true);
+      } else if (status === 422 && !detail) {
+        lbaShowNotice('That request was not accepted. Check the task (at most 2000 characters).', false);
+      } else {
+        lbaShowNotice(detail || ('The request failed (HTTP ' + status + ').'), false);
+      }
+    }
+    document.addEventListener('htmx:responseError', (e) => {
+      const xhr = e.detail && e.detail.xhr;
+      lbaReportFailure(xhr ? xhr.status : 0, xhr ? xhr.responseText : '');
+    });
+    document.addEventListener('htmx:sendError', () => {
+      lbaShowNotice('Lost connection to the app. It may have been closed. Reload to continue.', true);
+    });
+    document.addEventListener('htmx:afterRequest', (e) => {
+      if (e.detail && e.detail.successful) lbaHideNotice();
+    });
+
     function lbaHeaders() {
       const m = document.querySelector('meta[name="lba-token"]');
       return { 'X-LBA-Token': m ? m.content : '' };
@@ -437,6 +485,7 @@
         humanNeeded: false,
         humanMessage: '',
         _stream: null,
+        agentActive: false,
         stepNum: 0,
         maxSteps: 25,
         elapsed: 0,
@@ -496,7 +545,29 @@
             if (this._stream === source) this._stream = null;
             this.refreshRuns();
           });
+          // The server ends every stream with `done` first, so an error here means the
+          // connection dropped (app closed or restarted) mid-run. Stop pretending it is running.
+          source.onerror = () => {
+            if (this._stream !== source) return;
+            source.close();
+            this._stream = null;
+            this._stopElapsedTimer();
+            this.agentActive = false;
+            this.humanNeeded = false;
+            this.state = 'disconnected';
+            lbaShowNotice('Lost connection to the app. It may have been closed or restarted. Reload to continue.', true);
+          };
         },
+
+        _stopElapsedTimer() {
+          if (this._elapsedTimer !== null) {
+            clearInterval(this._elapsedTimer);
+            this._elapsedTimer = null;
+          }
+        },
+
+        // Pause only works once the agent exists; the first step/frame/token event proves it does.
+        markAgentActive() { this.agentActive = true; },
 
         refreshRuns() {
           // The run row is written just after the final event, so refresh twice.
@@ -518,7 +589,7 @@
 
         badgeClass() {
           return {
-            'badge-gray':   this.state === 'idle',
+            'badge-gray':   this.state === 'idle' || this.state === 'stopped' || this.state === 'disconnected',
             'badge-blue':   this.state === 'running',
             'badge-yellow': this.state === 'paused',
             'badge-green':  this.state === 'complete',
@@ -542,6 +613,7 @@
             if (thoughtArea) { while (thoughtArea.firstChild) thoughtArea.removeChild(thoughtArea.firstChild); }
             this.currentAction = 'thinking';
             if (this._elapsedTimer === null) {
+              this.agentActive = false;  // fresh run: Pause waits for the first step
               this.runStartedAt = Date.now();
               this.elapsed = 0;
               this._elapsedTimer = setInterval(() => {
@@ -549,13 +621,14 @@
               }, 1000);
             }
           }
-          if (d.state === 'complete' || d.state === 'error' || d.state === 'idle') {
+          if (d.state === 'complete' || d.state === 'error' || d.state === 'idle' || d.state === 'stopped') {
             if (this._elapsedTimer !== null) {
               clearInterval(this._elapsedTimer);
               this._elapsedTimer = null;
             }
           }
           if (d.state !== 'paused') this.humanNeeded = false;
+          if (d.state !== 'running' && d.state !== 'paused') this.agentActive = false;
           if (d.state === 'running') this.errorLink = '';
           // Phase 9 D-20: idle teardown — revoke the last blob URL so it is
           // not retained after the run ends.
@@ -587,6 +660,7 @@
         },
 
         handleToken($event) {
+          this.markAgentActive();
           // Phase 9 D-22 / Phase 5/8 null semantics: `??` is defensive
           // for the running sum; display gating is via isOllama.
           const d = JSON.parse($event.detail.data);
@@ -676,6 +750,7 @@
         },
 
         handleThought($event) {
+          this.markAgentActive();
           // Phase 9 D-05..D-08: native <details><summary>Model thought</summary>
           // collapsed by default, omit when all of thinking / evaluation_previous_goal
           // / next_goal are null/empty.
@@ -719,6 +794,7 @@
         },
 
         handleActionDetail($event) {
+          this.markAgentActive();
           // Single producer of narration rows: builds the row via
           // _ensureNarrationRow, prepends the action-type badge, and appends
           // a .narration-text description after the step number. Both
@@ -782,6 +858,7 @@
         },
 
         handleScreenshot($event) {
+          this.markAgentActive();
           // Phase 9 D-18..D-21: Blob lifecycle. Phase 7 emits JPEG q=75, so
           // MIME is image/jpeg (NOT png). Assign-then-revoke ordering avoids
           // the brief gap where img.src points at an already-revoked URL.
@@ -801,6 +878,7 @@
         },
 
         handleProgress($event) {
+          this.markAgentActive();
           const d = JSON.parse($event.detail.data);
           this.stepNum = d.step;
           this.maxSteps = d.max_steps;
@@ -948,6 +1026,7 @@
               setTimeout(() => { this.savedMsg = ''; }, 2000);
             } else {
               this.savedMsg = 'Save failed — try again';
+              lbaReportFailure(r.status, JSON.stringify(d));
             }
           } catch (e) {
             this.savedMsg = 'Save failed — try again';
