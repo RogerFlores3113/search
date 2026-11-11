@@ -46,15 +46,38 @@ def default_model(provider: str) -> str | None:
 
 
 def resolve_model_name(cfg: ModelConfig) -> str:
+    """Model name to use: the configured one, the provider default, else the provider name.
+
+    Built-in providers without a default (``openai_compatible``, ``litellm``) raise
+    ``ValueError``; a custom registered provider falls back to its own name so
+    events and traces never carry an empty model name.
+    """
     name = cfg.model or default_model(cfg.provider)
-    if not name:
+    if name:
+        return name
+    if cfg.provider.lower() in _BUILTIN_PROVIDERS:
         raise ValueError(f"Provider {cfg.provider!r} has no default model; set ModelConfig.model")
-    return name
+    return cfg.provider
 
 
-def _key(cfg: ModelConfig, env_hint: str) -> str:
+_BUILTIN_PROVIDERS = frozenset({"ollama", "anthropic", "openai", "openai_compatible", "litellm"})
+_KEY_HINTS = {
+    "anthropic": ("Anthropic", "ANTHROPIC_API_KEY"),
+    "openai": ("OpenAI", "OPENAI_API_KEY"),
+}
+
+
+def _missing_key_message(provider: str) -> str:
+    label, env = _KEY_HINTS[provider]
+    return f"{label} API key is not set. Set {env} or LBA_API_KEY."
+
+
+def _key(cfg: ModelConfig, env_hint: str = "") -> str:
     if cfg.api_key is None or not cfg.api_key.get_secret_value():
-        raise ValueError(f"{cfg.provider}: api_key is required (e.g. set {env_hint})")
+        provider = cfg.provider.lower()
+        if provider in _KEY_HINTS:
+            raise ValueError(_missing_key_message(provider))
+        raise ValueError(f"{cfg.provider}: api_key is required ({env_hint or 'set LBA_API_KEY'})")
     return cfg.api_key.get_secret_value()
 
 
@@ -80,7 +103,7 @@ def _anthropic(cfg: ModelConfig) -> Any:
         kwargs["base_url"] = cfg.base_url
     if cfg.temperature is not None:
         kwargs["temperature"] = cfg.temperature
-    return ChatAnthropic(model=resolve_model_name(cfg), api_key=_key(cfg, "LBA_API_KEY or ANTHROPIC_API_KEY"), **kwargs)
+    return ChatAnthropic(model=resolve_model_name(cfg), api_key=_key(cfg), **kwargs)
 
 
 def _openai(cfg: ModelConfig) -> Any:
@@ -91,7 +114,7 @@ def _openai(cfg: ModelConfig) -> Any:
         kwargs["base_url"] = cfg.base_url
     if cfg.temperature is not None:
         kwargs["temperature"] = cfg.temperature
-    return ChatOpenAI(model=resolve_model_name(cfg), api_key=_key(cfg, "LBA_API_KEY or OPENAI_API_KEY"), **kwargs)
+    return ChatOpenAI(model=resolve_model_name(cfg), api_key=_key(cfg), **kwargs)
 
 
 def _openai_compatible(cfg: ModelConfig) -> Any:
@@ -139,7 +162,11 @@ def build_llm(cfg: ModelConfig) -> Any:
 
 
 async def check_provider(cfg: ModelConfig) -> None:
-    """Optional pre-flight check (network). Raises :class:`PreFlightError`; never prints."""
+    """Optional pre-flight check. Raises :class:`PreFlightError`; never prints.
+
+    Network use: ``ollama`` lists local models (``/api/tags``); ``anthropic`` and ``openai``
+    make a small live API call (list models) to validate the key; other providers are not checked.
+    """
     import httpx
 
     provider = cfg.provider.lower()
@@ -161,7 +188,7 @@ async def check_provider(cfg: ModelConfig) -> None:
     elif provider == "anthropic":
         key = cfg.api_key.get_secret_value() if cfg.api_key else None
         if not key:
-            raise PreFlightError("Anthropic API key is not set")
+            raise PreFlightError(_missing_key_message("anthropic"))
         try:
             import anthropic
 
@@ -173,7 +200,7 @@ async def check_provider(cfg: ModelConfig) -> None:
     elif provider == "openai":
         key = cfg.api_key.get_secret_value() if cfg.api_key else None
         if not key:
-            raise PreFlightError("OpenAI API key is not set")
+            raise PreFlightError(_missing_key_message("openai"))
         base = (cfg.base_url or "https://api.openai.com/v1").rstrip("/")
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:

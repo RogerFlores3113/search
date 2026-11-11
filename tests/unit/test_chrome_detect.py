@@ -29,12 +29,17 @@ def test_chrome_missing(monkeypatch):
     assert cd_mod.chrome_is_installed() is False
 
 
-def test_non_darwin_passthrough(monkeypatch):
-    """On non-darwin platforms, chrome_is_installed() returns True (deferred to PLAT-02)."""
+def test_linux_uses_path_lookup(monkeypatch):
+    """On Linux, chrome_is_installed() reflects whether a Chrome/Chromium binary is found."""
     monkeypatch.setattr(sys, "platform", "linux")
 
     import local_browser_agent.app.chrome_detect as cd_mod
+    import local_browser_agent.chrome as chrome_mod
+    monkeypatch.setattr(chrome_mod.shutil, "which", lambda n: "/usr/bin/google-chrome" if n == "google-chrome" else None)
     assert cd_mod.chrome_is_installed() is True
+    monkeypatch.setattr(chrome_mod.shutil, "which", lambda n: None)
+    monkeypatch.setattr(cd_mod.os.path, "exists", lambda p: False)
+    assert cd_mod.chrome_is_installed() is False
 
 
 # --- WIN-03: Windows Chrome detection ---

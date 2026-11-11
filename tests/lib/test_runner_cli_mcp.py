@@ -332,9 +332,9 @@ def test_mcp_registration_and_busy(monkeypatch):
             "a", start_url="https://s.com", max_steps=4, allowed_domains=["s.com"]))
         await asyncio.sleep(0.05)
         busy = await mcp_server.run_browser_task("b")
-        assert busy["status"] == "error" and "busy" in busy["error"]
+        assert busy.isError and busy.structuredContent["status"] == "error" and "busy" in busy.structuredContent["error"]
         gate.set()
-        return await first
+        return (await first).structuredContent
 
     res = asyncio.run(scenario())
     assert res["status"] == "success"

@@ -6,6 +6,8 @@ name: Evals
 #   EVAL_PROVIDER   default anthropic
 #   EVAL_MODEL      default claude-haiku-5-5
 #   EVAL_FAIL_UNDER minimum success rate, 0 to 1 (default 0: report only)
+#   EVAL_TIMEOUT    per-run timeout in seconds (default 120)
+#   EVAL_BUDGET_MIN stop starting new runs after this many minutes (default 35)
 "on":
   pull_request:
     branches: [main]
@@ -34,6 +36,8 @@ jobs:
       EVAL_MODEL: ${{ inputs.model || vars.EVAL_MODEL || 'claude-haiku-5-5' }}
       EVAL_FAIL_UNDER: ${{ vars.EVAL_FAIL_UNDER || '0' }}
       EVAL_REPEATS: ${{ inputs.repeats || '1' }}
+      EVAL_TIMEOUT: ${{ vars.EVAL_TIMEOUT || '120' }}
+      EVAL_BUDGET_MIN: ${{ vars.EVAL_BUDGET_MIN || '35' }}
       ANONYMIZED_TELEMETRY: "false"
       BROWSER_USE_CLOUD_SYNC: "false"
     steps:
@@ -66,7 +70,18 @@ jobs:
         if: steps.key.outputs.present == 'true'
         run: uv run lba eval --self-test
 
-      # Uses the Google Chrome that ships on GitHub's ubuntu runners.
+      # The suite drives the Google Chrome that ships on GitHub's ubuntu runners. Never let the
+      # run fall back to a browser download: fail loudly instead.
+      - name: Verify Chrome is installed
+        if: steps.key.outputs.present == 'true'
+        run: |
+          if ! google-chrome --version; then
+            echo "::error::google-chrome is not installed on this runner. The eval suite needs the runner's Chrome (ubuntu-latest images include it); it does not install a browser."
+            exit 1
+          fi
+
+      # Worst case is tasks x repeats x EVAL_TIMEOUT; --budget-minutes stops new runs early so the
+      # job stays under timeout-minutes, and results are written after every task regardless.
       - name: Run eval suite
         if: steps.key.outputs.present == 'true'
         run: |
@@ -75,6 +90,8 @@ jobs:
             --model "$EVAL_MODEL" \
             --api-key-env ANTHROPIC_API_KEY \
             --repeats "$EVAL_REPEATS" \
+            --timeout "$EVAL_TIMEOUT" \
+            --budget-minutes "$EVAL_BUDGET_MIN" \
             --out eval-results \
             --fail-on-violation \
             --fail-under "$EVAL_FAIL_UNDER"

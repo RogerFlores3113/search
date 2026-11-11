@@ -99,7 +99,7 @@ def test_builtins_construct():
 
 def test_missing_requirements():
     for p in ("anthropic", "openai"):
-        with pytest.raises(ValueError, match="api_key"):
+        with pytest.raises(ValueError, match="API key is not set"):
             build_llm(ModelConfig(provider=p))
     with pytest.raises(ValueError, match="base_url"):
         build_llm(ModelConfig(provider="openai_compatible", model="m"))

@@ -127,8 +127,9 @@ async def test_non_commerce_and_other_actions_delegate(base_act):
     t = GuardedTools()
     assert (await t.act(ClickModel(click={"index": 2}), SESSION)).extracted_content == "ok"
     assert (await t.act(ClickModel(navigate={"url": "https://x"}), SESSION)).extracted_content == "ok"
-    assert (await t.act(ClickModel(click={"index": 99}), SESSION)).extracted_content == "ok"  # unknown element
-    assert len(base_act) == 3 and not t.blocked_actions
+    assert len(base_act) == 2 and not t.blocked_actions
+    # unknown element fails closed
+    assert (await t.act(ClickModel(click={"index": 99}), SESSION)).error
 
 
 async def test_gate_off(base_act):

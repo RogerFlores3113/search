@@ -5,6 +5,21 @@ import os
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _app_test_defaults(monkeypatch):
+    """Relax the web app's request security for tests that use ad-hoc hosts and no token.
+
+    Security behaviour itself is covered in tests/unit/test_app_security.py, which turns
+    enforcement back on. Chrome is reported installed so no test depends on the machine.
+    """
+    import local_browser_agent.app.main as main_mod
+    import local_browser_agent.app.runner as runner_mod
+
+    monkeypatch.setattr(main_mod, "_EXTRA_ALLOWED_HOSTS", {"test", "testserver"})
+    monkeypatch.setattr(main_mod, "_REQUIRE_TOKEN", False)
+    monkeypatch.setattr(runner_mod, "chrome_is_installed", lambda: True)
+
+
 @pytest.fixture
 def monkeypatch_env(monkeypatch):
     """Clear all agent-relevant env vars so Settings() uses defaults."""

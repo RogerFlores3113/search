@@ -27,10 +27,45 @@ print(result.status, result.final_result)
 
 `run_task_sync(...)` is the same call wrapped in `asyncio.run`. For control (pause/resume/stop), use
 `BrowserAgent(config, sinks=..., approval=...)` and `await agent.run(task, start_url=None)`.
-`AgentConfig.from_env()` builds a config from `LBA_*` variables (`LBA_PROVIDER`, `LBA_MODEL`,
-`LBA_API_KEY`, `LBA_BASE_URL`, `LBA_HEADLESS`, `LBA_CDP_URL`, `LBA_MAX_STEPS`, `LBA_TIMEOUT_S`,
-`LBA_ALLOWED_DOMAINS`, ...); `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are used when the provider matches.
-See `examples/use_as_library.py`.
+`AgentConfig.from_env()` builds a config from the `LBA_*` variables below (`ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY` are used when the provider matches and `LBA_API_KEY` is unset). See `examples/use_as_library.py`.
+
+## Configuration
+
+Configs are pydantic models and are validated when constructed: `ModelConfig` raises `ValueError`
+(a pydantic `ValidationError`) for an unknown provider, `openai_compatible` without `base_url`, or a
+`base_url` that is not an `http(s)` URL. `api_key` is not required at construction (it may come from the
+environment); a missing key is reported by `check_provider` / `build_llm` and names the variables, e.g.
+"Anthropic API key is not set. Set ANTHROPIC_API_KEY or LBA_API_KEY." `AgentConfig` requires
+`1 <= max_steps <= 500` and `timeout_s > 0`. `from_env` errors name the variable and expected type
+(`LBA_MAX_STEPS must be an integer, got 'abc'`).
+
+| variable | type | default | meaning |
+|---|---|---|---|
+| `LBA_PROVIDER` | str | `ollama` | provider name |
+| `LBA_MODEL` | str | provider default | model name |
+| `LBA_API_KEY` | str | unset | API key (falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) |
+| `LBA_BASE_URL` | http(s) URL | unset | endpoint override; required for `openai_compatible` |
+| `LBA_TEMPERATURE` | float | unset | sampling temperature |
+| `LBA_HEADLESS` | bool | `false` | run the browser without a window |
+| `LBA_KEEP_ALIVE` | bool | `false` | leave a launched browser open after the run |
+| `LBA_CHANNEL` | str | `chrome` | installed browser channel |
+| `LBA_EXECUTABLE_PATH` | str | unset | browser binary path |
+| `LBA_CDP_URL` | str | unset | attach to a running browser |
+| `LBA_USER_DATA_DIR` | str | unset | Chrome profile directory |
+| `LBA_MAX_STEPS` | int (1-500) | `25` | maximum agent steps |
+| `LBA_TIMEOUT_S` | float (> 0) | `600` | run timeout in seconds |
+| `LBA_USE_VISION` | bool | `true` | send screenshots to the model |
+| `LBA_USE_JUDGE` | bool | `false` | grade the result with the judge |
+| `LBA_ALLOWED_DOMAINS` | comma list | unset | restrict navigation to these domains |
+| `LBA_BLOCKED_DOMAINS` | comma list | unset | extra blocked domains (added to `SAFETY_DEFAULTS`) |
+| `LBA_ALLOW_EVALUATE` | bool | `false` | let the agent run page JavaScript without approval (off by default because scripts can submit forms) |
+| `LBA_ALLOW_TELEMETRY` | `1` | unset | read at import; `1` lets an inherited `ANONYMIZED_TELEMETRY=true` stand |
+
+Booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. By default importing the package forces
+`ANONYMIZED_TELEMETRY=false` (even if inherited as `true`) and sets `LITELLM_LOCAL_MODEL_COST_MAP=True`
+so litellm does not fetch its cost map from GitHub. `local_browser_agent.__version__` reports the installed
+version, and the package ships `py.typed`.
 
 ## Providers
 
@@ -57,7 +92,10 @@ config = AgentConfig(model=ModelConfig(provider="my-gateway", api_key="..."))
 `register_provider(name, factory, default_model=None)`; the factory takes a `ModelConfig` and returns a
 browser-use chat model. An unknown provider raises `ValueError` listing the known ones. API keys are
 `SecretStr` and never appear in `repr`, logs or `RunResult`. `await check_provider(model_config)` is an
-optional pre-flight check (raises `PreFlightError`).
+optional pre-flight check (raises `PreFlightError`). For `ollama` it lists local models; for `anthropic` and
+`openai` it makes a small live API call (list models) to validate the key, so it needs network access and
+the key must be valid; other providers are not checked. A custom provider without a model reports its own
+name as the model name.
 
 ## Browser options
 
@@ -73,8 +111,8 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 
 `SafetyPolicy(blocked_domains, allowed_domains=None, guardrail_prompt=GUARDRAIL_PROMPT, gate_commerce_clicks=True, commerce_patterns=[...])`
 
-- `blocked_domains` always includes `SAFETY_DEFAULTS` (banks, payments, government, medical, password managers); extra entries are added, none can be removed.
-- `allowed_domains` restricts navigation to those domains.
+- `blocked_domains` always includes `SAFETY_DEFAULTS` (banks, payments, government, medical, password managers); extra entries are added, none can be removed (also via `model_copy(update=...)`). Entries are lowercased with trailing dots stripped.
+- `allowed_domains` restricts navigation to those domains. Blocked domains win: an allowed domain equal to or under a blocked one is dropped, and a list that is left empty raises `ValueError`.
 - The guardrail prompt is appended to the system prompt.
 - **Commerce gate:** click actions whose target label matches a commerce pattern ("Buy now", "Checkout", "Place order", "Pay", ...) are blocked in the tool layer, independent of the model. If you pass `approval=async (ActionRequest) -> bool`, it is asked first (`ActionRequest` has `action_name, params, element_label, url`); returning `True` lets the click through. Without a callback the click is blocked, the agent gets an error, and the attempt is listed in `RunResult.blocked_actions`.
 - The element label is read from the accessibility name / aria-label / text of the clicked element via `browser_session.get_element_by_index`; coordinate clicks and unlabeled elements cannot be gated.
@@ -84,7 +122,7 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 A sink is any `async def sink(event)`. Events: `StateEvent, ModelInfoEvent, ThoughtEvent, ActionDetailEvent, ProgressEvent, TokenEvent, ScreenshotEvent, SummaryEvent, ErrorEvent, DoneEvent, HumanNeededEvent, StepCompletedEvent`. A failing sink never crashes a run.
 
 - `QueueSink(data_q, control_q=None)`: lossy `put_nowait` for data events; lifecycle events (state, model_info, summary, error_msg, done) block up to 2s.
-- `JsonlTraceSink(path, include_screenshots=False)`: one JSON line per event.
+- `JsonlTraceSink(path, include_screenshots=False)`: one JSON line per event, appended to the file (an existing file is not truncated); each record has `ts` (UTC ISO 8601) and `run_id` (uuid4 per sink).
 - `CallbackSink(fn)`: sync or async function.
 
 The screenshot loop only runs when at least one sink wants screenshots (a trace-only sink does not).
@@ -114,20 +152,64 @@ captcha, recaptcha, hcaptcha, cloudflare, bot detection, access denied, verify y
 ## CLI
 
 ```bash
+uv run lba --version
 uv run lba run "Open example.com and read the heading" --provider anthropic --headless --max-steps 10 --json --trace run.jsonl
 uv run lba run "..." --cdp-url http://127.0.0.1:9222 --start-url https://example.com
-uv run lba mcp          # stdio MCP server
+uv run lba run "..." -q                 # only errors on stderr
+uv run lba run "..." --log-level debug  # debug | info | warning | error
+uv run lba mcp          # stdio MCP server (quiet stderr by default; -q / --log-level also work)
 uv run lba eval ...     # evaluation suite (when installed)
 ```
 
-`lba run` exits 0 on success, 1 on failed/error/timeout. It runs a provider pre-flight check unless `--no-preflight`.
+**Exit codes:** `0` success; `1` the run failed, errored, timed out, or the pre-flight check failed; `2` usage or
+configuration error (invalid flags / `LBA_*` values, or `lba eval` unavailable); `130` interrupted (Ctrl-C).
+
+**Output streams:** with `--json`, stdout is always one JSON document shaped like `RunResult`, including when
+pre-flight fails (then `status` is `"error"`, `success` is `null`, `errors` holds the message, `steps` is empty);
+the human-readable message goes to stderr. Without `--json`, stdout holds the human summary and diagnostics go
+to stderr. Logs always go to stderr; `--json` defaults to `warning` level, otherwise `info`; ANSI colour is
+stripped when stderr is not a terminal.
+
+**Pre-flight:** unless `--no-preflight`, `lba run` checks the provider first. For `ollama` it queries the local
+server; for `anthropic` and `openai` it makes a **live API call** (listing models) with your key, so it needs
+network access and can fail on a bad key or an outage. Chrome-not-found is also reported as a pre-flight error.
+
+**Trace (`--trace PATH`):** `JsonlTraceSink` *appends* to an existing file (it never truncates), one JSON object
+per event. Each record has `ts` (ISO 8601, UTC) and `run_id` (a uuid4 per sink, i.e. per CLI invocation), so
+several runs can share a file. A pre-flight failure still writes `error_msg`, `state: error` and `done` events.
 
 ## MCP server
 
-Tools: `run_browser_task(task, start_url?, max_steps?, allowed_domains?)` (one run at a time; a concurrent call returns an error dict) and `get_agent_config()` (no secrets). Configuration comes from `LBA_*` environment variables.
+Tools: `run_browser_task(task, start_url?, max_steps?, allowed_domains?)` and `get_agent_config()` (no secrets;
+API key shown as `set`, URL credentials/tokens and `model.extra` values redacted).
+
+- One task at a time; a concurrent call fails at once with a `busy` error.
+- `max_steps` must be 1-200; `allowed_domains`, if given, must be non-empty. Invalid input is rejected.
+- If the server has `LBA_ALLOWED_DOMAINS`, a call's `allowed_domains` can only **narrow** it: a requested domain
+  is kept only if it equals or is a subdomain of a server domain; an empty result returns an error and nothing runs.
+  Without a server allowlist the call's list is used. Blocked domains (banks, payments, ...) always stay blocked.
+- Any status other than `success` is returned with `isError: true`; the `RunResult` dict is in `structuredContent`
+  (and the text content).
+
+Configuration comes from `LBA_*` environment variables: `LBA_PROVIDER`, `LBA_MODEL`, `LBA_API_KEY`, `LBA_BASE_URL`,
+`LBA_HEADLESS`, `LBA_CDP_URL`, `LBA_MAX_STEPS`, `LBA_TIMEOUT_S`, `LBA_ALLOWED_DOMAINS` (comma-separated), plus
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` for those providers. See `AgentConfig.from_env` in
+`local_browser_agent/config.py` for the full list.
+
+Run it without cloning anything, via uvx:
 
 ```bash
-claude mcp add local-browser-agent -e LBA_PROVIDER=anthropic -e ANTHROPIC_API_KEY=sk-ant-... -- uv run lba mcp
+uvx --from "local-browser-agent[mcp] @ git+https://github.com/rogerflores3113/search" lba mcp
+```
+
+Claude Code:
+
+```bash
+claude mcp add local-browser-agent -e LBA_PROVIDER=anthropic -e ANTHROPIC_API_KEY=sk-ant-... -- \
+  uvx --from "local-browser-agent[mcp] @ git+https://github.com/rogerflores3113/search" lba mcp
+# or, from a checkout:
+claude mcp add local-browser-agent -e LBA_PROVIDER=anthropic -e ANTHROPIC_API_KEY=sk-ant-... -- \
+  uv run --directory /path/to/search lba mcp
 ```
 
 Claude Desktop (`claude_desktop_config.json`):

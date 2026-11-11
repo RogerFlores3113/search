@@ -863,6 +863,8 @@ def test_runs_fragment_renders_rows():
     """runs_fragment.html must render each run's task, status, and started_at."""
     from fastapi.templating import Jinja2Templates
     t = Jinja2Templates(directory="local_browser_agent/app/templates")
+    from local_browser_agent.app.main import _humantime
+    t.env.filters["humantime"] = _humantime
     runs = [
         {"task": "first task", "status": "complete", "summary": None,
          "started_at": "2026-05-16T10:00:00Z", "completed_at": None, "run_id": "a"},
@@ -885,6 +887,8 @@ def test_runs_fragment_empty_state():
     """runs_fragment.html with empty runs must show 'No runs yet.' empty-state copy."""
     from fastapi.templating import Jinja2Templates
     t = Jinja2Templates(directory="local_browser_agent/app/templates")
+    from local_browser_agent.app.main import _humantime
+    t.env.filters["humantime"] = _humantime
     rendered = t.get_template("runs_fragment.html").render(runs=[])
     assert "No runs yet. Enter a task above to start." in rendered
 
@@ -893,6 +897,8 @@ def test_runs_fragment_escapes_task():
     """runs_fragment.html must HTML-escape task strings (XSS mitigation T-03-02)."""
     from fastapi.templating import Jinja2Templates
     t = Jinja2Templates(directory="local_browser_agent/app/templates")
+    from local_browser_agent.app.main import _humantime
+    t.env.filters["humantime"] = _humantime
     runs = [{"task": "<script>alert(1)</script>", "status": "complete", "summary": None,
              "started_at": "2026-05-16T00:00:00Z", "completed_at": None, "run_id": "abc"}]
     rendered = t.get_template("runs_fragment.html").render(runs=runs)
@@ -1163,7 +1169,7 @@ async def test_pause_routes_state_event_to_control_queue(monkeypatch):
 # ---------------------------------------------------------------------------
 
 async def test_get_index_returns_html(monkeypatch):
-    """GET / must return 200 HTML with hx-ext='sse', sse-connect='/stream', and textarea[name=task]."""
+    """GET / must return 200 HTML that opens the /stream EventSource and has textarea[name=task]."""
     from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1172,8 +1178,8 @@ async def test_get_index_returns_html(monkeypatch):
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
     body = resp.text
-    assert 'hx-ext="sse"' in body, "Expected hx-ext=\"sse\" in index.html"
-    assert 'sse-connect="/stream"' in body, "Expected sse-connect=\"/stream\" in index.html"
+    assert "connectStream()" in body, "Expected connectStream() in index.html"
+    assert "new EventSource('/stream')" in body, "Expected native EventSource on /stream"
     assert 'name="task"' in body, "Expected textarea name=\"task\" in index.html"
 
 
@@ -1226,16 +1232,16 @@ async def test_sse_bridges_use_data_bridge_not_hx_on():
         ("model_info", "handleModelInfo"),
         ("thought", "handleThought"),
         ("action_detail", "handleActionDetail"),
+        ("human_needed", "handleHumanNeeded"),
     ):
-        assert f'sse-swap="{swap_name}"' in body, f"Missing sse-swap bridge for {swap_name}"
-        assert f'data-bridge="{handler}"' in body, f"Missing data-bridge for {handler}"
+        assert f"{swap_name}: '{handler}'" in body, f"Event {swap_name} is not routed to {handler}"
     # Regression guard for Issue #7: the dead narration bridge stays out.
     assert 'sse-swap="narration"' not in body, (
         "narration sse-swap was removed in Issue #7"
     )
-    assert "addEventListener('htmx:sseMessage'" in body, (
-        "Expected init() to attach handlers via addEventListener('htmx:sseMessage', ...)"
-    )
+    # The stream is a native EventSource that is re-opened after each run.
+    assert "new EventSource('/stream')" in body
+    assert "addEventListener('streamStarted'" in body
 
 
 async def test_get_index_has_result_area():

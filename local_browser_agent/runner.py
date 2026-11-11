@@ -31,10 +31,18 @@ from local_browser_agent.events import (
     TokenEvent,
 )
 from local_browser_agent.models import build_llm, resolve_model_name
+from local_browser_agent.redact import redact, redact_url
 from local_browser_agent.safety import ActionRequest, ApprovalCallback, GuardedTools  # noqa: F401
 
 logger = logging.getLogger("local_browser_agent")
 
+SINK_TIMEOUT_S = 5.0  # a hung event sink is logged and dropped after this long
+TEARDOWN_TIMEOUT_S = 10.0  # bound on stopping/killing the browser
+_TICK_S = 0.1  # supervisor poll interval (timeout clock / stop checks)
+_CONNECTION_ERROR_MARKERS = (
+    "all connection attempts failed", "connect call failed", "connection refused",
+    "econnrefused", "cannot connect to host", "failed to connect", "connecterror",
+)
 SCREENSHOT_INTERVAL_S = 0.5
 _SCREENSHOT_BACKOFF_CAP_S = 4.0
 _SCREENSHOT_TIMEOUT_S = 3.0
@@ -187,15 +195,25 @@ class BrowserAgent:
             self._agent.stop()
 
     # ---- events --------------------------------------------------------
+    def _secrets(self) -> list[str]:
+        key = self.config.model.api_key
+        return [key.get_secret_value()] if key is not None else []
+
+    def _redact(self, text: str) -> str:
+        return redact(text, self._secrets())
+
     async def _emit(self, event: Any) -> None:
         step_event = isinstance(event, StepCompletedEvent)
         for sink in self.sinks:
             if step_event and not getattr(sink, "wants_step_events", False):
                 continue
             try:
-                await sink(event)
+                async with asyncio.timeout(SINK_TIMEOUT_S):
+                    await sink(event)
+            except TimeoutError:
+                logger.warning("event sink %r timed out after %gs; event dropped", sink, SINK_TIMEOUT_S)
             except Exception as e:  # a failing sink must never crash a run
-                logger.warning("event sink %r failed: %s", sink, e)
+                logger.warning("event sink %r failed: %s", sink, self._redact(str(e)))
 
     def _wants_screenshots(self) -> bool:
         return any(getattr(s, "wants_screenshots", True) for s in self.sinks)
@@ -237,6 +255,20 @@ class BrowserAgent:
         screenshot_task = None
         screenshot_stop = asyncio.Event()
         agent = None
+        conn_msg: str | None = None
+        fatal: BaseException | None = None
+        # Cost tracking fetches pricing data over the network. The runner honours
+        # ``cfg.calculate_cost`` as-is; the field's default (True) lives in config.py.
+        want_cost = bool(cfg.calculate_cost)
+
+        def _cdp_connect_message(text: str) -> str | None:
+            """Friendly message when attaching to ``browser.cdp_url`` failed to connect."""
+            url = cfg.browser.cdp_url
+            low = text.lower()
+            if not url or "net::" in low or not any(m in low for m in _CONNECTION_ERROR_MARKERS):
+                return None
+            return (f"Could not connect to Chrome at {redact_url(url)}. "
+                    "Is Chrome running with --remote-debugging-port?")
 
         try:
             model_name = resolve_model_name(cfg.model)
@@ -262,7 +294,7 @@ class BrowserAgent:
             ))
 
         async def _on_step_end(agent_instance) -> None:
-            nonlocal step_start, cost_total, cost_seen, usage_seen, captcha_msg
+            nonlocal step_start, cost_total, cost_seen, usage_seen, captcha_msg, conn_msg
             duration_ms = int((time.monotonic() - step_start) * 1000)
             hist = agent_instance.history
             idx = hist.number_of_steps()  # 1-indexed
@@ -281,10 +313,14 @@ class BrowserAgent:
             for r in (getattr(agent_instance.state, "last_result", None) or []):
                 err = getattr(r, "error", None)
                 if err:
-                    if step_error is None:
-                        step_error = err
                     if looks_like_captcha(str(err)):
                         captcha_hit = True
+                    mapped = _cdp_connect_message(str(err))
+                    if mapped is not None and conn_msg is None:
+                        conn_msg = mapped
+                        agent_instance.stop()
+                    if step_error is None:
+                        step_error = mapped or self._redact(str(err))
             if step_error:
                 errors.append(step_error)
             steps.append(StepRecord(index=idx, action_type=action_type, target_label=label,
@@ -292,7 +328,7 @@ class BrowserAgent:
                                     url=url, error=step_error, duration_ms=duration_ms))
 
             tok = {"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}
-            if cfg.calculate_cost and provider != "ollama":
+            if want_cost and provider != "ollama":
                 try:
                     svc = agent_instance.token_cost_service
                     new = svc.usage_history[usage_seen:]
@@ -347,7 +383,7 @@ class BrowserAgent:
                 except Exception:
                     pass
                 where = f" at {page_url}" if page_url else ""
-                note = f"Human verification required (CAPTCHA or bot check detected{where})"
+                note = self._redact(f"Human verification required (CAPTCHA or bot check detected{where})")
                 await self._emit(HumanNeededEvent(reason="captcha", url=page_url, message=note))
                 if cfg.on_captcha == "pause":
                     # Pause, never solve: the browser-use loop waits before the next step until
@@ -363,49 +399,90 @@ class BrowserAgent:
 
         try:
             try:
-                if self.preflight is not None:
-                    await self.preflight()
-                llm = build_llm(cfg.model)
-                browser = build_browser_session(cfg.browser, cfg.safety)
-                tools = GuardedTools(
-                    patterns=cfg.safety.commerce_patterns,
-                    gate_commerce_clicks=cfg.safety.gate_commerce_clicks,
-                    approval=self.approval,
-                    blocked_log=blocked,
-                )
-                parts = [p for p in (cfg.system_prompt_extension, cfg.safety.guardrail_prompt) if p]
-                kwargs: dict[str, Any] = dict(
-                    task=task,
-                    llm=llm,
-                    browser_session=browser,
-                    tools=tools,
-                    extend_system_message="\n\n".join(parts) or None,
-                    use_vision=cfg.use_vision,
-                    use_judge=cfg.use_judge,
-                    calculate_cost=cfg.calculate_cost,
-                    register_new_step_callback=_pre_step,
-                )
-                if start_url:
-                    kwargs["initial_actions"] = [{"navigate": {"url": start_url, "new_tab": False}}]
-                agent = Agent(**kwargs)
-                self._agent = agent
-                if self._stop_requested:
-                    agent.stop()
-                if self.sinks and self._wants_screenshots():
-                    screenshot_task = asyncio.create_task(
-                        _screenshot_loop(browser, self._emit, screenshot_stop)
+                async def _main() -> None:
+                    nonlocal browser, agent, screenshot_task, history
+                    nonlocal fatal
+                    if self.preflight is not None:
+                        try:
+                            await self.preflight()
+                        except (SystemExit, KeyboardInterrupt) as exc:
+                            # A task would hand these to the event loop; re-raise from run() instead.
+                            fatal = exc
+                            return
+                    if self._stop_requested:
+                        return  # stop() during preflight: build neither the Agent nor the browser
+                    llm = build_llm(cfg.model)
+                    browser = build_browser_session(cfg.browser, cfg.safety)
+                    tools = GuardedTools(
+                        patterns=cfg.safety.commerce_patterns,
+                        gate_commerce_clicks=cfg.safety.gate_commerce_clicks,
+                        allow_evaluate=cfg.safety.allow_evaluate,
+                        blocked_domains=cfg.safety.blocked_domains,
+                        approval=self.approval,
+                        blocked_log=blocked,
                     )
+                    parts = [p for p in (cfg.system_prompt_extension, cfg.safety.guardrail_prompt) if p]
+                    kwargs: dict[str, Any] = dict(
+                        task=task,
+                        llm=llm,
+                        browser_session=browser,
+                        tools=tools,
+                        extend_system_message="\n\n".join(parts) or None,
+                        use_vision=cfg.use_vision,
+                        use_judge=cfg.use_judge,
+                        calculate_cost=want_cost,
+                        register_new_step_callback=_pre_step,
+                    )
+                    if start_url:
+                        kwargs["initial_actions"] = [{"navigate": {"url": start_url, "new_tab": False}}]
+                    agent = Agent(**kwargs)
+                    self._agent = agent
+                    if self._stop_requested:
+                        agent.stop()
+                    if self.sinks and self._wants_screenshots():
+                        screenshot_task = asyncio.create_task(
+                            _screenshot_loop(browser, self._emit, screenshot_stop)
+                        )
+                    history = await agent.run(max_steps=cfg.max_steps, on_step_end=_on_step_end)
+
+                # timeout_s covers the whole run (preflight, build, agent loop). The clock is
+                # paused while the run is paused (e.g. on_captcha="pause" waiting for a human).
+                main_task = asyncio.ensure_future(_main())
+                deadline = time.monotonic() + cfg.timeout_s
+                last_tick = time.monotonic()
                 try:
-                    history = await asyncio.wait_for(
-                        agent.run(max_steps=cfg.max_steps, on_step_end=_on_step_end),
-                        timeout=cfg.timeout_s,
-                    )
-                except asyncio.TimeoutError:
-                    timed_out = True
-                    error_msg = f"Session timeout ({cfg.timeout_s:g}s)"
-                    history = getattr(agent, "history", None)
+                    while not main_task.done():
+                        now = time.monotonic()
+                        if self._paused:
+                            deadline += now - last_tick
+                        last_tick = now
+                        remaining = deadline - now
+                        if remaining <= 0:
+                            timed_out = True
+                            break
+                        if self._stop_requested and agent is None:
+                            main_task.cancel()  # stop() before the agent exists: abort preflight
+                        await asyncio.wait({main_task}, timeout=min(remaining, _TICK_S))
+                    if timed_out:
+                        error_msg = f"Session timeout ({cfg.timeout_s:g}s)"
+                        if agent is not None:
+                            try:
+                                agent.stop()
+                            except Exception as e:
+                                logger.debug("agent.stop() failed: %s", e)
+                        main_task.cancel()
+                        await asyncio.wait({main_task}, timeout=TEARDOWN_TIMEOUT_S)
+                        history = getattr(agent, "history", None)
+                    elif not main_task.cancelled():
+                        main_task.result()  # re-raise a real failure
+                    if fatal is not None:
+                        raise fatal
+                finally:
+                    if not main_task.done():
+                        main_task.cancel()
             except Exception as e:
-                error_msg = f"{type(e).__name__}: {e}" if str(e) == "" else str(e)
+                error_msg = self._redact(f"{type(e).__name__}: {e}" if str(e) == "" else str(e))
+                error_msg = _cdp_connect_message(str(e)) or error_msg
                 logger.warning("run %s failed: %s", run_id, error_msg)
                 if agent is not None:
                     history = getattr(agent, "history", None)
@@ -419,12 +496,15 @@ class BrowserAgent:
                         logger.warning("screenshot loop did not stop in time; continuing teardown")
                 if browser is not None:
                     try:
-                        if cfg.browser.keep_alive or cfg.browser.cdp_url:
-                            await browser.stop()  # leave a user-owned / kept-alive browser running
-                        else:
-                            await browser.kill()
+                        async with asyncio.timeout(TEARDOWN_TIMEOUT_S):
+                            if cfg.browser.keep_alive or cfg.browser.cdp_url:
+                                await browser.stop()  # leave a user-owned / kept-alive browser running
+                            else:
+                                await browser.kill()
+                    except TimeoutError:
+                        logger.warning("browser teardown timed out after %gs", TEARDOWN_TIMEOUT_S)
                     except Exception as e:
-                        logger.debug("browser teardown failed: %s", e)
+                        logger.debug("browser teardown failed: %s", self._redact(str(e)))
 
             urls: list[str] = []
             success_flag: bool | None = None
@@ -442,6 +522,8 @@ class BrowserAgent:
                 agent is not None and getattr(getattr(agent, "state", None), "stopped", False)
             )
 
+            if conn_msg and not error_msg:
+                error_msg = conn_msg
             if error_msg and not timed_out:
                 status = "error"
             elif timed_out:
@@ -455,7 +537,7 @@ class BrowserAgent:
             else:
                 status = "failed"
             summary = final
-            if error_msg:
+            if error_msg and error_msg not in errors:
                 errors.append(error_msg)
             return RunResult(
                 run_id=run_id,
@@ -485,9 +567,23 @@ class BrowserAgent:
 
 async def run_task(task: str, config: AgentConfig | None = None, *, sinks: Iterable[Any] = (),
                    approval: ApprovalCallback | None = None, start_url: str | None = None) -> RunResult:
+    """Run one natural-language task in Chrome and return its :class:`RunResult`.
+
+    Args:
+        task: What the agent should do, in plain language.
+        config: Model, browser and safety settings; ``AgentConfig.from_env()`` when omitted.
+        sinks: Event sinks (``QueueSink``, ``JsonlTraceSink``, ``CallbackSink`` or your own).
+        approval: Async callback asked before any gated purchase-like action; without
+            one, gated actions are denied.
+        start_url: Optional page to open before the agent starts.
+
+    Never raises for run failures: errors (including a missing Chrome or provider
+    problems) come back as ``status="error"`` with messages in ``RunResult.errors``.
+    """
     return await BrowserAgent(config, sinks=sinks, approval=approval).run(task, start_url=start_url)
 
 
 def run_task_sync(task: str, config: AgentConfig | None = None, *, sinks: Iterable[Any] = (),
                   approval: ApprovalCallback | None = None, start_url: str | None = None) -> RunResult:
+    """Blocking wrapper around :func:`run_task` for scripts without an event loop."""
     return asyncio.run(run_task(task, config, sinks=sinks, approval=approval, start_url=start_url))

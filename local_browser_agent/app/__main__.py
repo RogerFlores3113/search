@@ -14,6 +14,7 @@ See: .planning/phases/04-distribution/04-RESEARCH.md "Code Examples" section
 """
 from __future__ import annotations
 
+import argparse
 import multiprocessing
 import sys
 
@@ -44,18 +45,136 @@ def redirect_data_paths() -> None:
     (user_dir / "training").mkdir(parents=True, exist_ok=True)
 
 
-def main() -> None:
-    """Launch the web UI on 127.0.0.1:8080.
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
-    With no arguments: starts the server idle — open http://127.0.0.1:8080 and
-    start runs from the UI.
-    With a task string: pre-queues that task so the agent starts immediately on
-    server boot (dev-mode convenience, backward compatible).
+REQUIRED_TEMPLATES = ("index.html", "no_chrome.html", "runs_fragment.html")
+REQUIRED_STATIC = (
+    "style.css",
+    "vendor/htmx.min.js",
+    "vendor/htmx-ext-sse.js",
+    "vendor/alpinejs.min.js",
+)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="lba-app",
+        description=(
+            "Start the local-browser-agent web UI. It drives your own Chrome from this "
+            "machine; the server only accepts requests addressed to localhost."
+        ),
+    )
+    parser.add_argument(
+        "task", nargs="*",
+        help="optional task to run immediately when the server starts (dev convenience)",
+    )
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="interface to bind (loopback only; default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8080, help="port to listen on (default: 8080)")
+    parser.add_argument("--no-open", action="store_true",
+                        help="do not open the UI in your default browser")
+    parser.add_argument("--smoke", action="store_true",
+                        help="check that every module, template, static file and browser-use "
+                             "prompt file is present, then exit 0 (non-zero on failure); "
+                             "starts no server and no browser")
+    return parser
+
+
+def smoke_check() -> list[str]:
+    """Return a list of problems (empty when the install looks complete).
+
+    Imports every module the app needs and checks bundled resources exist. Used by
+    ``--smoke`` and by CI to validate frozen (PyInstaller) builds. Never starts a
+    server or a browser.
+    """
+    import importlib
+    from pathlib import Path
+
+    from local_browser_agent.app.main import _resource_path
+
+    problems: list[str] = []
+    for mod in (
+        "local_browser_agent",
+        "local_browser_agent.cli",
+        "local_browser_agent.runner",
+        "local_browser_agent.app.main",
+        "local_browser_agent.app.runner",
+        "local_browser_agent.app.db",
+        "local_browser_agent.app.settings",
+        "local_browser_agent.app.training_sink",
+        "uvicorn",
+        "fastapi",
+        "jinja2",
+        "aiosqlite",
+        "browser_use",
+        "browser_use.agent.service",
+        "browser_use.browser.session",
+        "browser_use.browser.profile",
+        "browser_use.tools.service",
+        "browser_use.dom.service",
+    ):
+        try:
+            importlib.import_module(mod)
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"import {mod} failed: {type(e).__name__}: {e}")
+
+    templates_dir = Path(_resource_path("local_browser_agent/app/templates"))
+    for name in REQUIRED_TEMPLATES:
+        if not (templates_dir / name).is_file():
+            problems.append(f"missing template: {templates_dir / name}")
+    static_dir = Path(_resource_path("local_browser_agent/app/static"))
+    for name in REQUIRED_STATIC:
+        if not (static_dir / name).is_file():
+            problems.append(f"missing static file: {static_dir / name}")
+
+    try:
+        import browser_use
+
+        prompts_dir = Path(browser_use.__file__).resolve().parent / "agent" / "system_prompts"
+        if not (prompts_dir / "system_prompt.md").is_file():
+            problems.append(f"missing browser_use prompt file: {prompts_dir / 'system_prompt.md'}")
+        elif not list(prompts_dir.glob("*.md")):
+            problems.append(f"no browser_use prompt files in {prompts_dir}")
+    except Exception as e:  # noqa: BLE001
+        problems.append(f"browser_use prompt check failed: {type(e).__name__}: {e}")
+    return problems
+
+
+def run_smoke() -> int:
+    problems = smoke_check()
+    report = "smoke: OK" if not problems else "smoke: FAILED\n" + "\n".join(f"  - {p}" for p in problems)
+    if sys.stdout is not None:  # None in windowed (console=False) frozen builds
+        print(report)
+    if getattr(sys, "frozen", False):
+        # Windowed frozen builds have no console: leave the report where CI can read it.
+        try:
+            from local_browser_agent.app.paths import get_user_data_dir
+            (get_user_data_dir() / "smoke.log").write_text(report + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    return 1 if problems else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Launch the web UI (default 127.0.0.1:8080).
+
+    With no task: starts the server idle - open the printed URL and start runs from the
+    UI. With a task string: pre-queues that task so the agent starts immediately on server
+    boot (dev-mode convenience, backward compatible).
 
     Frozen-app behavior:
       - redirect_data_paths() moves DB and JSONL writes to user_data_dir
       - Logging is set up to user_data_dir/app.log so errors are visible with console=False
     """
+    parser = build_parser()
+    args, _unknown = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
+
+    if args.host not in LOCAL_HOSTS:
+        parser.error("--host must be a loopback address (127.0.0.1, localhost or ::1)")
+
+    if args.smoke:
+        return run_smoke()
+
     # (a) Redirect writable paths when running as frozen .app bundle
     redirect_data_paths()
 
@@ -75,30 +194,33 @@ def main() -> None:
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         )
 
-    # (a) Preserve existing dev-mode sys.argv task-string behavior
-    args = sys.argv[1:]
-    if args:
-        app.state.pending_task = " ".join(args)
-    else:
-        if not getattr(sys, "frozen", False):
-            print("Open http://127.0.0.1:8080 to start a run.")
+    host_for_url = "[::1]" if args.host == "::1" else args.host
+    url = f"http://{host_for_url}:{args.port}"
 
-    # (c) Chrome detection — always, not only when frozen — so dev-mode also flags it
+    # (a) Preserve existing dev-mode task-string behavior
+    if args.task:
+        app.state.pending_task = " ".join(args.task)
+    elif not getattr(sys, "frozen", False):
+        print(f"Open {url} to start a run.")
+
+    # (c) Chrome detection - always, not only when frozen - so dev-mode also flags it
     app.state.chrome_missing = not chrome_is_installed()
 
     # (d) Schedule browser auto-open ~2s after uvicorn starts binding
-    schedule_browser_open(url="http://127.0.0.1:8080", delay=2.0)
+    if not args.no_open:
+        schedule_browser_open(url=url, delay=2.0)
 
     # Blocks until server exits
     uvicorn.run(
         "local_browser_agent.app.main:app",
-        host="127.0.0.1",
-        port=8080,
+        host=args.host,
+        port=args.port,
         log_level="info",
         use_colors=False,  # Required: prevents ColourizedFormatter crash on Windows frozen
     )
+    return 0
 
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()  # MUST be first — prevents endless spawn loop on Windows
-    main()
+    sys.exit(main())

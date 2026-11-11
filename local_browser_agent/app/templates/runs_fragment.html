@@ -6,7 +6,7 @@
       <summary>
         <span class="run-history-task">{{ run.task[:60] }}</span>
         <span class="badge badge-{{ run.status | replace('complete','green') | replace('error','red') | replace('stopped','gray') }}">{{ run.status }}</span>
-        <time class="run-history-time" datetime="{{ run.started_at }}">{{ run.started_at }}</time>
+        <time class="run-history-time" datetime="{{ run.started_at }}">{{ run.started_at | humantime }}</time>
       </summary>
       {% set _step_count = run.get('step_count', 0) %}
       {% set _duration_s = run.get('total_duration_s', 0) %}
@@ -14,6 +14,8 @@
       {% set _model = run.get('model_name', none) %}
       {% set _provider = run.get('provider', none) %}
       {% set _prompt_id = run.get('prompt_id', none) %}
+      {% set _error = run.get('error', none) %}
+      {% if _error %}<div class="run-history-error" role="note">Reason: {{ _error }}</div>{% endif %}
       <div class="run-history-detail">{% if _step_count %}{{ _step_count }} steps{% else %}—{% endif %} · {% if _duration_s %}{{ _duration_s }}s{% else %}—{% endif %} · {% if _provider == 'ollama' %}local (no API cost){% elif _cost is not none %}~${{ '%.2f' % _cost }}{% else %}—{% endif %}{% if _model %} · {{ _model }}{% endif %}{% if _prompt_id %} · System prompt: {{ _prompt_id }}{% endif %}</div>
     </details>
   </li>

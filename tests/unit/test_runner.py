@@ -67,7 +67,8 @@ async def test_run_agent_constructs_browser_session_with_chrome_channel(monkeypa
     # BrowserProfile must be built with browser settings and prohibited_domains
     assert MockBrowserProfile.called, "BrowserProfile was never instantiated"
     profile_kwargs = MockBrowserProfile.call_args.kwargs
-    assert profile_kwargs.get("channel") == "chrome"
+    assert profile_kwargs.get("channel") is None  # executable_path and channel are mutually exclusive
+    assert profile_kwargs.get("executable_path")
     assert profile_kwargs.get("headless") is False
     assert profile_kwargs.get("keep_alive") is False
     assert profile_kwargs.get("window_size") == {"width": 1280, "height": 800}
@@ -121,23 +122,18 @@ async def test_run_agent_wraps_in_wait_for(monkeypatch):
     MockAgent = MagicMock(return_value=mock_agent_instance)
     MockChatOllama = MagicMock()
 
-    captured_calls = []
-
-    async def fake_wait_for(coro, timeout=None):
-        captured_calls.append({"timeout": timeout})
-        return await coro
+    # The library supervises the whole run itself (not via asyncio.wait_for): the app only has
+    # to hand the configured session timeout to AgentConfig.timeout_s.
+    from local_browser_agent.app.runner import build_agent_config
+    assert build_agent_config(_default_config).timeout_s == _default_config.session_timeout
 
     monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("local_browser_agent.app.runner.asyncio.wait_for", fake_wait_for)
-
     with patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
          patch("browser_use.ChatOllama", MockChatOllama), \
          patch("local_browser_agent.runner.Agent", MockAgent):
         from local_browser_agent.app.runner import run_agent
         await run_agent("test task")
-
-    assert len(captured_calls) == 1
-    assert captured_calls[0]["timeout"] == _default_config.session_timeout
+    assert mock_agent_instance.run.await_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +391,7 @@ async def test_preflight_raises_when_anthropic_key_missing(monkeypatch_env):
     from local_browser_agent.app.config import Settings
     from local_browser_agent.app.runner import PreFlightError, pre_flight_check
 
-    with pytest.raises(PreFlightError, match="Missing Anthropic API key"):
+    with pytest.raises(PreFlightError, match="No Anthropic API key is set.*Settings"):
         await pre_flight_check(Settings())
 
 
@@ -414,7 +410,7 @@ async def test_preflight_raises_when_anthropic_key_invalid(monkeypatch_env):
         )
     )
     with patch("anthropic.AsyncAnthropic", return_value=mock_client):
-        with pytest.raises(PreFlightError, match="Invalid Anthropic API key"):
+        with pytest.raises(PreFlightError, match="Anthropic API key was rejected"):
             await pre_flight_check(Settings())
 
 
@@ -428,7 +424,7 @@ async def test_preflight_raises_when_openai_key_missing(monkeypatch_env):
     from local_browser_agent.app.config import Settings
     from local_browser_agent.app.runner import PreFlightError, pre_flight_check
 
-    with pytest.raises(PreFlightError, match="Missing OpenAI API key"):
+    with pytest.raises(PreFlightError, match="No OpenAI API key is set.*Settings"):
         await pre_flight_check(Settings())
 
 
@@ -444,7 +440,7 @@ async def test_preflight_raises_when_openai_key_invalid(monkeypatch_env, httpx_m
     from local_browser_agent.app.config import Settings
     from local_browser_agent.app.runner import PreFlightError, pre_flight_check
 
-    with pytest.raises(PreFlightError, match="Invalid OpenAI API key"):
+    with pytest.raises(PreFlightError, match="OpenAI API key was rejected"):
         await pre_flight_check(Settings())
 
 
