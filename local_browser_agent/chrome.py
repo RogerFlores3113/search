@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import posixpath
 import shutil
 import sys
 
@@ -92,7 +93,8 @@ def find_chrome(channel: str | None = "chrome") -> str | None:
         elif key == "chromium":
             names.append(_MAC_APPS["chrome"])
         roots = ("/Applications", os.path.expanduser("~/Applications"))
-        paths = [os.path.join(r, n) for n in names for r in roots]
+        # macOS paths are POSIX; posixpath keeps them correct even when tests simulate darwin elsewhere.
+        paths = [posixpath.join(r, n) for n in names for r in roots]
         return next((p for p in paths if os.path.exists(p)), None)
     if sys.platform == "win32":
         return next((p for p in windows_chrome_paths(key) if os.path.exists(p)), None)
