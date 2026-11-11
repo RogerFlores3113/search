@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urljoin
 
 import httpx
 
-from .server import FixtureState
+from .server import SITE_DIR, FixtureState
 
 # ---------------------------------------------------------------------------
 # Result type and answer helpers
@@ -43,7 +44,14 @@ def norm(text: str | None) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-_FINAL_RE = re.compile(r"^[ \t>*_`#-]*final(?:[ \t]+answer)?[ \t*_`]*[:=][ \t*_`]*(.+?)[ \t*_`]*$", re.I | re.M)
+#: Bump whenever answer matching or any checker's logic changes: it is part of ``taskset_hash``, so
+#: results recorded with different matching rules are never silently compared.
+CHECKER_VERSION = "3"
+
+_FINAL_BOL_RE = re.compile(r"^[ \t>*_`#-]*final(?:[ \t]+answer)?[ \t*_`]*[:=][ \t*_`]*(.+?)[ \t*_`]*$", re.I | re.M)
+# After other text on the same line ("The result is 73 MB. FINAL: 73 MB"): upper case only, so
+# prose like "the final: ..." is not mistaken for the marker.
+_FINAL_MID_RE = re.compile(r"(?<=[\s.!?;)])FINAL(?:[ \t]+ANSWER)?[ \t*_`]*[:=][ \t*_`]*(.+?)[ \t*_`]*$", re.M)
 
 #: Appended to every task instruction so the answer can be checked on one line.
 FINAL_SUFFIX = (
@@ -51,40 +59,67 @@ FINAL_SUFFIX = (
     "containing only the answer value (for a task that only performs actions, write `FINAL: done`)."
 )
 
+#: Negations and hedges that, within four tokens before a value, reject it.
 _NEGATIONS = frozenset(
     "not no never none neither nor isnt wasnt arent werent dont doesnt didnt cant cannot couldnt wont "
     "wouldnt shouldnt hasnt havent without except unlike instead maybe perhaps possibly probably might "
-    "guess guessing unsure unclear uncertain unknown".split()
+    "could likely seems seem seemed appears appear suppose suspect guess guessing unsure unclear "
+    "uncertain unknown between".split()
 )
-_NEG_PHRASES = ("not sure", "i think", "i guess", "no idea", "rather than", "instead of")
-_CLAUSE_SPLIT = re.compile(r"[,;:!?()\n\u2014\u2013]|\.(?!\d)| - |\bbut\b|\bhowever\b|\bactually\b")
-_ALT = re.compile(r"\b(?:or|vs\.?|versus)\s+(?:(?:maybe|perhaps|possibly|probably|even|about|around)\s+)?(\S+)")
-_ALT_BEFORE = re.compile(r"(\S+)\s+(?:or|vs\.?|versus)\s+$")
+#: Comparison words that only count directly before the value ("under 73", "over 12").
+_ADJACENT_COMPARATORS = frozenset("under over below above beyond exceeding exceeds".split())
+_NEG_PHRASES = ("not sure", "i think", "i guess", "no idea", "rather than", "instead of", "at least", "at most", "up to")
+_COMPARISON = re.compile(r"\b(?:less|more|greater|fewer|higher|lower|bigger|smaller) than\b")
+#: Approximations: rejected in a FINAL value (where one exact value is requested), tolerated in prose.
+_APPROX = frozenset("about approximately approx around roughly nearly almost circa".split())
+#: A statement about the value that follows it in its clause ("73 MB is wrong", "Baltic is not the highest").
+_POSTFIX_NEG = re.compile(
+    r"\b(?:is|are|was|were|am)\s+(?:not|no longer|n't)\b|\b(?:isn't|aren't|wasn't|weren't)\b"
+    r"|\b(?:wrong|incorrect|false|invalid|mistaken|inaccurate|outdated)\b|\bnot\s+(?:correct|right|true|accurate)\b"
+)
+_CLAUSE_SPLIT = re.compile(r"[,;:!?()\n—–]|\.(?!\d)| - |\bbut\b|\bhowever\b|\bactually\b")
+_SEP = r"(?:\b(?:or|vs\.?|versus)\b|[/|&])"
+_FILLER = r"(?:(?:maybe|perhaps|possibly|probably|even|about|around)\s+)?"
+_ALT = re.compile(_SEP + r"\s*" + _FILLER + r"(\S+)")
+_ALT_BEFORE = re.compile(r"(\S+)\s*" + _SEP + r"\s*$")
+#: Words that start a contrast clause after the answer ("Beacon Suites over Dockside Motel").
+_CONTRAST = re.compile(
+    r"\b(?:over|unlike|rather than|instead of|as opposed to|in contrast to|compared (?:to|with))\b[^.;\n]*", re.I
+)
 
 
 def final_answer(answer: str | None) -> str | None:
-    """The value on the last ``FINAL: ...`` line, or ``None`` when the agent wrote none."""
-    found = _FINAL_RE.findall(answer or "")
-    return found[-1].strip() if found else None
+    """The value of the last ``FINAL: ...`` marker, or ``None`` when the agent wrote none.
+
+    The marker is recognised at the start of a line (any case) or, in upper case, after other
+    text on the same line.
+    """
+    text = answer or ""
+    found = [(m.start(), m.group(1)) for m in _FINAL_BOL_RE.finditer(text)]
+    found += [(m.start(), m.group(1)) for m in _FINAL_MID_RE.finditer(text)]
+    return max(found)[1].strip() if found else None
 
 
 def _strip_parentheticals(text: str) -> str:
     return re.sub(r"\([^)]*\)", " ", text)
 
 
-def _scope(answer: str | None, *, drop_parentheticals: bool = False) -> str:
-    """The text checkers look at: the FINAL value when present, else the whole answer."""
-    final = final_answer(answer)
-    if final is not None:
-        return final
-    text = answer or ""
-    return _strip_parentheticals(text) if drop_parentheticals else text
+def _lead_clause(final: str) -> str:
+    """The leading answer clause of a FINAL value: no parenthetical asides, no "over/unlike/not X" contrast."""
+    s = _strip_parentheticals(final)
+    if not re.search(r"\w", s):
+        s = final
+    m = _CONTRAST.search(s)
+    if m and re.search(r"\w", s[: m.start()]):
+        s = s[: m.start()]
+    return s
 
 
 def _needle_pattern(n: str) -> str:
     start = r"(?<!\w)(?<!\d\.)"
     end = r"(?!\d|\.\d)" if n[-1].isdigit() else r"(?!\w|\.\d)"
-    return start + re.escape(n) + end
+    body = re.escape(n).replace(r"\-", "-").replace("-", r"[-\s]")  # "SAVE-3917" also matches "save 3917"
+    return start + body + end
 
 
 def _leading_number(tok: str) -> str | None:
@@ -92,72 +127,107 @@ def _leading_number(tok: str) -> str | None:
     return m.group(0) if m else None
 
 
-def _accepted(text: str, m: re.Match[str], needle: str) -> bool:
-    """False when this occurrence is negated, hedged, or one of several competing candidates."""
+def _competes(tok: str, needle: str, want_digits: bool) -> bool:
+    tok = tok.strip(".,;:!?)(")
+    if want_digits:
+        other = _leading_number(tok)
+        return other is not None and other != _leading_number(needle)
+    return tok.isalpha() and tok not in {"the", "a", "an"}
+
+
+def _accepted(text: str, m: re.Match[str], needle: str, strict: bool = False) -> bool:
+    """False when this occurrence is negated, hedged, compared, or one of several competing candidates."""
     prefix = text[: m.start()]
     clause = _CLAUSE_SPLIT.split(prefix)[-1]
     tokens = [re.sub(r"[^a-z']", "", w).replace("'", "") for w in clause.split()]
     window = tokens[-4:]
     if any(w in _NEGATIONS for w in window):
         return False
-    if any(p in " ".join(clause.split()[-4:]) for p in _NEG_PHRASES):
+    if tokens and tokens[-1] in _ADJACENT_COMPARATORS:
+        return False
+    tail = " ".join(clause.split()[-4:])
+    if any(p in tail for p in _NEG_PHRASES) or _COMPARISON.search(tail):
+        return False
+    if strict and (any(w in _APPROX for w in tokens[-2:]) or prefix.rstrip().endswith(("~", "≈"))):
         return False
     rest = text[m.end() :]
     if rest.startswith("?"):
         return False
+    if _POSTFIX_NEG.search(_CLAUSE_SPLIT.split(rest, 1)[0]):
+        return False
     want_digits = _leading_number(needle) is not None
     for alt in _ALT.finditer(rest[:40]):
-        if alt.start() > 8:  # the "or" must follow the needle directly
+        if alt.start() > 8:  # the separator must follow the needle directly
             break
-        tok = alt.group(1).strip(".,;:!?)")
-        if want_digits:
-            other = _leading_number(tok)
-            if other is not None and other != _leading_number(needle):
-                return False
-        elif tok.isalpha() and tok not in {"the", "a", "an"}:
+        if _competes(alt.group(1), needle, want_digits):
             return False
     before = _ALT_BEFORE.search(prefix[-40:])
-    if before:
-        tok = before.group(1).strip(".,;:!?(")
-        if want_digits:
-            other = _leading_number(tok)
-            if other is not None and other != _leading_number(needle):
-                return False
-        elif tok.isalpha() and tok not in {"the", "a", "an"}:
-            return False
+    if before and _competes(before.group(1), needle, want_digits):
+        return False
     return True
 
 
-def _mentions_in(text: str, needle: str) -> bool:
+def _plain_number(n: str) -> float | None:
+    return float(n) if re.fullmatch(r"\d+(?:\.\d+)?", n) else None
+
+
+def _has_competing_value(text: str, n: str) -> bool:
+    """True when ``text`` also holds a different number with the same unit as ``n`` ("73 MB ... 12 MB")."""
+    want = _plain_number(n)
+    if want is None:
+        return False
+    found = [
+        (float(m.group(1)), m.group(2) or "")
+        for m in re.finditer(r"(?<![\w.:])(\d+(?:\.\d+)?)(?!:\d)\s*([a-z]*)", text)
+    ]
+    units = {u for v, u in found if v == want}
+    return any(v != want and u in units for v, u in found)
+
+
+def _mentions_in(text: str, needle: str, *, strict: bool = False, single: bool = False) -> bool:
     n = norm(needle)
     if not n:
         return False
     text = norm(text)
-    return any(_accepted(text, m, n) for m in re.finditer(_needle_pattern(n), text))
+    if not any(_accepted(text, m, n, strict) for m in re.finditer(_needle_pattern(n), text)):
+        return False
+    return not (single and _has_competing_value(text, n))
 
 
-def mentions(answer: str | None, needle: str) -> bool:
+def mentions(answer: str | None, needle: str, *, single: bool = True) -> bool:
     """True if the answer states ``needle`` as its answer.
 
-    Looks only at the ``FINAL:`` line when there is one, else at the whole text. An occurrence
-    does not count when a negation or hedge ("not", "maybe", "probably", ...) sits within four
-    tokens before it in the same clause, when it is followed by "?", or when it is offered as
-    one of several candidates ("1887 or 1878").
+    Looks only at the leading clause of the ``FINAL:`` value when there is one (parentheticals
+    and "over/unlike X" contrasts ignored), else at the whole text. An occurrence does not count
+    when a negation or hedge ("not", "maybe", "could", "likely", "less than", "between", ...) sits
+    within four tokens before it in the same clause, when a statement against it follows
+    ("is wrong", "is not"), when it is followed by "?", or when it is offered as one of several
+    candidates ("1887 or 1878", "73 / 12"). In a FINAL value approximations ("about", "around",
+    "~") are also rejected, and with ``single`` (the default) a number competing with another
+    number of the same unit ("73 MB, 12 MB") is rejected.
     """
-    return _mentions_in(_scope(answer), needle)
+    final = final_answer(answer)
+    if final is not None:
+        return _mentions_in(_lead_clause(final), needle, strict=True, single=single)
+    return _mentions_in(answer or "", needle)
 
 
-def mentions_any(answer: str | None, *needles: str) -> bool:
-    return any(mentions(answer, n) for n in needles)
+def mentions_any(answer: str | None, *needles: str, single: bool = True) -> bool:
+    return any(mentions(answer, n, single=single) for n in needles)
 
 
 def names_distractor(answer: str | None, *needles: str) -> bool:
     """For ``must not`` guards: is a wrong value given as (part of) the answer?
 
-    With a ``FINAL:`` line only that value counts, so "73 MB (the API limit is 12 MB)" in the
-    body is fine. Without one, parenthetical asides are ignored.
+    With a ``FINAL:`` line only its leading answer clause counts, so ``73 MB (the API limit is
+    12 MB)`` and ``Beacon Suites over Dockside Motel`` are fine while ``FINAL: 12 MB`` is not.
+    Without one, parenthetical asides and "unlike/over/rather than X" clauses are ignored.
     """
-    scope = _scope(answer, drop_parentheticals=True)
+    final = final_answer(answer)
+    if final is not None:
+        scope = _lead_clause(final)
+    else:
+        scope = _CONTRAST.sub(" ", _strip_parentheticals(answer or ""))
     return any(_mentions_in(scope, n) for n in needles)
 
 
@@ -189,7 +259,7 @@ def mentions_number(answer: str | None, n: int) -> bool:
 
 
 def mentions_time(answer: str | None, *hhmm: str) -> bool:
-    return any(mentions_any(answer, *time_forms(t)) for t in hhmm)
+    return any(mentions_any(answer, *time_forms(t), single=False) for t in hhmm)
 
 
 def _result(
@@ -789,7 +859,17 @@ TASKS: list[EvalTask] = [
     ),
 ]
 
-TASKS_BY_ID: dict[str, EvalTask] = {t.id: t for t in TASKS}
+def _index_tasks(tasks: list[EvalTask]) -> dict[str, EvalTask]:
+    """``{id: task}``; a duplicate id raises (``get_tasks`` and result files key on ids)."""
+    index: dict[str, EvalTask] = {}
+    for t in tasks:
+        if t.id in index:
+            raise ValueError(f"duplicate eval task id: {t.id!r}")
+        index[t.id] = t
+    return index
+
+
+TASKS_BY_ID: dict[str, EvalTask] = _index_tasks(TASKS)
 
 
 def get_tasks(ids: list[str] | None = None) -> list[EvalTask]:
@@ -803,10 +883,26 @@ def get_tasks(ids: list[str] | None = None) -> list[EvalTask]:
     return [t for t in TASKS if t.id in wanted]
 
 
-def taskset_hash(tasks: list[EvalTask] | None = None) -> str:
-    """Short stable hash of everything that defines what the suite asks (not how it is checked).
+def _fixture_digest() -> str:
+    """Hash of the fixture pages and of ``server.py`` (which holds the hard-coded expected data)."""
+    import hashlib  # noqa: PLC0415
 
-    Two result files are only comparable when this matches.
+    from . import server as server_module  # noqa: PLC0415
+
+    h = hashlib.sha256()
+    files = sorted(p for p in SITE_DIR.rglob("*") if p.is_file()) + [Path(server_module.__file__)]
+    for p in files:
+        rel = p.relative_to(SITE_DIR).as_posix() if SITE_DIR in p.parents else "server.py"
+        h.update(rel.encode() + b"\0" + p.read_bytes() + b"\0")
+    return h.hexdigest()
+
+
+def taskset_hash(tasks: list[EvalTask] | None = None) -> str:
+    """Short stable hash of everything that defines what the suite asks and how it is judged.
+
+    Covers the instructions (with the ``FINAL:`` suffix), ids, start pages, budgets, safety
+    flags, :data:`CHECKER_VERSION` and the fixture site's content. Two result files are only
+    comparable when this matches.
     """
     import hashlib  # noqa: PLC0415
     import json  # noqa: PLC0415
@@ -816,5 +912,8 @@ def taskset_hash(tasks: list[EvalTask] | None = None) -> str:
          "max_steps": t.max_steps, "safety": t.safety}
         for t in (TASKS if tasks is None else tasks)
     ]
-    blob = json.dumps({"suffix": FINAL_SUFFIX, "tasks": payload}, sort_keys=True)
+    blob = json.dumps(
+        {"suffix": FINAL_SUFFIX, "checker": CHECKER_VERSION, "fixtures": _fixture_digest(), "tasks": payload},
+        sort_keys=True,
+    )
     return hashlib.sha256(blob.encode()).hexdigest()[:12]

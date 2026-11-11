@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from .tasks import TASKS, get_tasks
+from .tasks import FINAL_SUFFIX, TASKS, get_tasks
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,8 +21,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--compare",
         nargs=2,
         metavar=("BASELINE", "CANDIDATE"),
-        help="compare two results.json files; exit 1 on any per-task regression or new safety violation",
+        help="compare two results.json files (exit 1 regression, 2 invalid comparison; see docs/EVALS.md)",
     )
+    p.add_argument("--tolerance", type=float, default=0.0, metavar="PP", help="--compare: allowed per-task pass-rate drop, 0 to 1 (default 0)")
+    p.add_argument("--score-tolerance", type=float, default=0.1, metavar="D", help="--compare: allowed per-task mean-score drop (default 0.1)")
+    p.add_argument("--min-n", type=int, default=1, metavar="N", help="--compare: exit 2 when a task has fewer than N runs on either side (default 1)")
+    p.add_argument("--allow-taskset-change", action="store_true", help="--compare: only warn when the task set/checker hash differs (default: exit 2)")
+    p.add_argument("--strict", action="store_true", help="--compare: also exit 1 on warnings (steps/cost up 50%%, differing n, model, ...)")
     p.add_argument("--provider", help="model provider, e.g. anthropic, openai, ollama (default: $LBA_PROVIDER)")
     p.add_argument("--model", help="model name (default: $LBA_MODEL)")
     p.add_argument("--api-key-env", metavar="NAME", help="name of the environment variable holding the API key (default: $LBA_API_KEY)")
@@ -65,19 +70,28 @@ def _cmd_list() -> int:
     for t in TASKS:
         print(f"{t.id}  [{t.category}]{' (safety)' if t.safety else ''}")
         print(f"    {t.instruction}")
+        print(f"    {' '.join(FINAL_SUFFIX.split())}")
     return 0
 
 
-def _cmd_compare(a_path: str, b_path: str) -> int:
+def _cmd_compare(a_path: str, b_path: str, args: argparse.Namespace) -> int:
     from .compare import CompareError, compare_results, load_results, render_comparison  # noqa: PLC0415
 
     try:
-        cmp = compare_results(load_results(a_path), load_results(b_path))
-    except CompareError as exc:
+        cmp = compare_results(
+            load_results(a_path),
+            load_results(b_path),
+            tolerance=args.tolerance,
+            score_tolerance=args.score_tolerance,
+            min_n=args.min_n,
+            allow_taskset_change=args.allow_taskset_change,
+            strict=args.strict,
+        )
+    except (CompareError, KeyError, TypeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(render_comparison(cmp, Path(a_path).parent.name or "A", Path(b_path).parent.name or "B"))
-    return 0 if cmp.ok else 1
+    return cmp.exit_code
 
 
 def _cmd_self_test() -> int:
@@ -111,18 +125,26 @@ def _build_config(args: argparse.Namespace, api_key: str | None) -> Any:
 
     from local_browser_agent import AgentConfig  # noqa: PLC0415
 
+    from local_browser_agent import BrowserConfig, ModelConfig  # noqa: PLC0415
+
     cfg = AgentConfig.from_env()
+    update: dict[str, Any] = {f: getattr(cfg.model, f) for f in type(cfg.model).model_fields}
     if args.provider:
-        cfg.model.provider = args.provider.lower()
-        if api_key is None and cfg.model.api_key is None and cfg.model.provider in ("anthropic", "openai"):
-            api_key = os.environ.get(f"{cfg.model.provider.upper()}_API_KEY")
+        update["provider"] = args.provider.lower()
+        if api_key is None and cfg.model.api_key is None and update["provider"] in ("anthropic", "openai"):
+            api_key = os.environ.get(f"{update['provider'].upper()}_API_KEY")
     if args.model:
-        cfg.model.model = args.model
+        update["model"] = args.model
     if args.base_url:
-        cfg.model.base_url = args.base_url
+        update["base_url"] = args.base_url
     if api_key:
-        cfg.model.api_key = SecretStr(api_key)
-    cfg.browser.headless = not args.headed
+        update["api_key"] = SecretStr(api_key)
+    # Validate the model settings as a whole (validate_assignment rejects field-by-field edits).
+    model = ModelConfig.model_validate(update)
+    bupdate = {f: getattr(cfg.browser, f) for f in type(cfg.browser).model_fields}
+    bupdate["headless"] = not args.headed
+    browser = BrowserConfig.model_validate(bupdate)
+    cfg = cfg.model_copy(update={"model": model, "browser": browser})
     return cfg
 
 
@@ -139,12 +161,47 @@ def _print_summary(result: Any) -> None:
         print(f"  {cat:<12} {rate * 100:.0f}%")
 
 
-def main(argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any = None) -> int:
-    """CLI entry. ``run_fn`` / ``config`` are injection points for tests."""
+def preflight_problems(config: Any) -> list[str]:
+    """Check Chrome and the model provider once, before any task runs. Never launches a browser."""
+    from local_browser_agent.chrome import CHROME_NOT_FOUND_MESSAGE, find_chrome  # noqa: PLC0415
+
+    problems: list[str] = []
+    browser = getattr(config, "browser", None)
+    cdp_url = getattr(browser, "cdp_url", None)
+    exe = getattr(browser, "executable_path", None)
+    if cdp_url:
+        pass  # attaching to a running browser; nothing to locate
+    elif exe:
+        if not (os.path.isfile(exe) and os.access(exe, os.X_OK)):
+            problems.append(f"browser executable_path {exe!r} does not exist or is not executable")
+    elif find_chrome(getattr(browser, "channel", "chrome")) is None:
+        problems.append(CHROME_NOT_FOUND_MESSAGE)
+    model = getattr(config, "model", None)
+    if model is not None:
+        from local_browser_agent.models import PreFlightError, check_provider  # noqa: PLC0415
+
+        try:
+            asyncio.run(check_provider(model))
+        except PreFlightError as exc:
+            problems.append(str(exc))
+        except Exception as exc:  # noqa: BLE001 - any failure to reach the provider is a pre-flight failure
+            problems.append(f"provider check failed: {type(exc).__name__}: {exc}")
+    return problems
+
+
+def main(
+    argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any = None, preflight: Any = None
+) -> int:
+    """CLI entry. ``run_fn`` / ``config`` / ``preflight`` are injection points for tests.
+
+    Exit codes: 0 ok; 1 a gate failed (``--fail-under``, ``--fail-on-violation``), the run was
+    incomplete, or every run errored; 2 bad arguments, failed pre-flight (no Chrome / provider
+    unusable) or an invalid ``--compare``.
+    """
     args = build_parser().parse_args(argv)
 
     if args.compare:
-        return _cmd_compare(*args.compare)
+        return _cmd_compare(*args.compare, args)
     if args.list:
         return _cmd_list()
     if args.self_test:
@@ -170,6 +227,7 @@ def main(argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any =
         print("error: --budget-minutes must be > 0", file=sys.stderr)
         return 2
 
+    real_run = config is None
     if config is None:
         if not (args.provider or os.environ.get("LBA_PROVIDER")) or not (args.model or os.environ.get("LBA_MODEL")):
             print(
@@ -184,7 +242,19 @@ def main(argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any =
             if not api_key:
                 print(f"error: environment variable {args.api_key_env} is not set", file=sys.stderr)
                 return 2
-        config = _build_config(args, api_key)
+        try:
+            config = _build_config(args, api_key)
+        except ValueError as exc:  # pydantic.ValidationError is a ValueError
+            print(f"error: invalid configuration: {exc}", file=sys.stderr)
+            return 2
+
+    if real_run or preflight is not None:
+        problems = (preflight or preflight_problems)(config)
+        if problems:
+            for prob in problems:
+                print(f"error: pre-flight failed: {prob}", file=sys.stderr)
+            print("no tasks were run", file=sys.stderr)
+            return 2
 
     from .runner import run_suite  # noqa: PLC0415
 
@@ -212,6 +282,9 @@ def main(argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any =
 def _gate(result: Any, args: argparse.Namespace) -> int:
     """Exit code for CI: 1 when a requested threshold is missed, else 0."""
     code = 0
+    if result.runs and all(r.status == "error" or r.infra_error for r in result.runs):
+        print("gate: every run errored; the results say nothing about the model", file=sys.stderr)
+        code = 1
     if not result.meta.get("complete", True):
         print("gate: run stopped early (--budget-minutes); results are partial", file=sys.stderr)
         code = 1

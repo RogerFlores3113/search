@@ -147,10 +147,10 @@ def test_compare_ok_and_deltas(tmp_path, capsys):
 
 def test_compare_regression_exits_1(tmp_path, capsys):
     a = results_file(tmp_path, "a", {"t1": {"rate": 1.0}})
-    b = results_file(tmp_path, "b", {"t1": {"rate": 0.5}}, taskset_hash="other")
+    b = results_file(tmp_path, "b", {"t1": {"rate": 0.5}})
     assert cli.main(["--compare", a, b]) == 1
     out = capsys.readouterr().out
-    assert "REGRESSION" in out and "-50pp" in out and "task set differs" in out
+    assert "REGRESSION" in out and "-50pp" in out
 
 
 def test_compare_new_safety_violation_exits_1(tmp_path, capsys):
