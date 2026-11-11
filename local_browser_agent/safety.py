@@ -938,16 +938,18 @@ def form_looks_transactional(node: Any) -> bool:
 _GENERIC_LABELS = frozenset({"confirm", "submit", "continue", "complete", "finish", "done", "next"})
 # Path tokens that make a page "commerce-like" for generic labels: broader than is_commerce_url, which
 # gates every control on the page (/cart must stay browsable: remove item, change quantity).
-_CONTEXT_TOKENS = frozenset({
-    "checkout", "cart", "basket", "bag", "review", "order", "orders", "pay", "payment", "payments",
-    "billing", "orderconfirm", "placeorder",
-})
+_CONTEXT_ALWAYS = frozenset({"checkout", "cart", "basket", "bag", "orderconfirm", "placeorder"})
+_CONTEXT_FLOW = frozenset({"checkout", "cart", "basket", "bag", "order", "orders"})
+_CONTEXT_ORDER_NEXT = frozenset({"new", "confirm", "confirmation", "review", "pay", "payment", "checkout"})
+_CONTEXT_PAY = frozenset({"pay", "payment", "payments", "billing"})
+_CONTEXT_PAY_AFTER = frozenset({"checkout", "cart", "account", "order", "orders", "secure", "co"})
 
 
 def is_commerce_context_url(url: str | None, broad: bool = False) -> bool:
     """True when a generic "Confirm"/"Submit"/"Continue" button on this page (or posting to this form
-    action) most likely completes a purchase: :func:`is_commerce_url` plus cart, basket, bag, review,
-    order(s), pay, payment and billing path segments. Content paths (``/news/...``, ``/blog/...``) and
+    action) most likely completes a purchase: :func:`is_commerce_url` plus cart, basket, bag and
+    checkout segments, ``review`` beside a checkout/cart/order segment, ``order(s)`` followed by a
+    transactional segment, and pay/payment/billing as the first segment or after checkout/cart/account/order. Content paths (``/news/...``, ``/blog/...``) and
     content hosts stay out, and Amazon's ``/gp/cart/view.html`` is a plain cart page."""
     if not url or not isinstance(url, str):
         return False
@@ -966,8 +968,20 @@ def is_commerce_context_url(url: str | None, broad: bool = False) -> bool:
         return False
     if tokens[:3] == ["gp", "cart", "view"]:
         return False
-    segments = [_PAGE_EXT_RE.sub("", seg) for seg in clean.split("/") if seg]
-    return any("".join(_path_tokens(seg)) in _CONTEXT_TOKENS for seg in segments)
+    segments = ["".join(_path_tokens(_PAGE_EXT_RE.sub("", seg))) for seg in clean.split("/") if seg]
+    for i, seg in enumerate(segments):
+        before, after = segments[:i], segments[i + 1:]
+        if seg in _CONTEXT_ALWAYS:
+            return True
+        if seg == "review" and (i == 0 or any(b in _CONTEXT_FLOW for b in segments if b != seg)):
+            return True
+        if seg in ("order", "orders") and (
+                (seg == "order" and i == 0) or (after and after[0] in _CONTEXT_ORDER_NEXT)
+                or any(b in ("checkout", "cart", "basket", "bag") for b in before)):
+            return True
+        if seg in _CONTEXT_PAY and (i == 0 or (before and before[-1] in _CONTEXT_PAY_AFTER)):
+            return True
+    return False
 
 
 def is_generic_confirm_label(label: str | None) -> bool:
@@ -987,7 +1001,18 @@ _IRREVERSIBLE_PHRASES = (
     "send money", "send payment", "wire money", "wire transfer", "wire funds", "authorize payment",
     "confirm transfer", "confirm withdrawal", "confirm wire", "close position", "sell all",
 )
-_IRREVERSIBLE_EXACT = frozenset({"withdraw", "wire"})
+_IRREVERSIBLE_EXACT = frozenset({"withdraw", "wire", "deactivate", "delete forever"})
+# Verb x object matching ("Cancel your subscription", "Delete this account and all associated data").
+_IRREV_VERBS = frozenset({"delete", "close", "deactivate", "terminate", "remove", "cancel", "end", "erase", "withdraw"})
+_IRREV_DETERMINERS = frozenset({"your", "this", "my", "the", "all", "a", "an", "permanently"})
+_IRREV_OBJECTS = (
+    ("account",), ("profile",), ("data",), ("subscription",), ("membership",), ("plan",),
+    ("auto", "renew"), ("auto", "renewal"), ("autorenew",), ("autorenewal",), ("consent",),
+)
+_IRREV_VERB_OBJECT = {  # a few verbs only pair with some objects
+    "withdraw": {("consent",)},
+}
+_TRAILING_PUNCT_RE = re.compile(r"[\s.,;:!?\u2026\u2713\u2714\u2715\u00bb\u203a>)\]\"'*]+$")
 _IRREVERSIBLE_LEADERS = frozenset({"yes", "confirm", "permanently", "ok", "okay"})
 _IRREVERSIBLE_TAILS = frozenset({
     "policy", "policies", "faq", "faqs", "help", "info", "information", "terms", "guide", "options", "page",
@@ -996,6 +1021,24 @@ _IRREVERSIBLE_TAILS = frozenset({
 _AUTHORIZE_URL_TOKENS = frozenset({
     "pay", "payment", "payments", "checkout", "consent", "billing", "authorize", "authorise", "oauth",
 })
+
+
+def _verb_object_match(core: str) -> bool:
+    words = core.split()
+    # "permanently delete", "yes delete": leaders are stripped by the caller; allow "permanently" here too.
+    while words and words[0] in ("permanently", "please"):
+        words = words[1:]
+    if len(words) < 2 or words[0] not in _IRREV_VERBS:
+        return False
+    verb, rest = words[0], words[1:]
+    while rest and rest[0] in _IRREV_DETERMINERS:
+        rest = rest[1:]
+    allowed = _IRREV_VERB_OBJECT.get(verb)
+    for obj in _IRREV_OBJECTS:
+        if rest[:len(obj)] == list(obj) and (allowed is None or obj in allowed):
+            tail = rest[len(obj):]
+            return not any(w in _IRREVERSIBLE_TAILS for w in tail)
+    return False
 
 
 def is_irreversible_label(label: str | None, url: str | None = None) -> bool:
@@ -1008,15 +1051,16 @@ def is_irreversible_label(label: str | None, url: str | None = None) -> bool:
     if not text:
         return False
     for v in dict.fromkeys((text, _fold_homoglyphs(text))):
+        v = _TRAILING_PUNCT_RE.sub("", v)
         words = v.split()
-        if len(words) > 8 or any(v.startswith(p) for p in _INFO_PREFIXES):
+        if not words or len(words) > 8 or any(v.startswith(p) for p in _INFO_PREFIXES):
             continue
         cores = [" ".join(words)]
         while len(words) > 1 and words[0] in _IRREVERSIBLE_LEADERS:
             words = words[1:]
             cores.append(" ".join(words))
         for core in cores:
-            if core in _IRREVERSIBLE_EXACT:
+            if core in _IRREVERSIBLE_EXACT or _verb_object_match(core):
                 return True
             if core in ("authorize", "authorise"):
                 if url and any(t in _AUTHORIZE_URL_TOKENS for t in _path_tokens(urlsplit(url.strip()).path)):
@@ -1757,6 +1801,12 @@ class GuardedTools(Tools):
                 url, _ = await self._lba_url(browser_session)
                 return ActionRequest(action_name=name, params=dict(params), element_label=choice, url=url,
                                      reason=f"dropdown option {choice!r} looks like a purchase/commerce action")
+            if isinstance(choice, str) and self._lba_gate_irreversible:
+                url, _ = await self._lba_url(browser_session)
+                if is_irreversible_label(choice, url):
+                    return ActionRequest(action_name=name, params=dict(params), element_label=choice, url=url,
+                                         reason=f"dropdown option {choice!r} looks like an irreversible action "
+                                                "(account, subscription or money)", kind="irreversible")
             return None
         if name in NAVIGATE_ACTIONS:
             dest = params.get("url")
@@ -1793,6 +1843,13 @@ class GuardedTools(Tools):
                     reason = f"{verb} pressed on a focused control: {risk}"
                 elif kind == "enter" and form_looks_transactional(focused):
                     reason = "Enter pressed in a checkout/payment form"
+                elif self._lba_gate_irreversible:
+                    irr = irreversible_risk(focused, url, label)
+                    if irr is not None:
+                        self._lba_text_focus = _is_text_field(focused)
+                        return ActionRequest(action_name=name, params=dict(params), element_label=label or str(keys),
+                                             url=url, reason=f"{verb} pressed on a focused control: {irr}",
+                                             kind="irreversible")
                 self._lba_text_focus = _is_text_field(focused)
             elif state == "failed" and not self._lba_text_focus:
                 reason = f"{verb} pressed but the focused element could not be read (failing closed)"
