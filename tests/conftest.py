@@ -18,6 +18,20 @@ def _app_test_defaults(monkeypatch):
     monkeypatch.setattr(main_mod, "_EXTRA_ALLOWED_HOSTS", {"test", "testserver"})
     monkeypatch.setattr(main_mod, "_REQUIRE_TOKEN", False)
     monkeypatch.setattr(runner_mod, "chrome_is_installed", lambda: True)
+    monkeypatch.setattr(main_mod, "chrome_is_installed", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_user_config(tmp_path, monkeypatch):
+    """Keep tests off the developer's real settings.json.
+
+    A configured app on the test machine (for example provider "ollama") would otherwise
+    leak into Settings() defaults and break provider and preflight assertions.
+    """
+    import platformdirs
+
+    cfg_root = tmp_path / "user-config"
+    monkeypatch.setattr(platformdirs, "user_config_dir", lambda appname=None, *a, **k: str(cfg_root / (appname or "")))
 
 
 @pytest.fixture

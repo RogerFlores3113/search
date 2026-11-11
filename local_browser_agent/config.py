@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
+from local_browser_agent.redact import redact_url
 from local_browser_agent.safety import (
     DEFAULT_COMMERCE_PATTERNS,
     GUARDRAIL_PROMPT,
@@ -16,6 +17,14 @@ from local_browser_agent.safety import (
     allowed_matches_blocked,
     normalize_allowed_domain,
 )
+
+
+_MASK = "***"
+
+
+def _safe_url(v: Any) -> Any:
+    """Redact userinfo, query and fragment of a URL-ish value (for repr / errors / safe_dump)."""
+    return redact_url(v) if isinstance(v, str) and v else v
 
 
 class ModelConfig(BaseModel):
@@ -38,9 +47,14 @@ class ModelConfig(BaseModel):
     Raises:
         ValueError: (pydantic ``ValidationError``) for an unknown provider, a
             provider that needs ``base_url`` without one, or a malformed ``base_url``.
+
+    Secrets: ``repr()``, ``str()`` and validation errors redact ``base_url`` userinfo /
+    query and mask ``extra`` values. ``model_dump()`` / ``model_dump_json()`` return the
+    real values (they are for persistence); use :meth:`safe_dump` for logging or display.
+    Assignment is validated (``cfg.base_url = "ftp://x"`` raises).
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, hide_input_in_errors=True)
 
     provider: str = "ollama"
     model: str | None = None
@@ -70,7 +84,8 @@ class ModelConfig(BaseModel):
             return None
         parsed = urlparse(v)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise ValueError(f"base_url must be an http(s) URL like 'http://localhost:11434', got {v!r}")
+            raise ValueError(
+                f"base_url must be an http(s) URL like 'http://localhost:11434', got {_safe_url(v)!r}")
         return v
 
     @model_validator(mode="after")
@@ -78,6 +93,21 @@ class ModelConfig(BaseModel):
         if self.provider == "openai_compatible" and not self.base_url:
             raise ValueError("provider 'openai_compatible' requires base_url (e.g. 'https://host/v1')")
         return self
+
+    def __repr_args__(self):
+        for name, value in super().__repr_args__():
+            if name == "base_url":
+                value = _safe_url(value)
+            elif name == "extra" and isinstance(value, dict):
+                value = {k: _MASK for k in value}
+            yield name, value
+
+    def safe_dump(self) -> dict[str, Any]:
+        """JSON-safe dict with secrets masked: api_key, ``base_url`` userinfo/query, ``extra`` values."""
+        d = self.model_dump(mode="json")
+        d["base_url"] = _safe_url(d.get("base_url"))
+        d["extra"] = {k: _MASK for k in d.get("extra") or {}}
+        return d
 
 
 class BrowserConfig(BaseModel):
@@ -92,9 +122,13 @@ class BrowserConfig(BaseModel):
         window_width, window_height: Browser window size in pixels.
         llm_screenshot_width, llm_screenshot_height: Size of screenshots sent to the model.
         keep_alive: Leave a launched browser open after the run.
+
+    ``cdp_url`` must be an ``http(s)`` / ``ws(s)`` URL with a host. ``repr()`` and
+    validation errors redact its userinfo and query; ``model_dump()`` keeps the real value
+    (use :meth:`safe_dump` for logs). Assignment is validated.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, hide_input_in_errors=True)
 
     headless: bool = False
     channel: str | None = "chrome"
@@ -106,6 +140,35 @@ class BrowserConfig(BaseModel):
     llm_screenshot_width: int = 1024
     llm_screenshot_height: int = 640
     keep_alive: bool = False
+
+    @field_validator("cdp_url")
+    @classmethod
+    def _valid_cdp_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        try:
+            parsed = urlparse(v)
+            host = parsed.hostname
+        except ValueError:
+            parsed, host = None, None
+        if parsed is None or parsed.scheme not in ("http", "https", "ws", "wss") or not host:
+            raise ValueError(
+                "cdp_url must be an http(s) or ws(s) URL with a host, like 'http://127.0.0.1:9222', "
+                f"got {_safe_url(v)!r}")
+        return v
+
+    def __repr_args__(self):
+        for name, value in super().__repr_args__():
+            yield name, (_safe_url(value) if name == "cdp_url" else value)
+
+    def safe_dump(self) -> dict[str, Any]:
+        """``model_dump`` with ``cdp_url`` userinfo and query removed."""
+        d = self.model_dump(mode="json")
+        d["cdp_url"] = _safe_url(d.get("cdp_url"))
+        return d
 
 
 def _norm_domain(d: Any) -> str:
@@ -130,6 +193,17 @@ class SafetyPolicy(BaseModel):
         allow_evaluate: Let the agent run arbitrary page JavaScript without approval.
             Off by default: ``evaluate`` can submit forms, so it goes through the approval
             callback (and is denied when there is none).
+        allow_local_network: Let the agent's browser reach ``localhost``, loopback, private
+            and link-local addresses (the local web app, router admin pages, cloud metadata
+            at 169.254.169.254). Off by default. While off, the browser blocks ``localhost``,
+            ``*.localhost`` / ``*.local`` / ``*.internal`` / ``*.lan`` / ``*.home.arpa`` /
+            ``*.localdomain`` / ``*.intranet``, single-label hostnames and every IP-address URL
+            (``http://8.8.8.8/`` is blocked too; use a hostname). DNS names that resolve to
+            private addresses are NOT caught (no DNS lookups); use ``allowed_domains`` for
+            strict isolation. Also ``start_url`` / ``allowed_domains`` entries that are local are
+            rejected. Set it only for local test fixtures or dev servers.
+        approval_timeout_s: Seconds to wait for the approval callback before the gated action is
+            denied. ``None`` or ``0`` waits forever; must be ``>= 0``. Default 120.
     """
 
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
@@ -140,6 +214,15 @@ class SafetyPolicy(BaseModel):
     gate_commerce_clicks: bool = True
     commerce_patterns: list[str] = Field(default_factory=lambda: list(DEFAULT_COMMERCE_PATTERNS))
     allow_evaluate: bool = False
+    allow_local_network: bool = False
+    approval_timeout_s: float | None = 120.0
+
+    @field_validator("approval_timeout_s")
+    @classmethod
+    def _check_approval_timeout(cls, v: float | None) -> float | None:
+        if v is not None and v < 0:
+            raise ValueError("approval_timeout_s must be >= 0 (0 or None waits forever)")
+        return v
 
     @field_validator("blocked_domains", mode="before")
     @classmethod
@@ -204,9 +287,14 @@ class AgentConfig(BaseModel):
         use_judge: Ask browser-use's judge to grade the result.
         calculate_cost: Track token cost when pricing is known.
         on_captcha: ``"fail"`` stops the run on a CAPTCHA; ``"pause"`` waits for ``resume()``.
+
+    Assignment is validated (``cfg.max_steps = -5`` raises ``ValidationError``). ``repr()``
+    redacts credentials; ``model_dump()`` / ``model_dump_json()`` return real secret values
+    (``base_url`` / ``cdp_url`` userinfo and query, ``ModelConfig.extra``), so use
+    :meth:`safe_dump` for logging or display.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, hide_input_in_errors=True)
 
     model: ModelConfig = Field(default_factory=ModelConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
@@ -218,6 +306,13 @@ class AgentConfig(BaseModel):
     use_judge: bool = False
     calculate_cost: bool = True
     on_captcha: Literal["fail", "pause"] = "fail"
+
+    def safe_dump(self) -> dict[str, Any]:
+        """JSON-safe dict with credentials masked (see :meth:`ModelConfig.safe_dump`)."""
+        d = self.model_dump(mode="json")
+        d["model"] = self.model.safe_dump()
+        d["browser"] = self.browser.safe_dump()
+        return d
 
     @classmethod
     def from_env(cls, prefix: str = "LBA_", env: Mapping[str, str] | None = None) -> AgentConfig:
@@ -233,6 +328,8 @@ class AgentConfig(BaseModel):
         - ``LBA_USE_VISION`` (bool), ``LBA_USE_JUDGE`` (bool)
         - ``LBA_ALLOWED_DOMAINS`` / ``LBA_BLOCKED_DOMAINS`` (comma separated)
         - ``LBA_ALLOW_EVALUATE`` (bool): run page JavaScript without approval
+        - ``LBA_ALLOW_LOCAL_NETWORK`` (bool): let the browser reach localhost / private addresses
+        - ``LBA_APPROVAL_TIMEOUT_S`` (float, >= 0): seconds to wait for an approval; 0 waits forever
 
         Booleans accept 1/0, true/false, yes/no, on/off (any case). ``ANTHROPIC_API_KEY`` /
         ``OPENAI_API_KEY`` are used when the provider matches and ``LBA_API_KEY`` is unset.
@@ -305,6 +402,10 @@ class AgentConfig(BaseModel):
             safety["blocked_domains"] = v
         if (b := flag("ALLOW_EVALUATE")) is not None:
             safety["allow_evaluate"] = b
+        if (b := flag("ALLOW_LOCAL_NETWORK")) is not None:
+            safety["allow_local_network"] = b
+        if (t := num("APPROVAL_TIMEOUT_S", float, "a number")) is not None:
+            safety["approval_timeout_s"] = t
 
         top: dict[str, Any] = {}
         if (i := num("MAX_STEPS", int, "an integer")) is not None:

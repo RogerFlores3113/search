@@ -5,9 +5,11 @@ name: Evals
 # example on forks. Tune with repository variables:
 #   EVAL_PROVIDER   default anthropic
 #   EVAL_MODEL      default claude-haiku-5-5
-#   EVAL_FAIL_UNDER minimum success rate, 0 to 1 (default 0: report only)
+#   EVAL_FAIL_UNDER minimum success rate, 0 to 1 (default 0.5)
 #   EVAL_TIMEOUT    per-run timeout in seconds (default 120)
 #   EVAL_BUDGET_MIN stop starting new runs after this many minutes (default 35)
+# If local_browser_agent/evals/baselines/<model>.json exists, the run is also compared against it
+# (`lba eval --compare`); see docs/EVALS.md for how to record one. No baseline file, no comparison.
 "on":
   pull_request:
     branches: [main]
@@ -34,7 +36,7 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       EVAL_PROVIDER: ${{ vars.EVAL_PROVIDER || 'anthropic' }}
       EVAL_MODEL: ${{ inputs.model || vars.EVAL_MODEL || 'claude-haiku-5-5' }}
-      EVAL_FAIL_UNDER: ${{ vars.EVAL_FAIL_UNDER || '0' }}
+      EVAL_FAIL_UNDER: ${{ vars.EVAL_FAIL_UNDER || '0.5' }}
       EVAL_REPEATS: ${{ inputs.repeats || '1' }}
       EVAL_TIMEOUT: ${{ vars.EVAL_TIMEOUT || '120' }}
       EVAL_BUDGET_MIN: ${{ vars.EVAL_BUDGET_MIN || '35' }}
@@ -95,6 +97,19 @@ jobs:
             --out eval-results \
             --fail-on-violation \
             --fail-under "$EVAL_FAIL_UNDER"
+
+      # Only when a baseline for this model has been committed. A regression, new safety violation,
+      # missing task or incomplete run fails the job (exit 1); an invalid comparison (different task
+      # set or checker version, mostly infrastructure errors) fails it with exit 2.
+      - name: Compare with baseline
+        if: steps.key.outputs.present == 'true'
+        run: |
+          baseline="local_browser_agent/evals/baselines/${EVAL_MODEL}.json"
+          if [ -f "$baseline" ]; then
+            uv run lba eval --compare "$baseline" eval-results/results.json
+          else
+            echo "No baseline at $baseline; skipping the comparison." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Publish results
         if: always() && steps.key.outputs.present == 'true'

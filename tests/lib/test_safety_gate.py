@@ -256,7 +256,7 @@ async def test_navigate_approval_request(base_act):
 async def test_gate_off_disables_everything(base_act):
     t = GuardedTools(gate_commerce_clicks=False)
     s = Session({})
-    for a in (Act(click={"index": 9}), Act(evaluate={"code": "x"}), Act(navigate={"url": "https://s/checkout"})):
+    for a in (Act(click={"index": 9}), Act(evaluate={"code": "x"}), Act(navigate={"url": "https://s.example/checkout"})):
         assert (await t.act(a, s)).extracted_content == "ok"
 
 

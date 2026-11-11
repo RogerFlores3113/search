@@ -2,7 +2,8 @@
 
 `local_browser_agent` is the agent loop (browser-use + your Chrome) as an importable package, with a
 CLI (`lba`) and an MCP server. Importing it reads no config, touches no disk and uses no network
-(it only sets `ANONYMIZED_TELEMETRY=false` and `BROWSER_USE_CLOUD_SYNC=false` as defaults).
+(it forces `ANONYMIZED_TELEMETRY=false`, `BROWSER_USE_CLOUD_SYNC=false` and `LITELLM_LOCAL_MODEL_COST_MAP=True`,
+and installs no logging handlers; see [Logging](#logging)).
 
 ## Install
 
@@ -60,11 +61,19 @@ environment); a missing key is reported by `check_provider` / `build_llm` and na
 | `LBA_ALLOWED_DOMAINS` | comma list | unset | restrict navigation to these domains |
 | `LBA_BLOCKED_DOMAINS` | comma list | unset | extra blocked domains (added to `SAFETY_DEFAULTS`) |
 | `LBA_ALLOW_EVALUATE` | bool | `false` | let the agent run page JavaScript without approval (off by default because scripts can submit forms) |
-| `LBA_ALLOW_TELEMETRY` | `1` | unset | read at import; `1` lets an inherited `ANONYMIZED_TELEMETRY=true` stand |
+| `LBA_ALLOW_LOCAL_NETWORK` | bool | `false` | let the browser reach localhost, private and link-local addresses (see Safety policy) |
+| `LBA_APPROVAL_TIMEOUT_S` | float (>= 0) | `120` | seconds to wait for an approval before the gated action is denied; `0` waits forever |
+| `LBA_ALLOW_TELEMETRY` | `1` | unset | read at import; `1` stops the import from forcing telemetry / cloud-sync / cost-map settings off |
 
 Booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. By default importing the package forces
-`ANONYMIZED_TELEMETRY=false` (even if inherited as `true`) and sets `LITELLM_LOCAL_MODEL_COST_MAP=True`
-so litellm does not fetch its cost map from GitHub. `local_browser_agent.__version__` reports the installed
+`ANONYMIZED_TELEMETRY=false`, `BROWSER_USE_CLOUD_SYNC=false` (both even if inherited as `true`) and
+`LITELLM_LOCAL_MODEL_COST_MAP=True` so litellm does not fetch its cost map from GitHub.
+
+**Config objects** validate on assignment (`cfg.max_steps = -5` raises `ValidationError`). `repr()`/`str()` and
+validation errors redact `base_url` / `cdp_url` userinfo and query strings and mask `ModelConfig.extra` values.
+`model_dump()` / `model_dump_json()` return the **real secret values** (they are for persistence); use
+`cfg.safe_dump()` (on `AgentConfig`, `ModelConfig`, `BrowserConfig`) for logs and display. Note that pydantic's
+`ValidationError.errors()` still carries the raw `input`; do not log it verbatim. `local_browser_agent.__version__` reports the installed
 version, and the package ships `py.typed`.
 
 ## Providers
@@ -104,12 +113,31 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 
 - **Attach to a running browser:** start Chrome with `--remote-debugging-port=9222` and set
   `BrowserConfig(cdp_url="http://127.0.0.1:9222")`. The agent attaches and does not kill your browser at the end.
+- `cdp_url` must be an `http(s)` or `ws(s)` URL with a host.
 - `keep_alive=True` also leaves a launched browser open after the run.
 - `user_data_dir` reuses a Chrome profile (logins). Use a dedicated directory.
 
 ## Safety policy
 
-`SafetyPolicy(blocked_domains, allowed_domains=None, guardrail_prompt=GUARDRAIL_PROMPT, gate_commerce_clicks=True, commerce_patterns=[...])`
+`SafetyPolicy(blocked_domains, allowed_domains=None, guardrail_prompt=GUARDRAIL_PROMPT, gate_commerce_clicks=True, commerce_patterns=[...], allow_evaluate=False, allow_local_network=False, approval_timeout_s=120.0)`
+
+- **`allow_local_network=False` (default)** keeps the agent's browser off your machine and LAN. The block covers
+  IP literals (every IP-address URL, public ones such as `http://8.8.8.8/` included: use a hostname, or set
+  `allow_local_network=True` / `LBA_ALLOW_LOCAL_NETWORK=1`), `localhost`, the local suffixes `*.localhost`, `*.local`,
+  `*.internal`, `*.lan`, `*.home.arpa`, `*.localdomain`, `*.intranet`, and single-label names such as `intranet` or
+  `printer`. Suffixes are blocked in the browser profile (so link clicks and redirects are covered) and in the
+  navigation tool. **Not caught:** DNS names that resolve to private addresses (e.g. `nip.io`-style names), because no
+  DNS lookups are done. Use `allowed_domains` when you need strict isolation. A local `start_url` or `allowed_domains`
+  entry is rejected unless you set `allow_local_network=True` (`LBA_ALLOW_LOCAL_NETWORK=1`), which is meant for
+  local test fixtures and dev servers (the eval suite turns it on for its fixture server).
+- **`approval_timeout_s=120.0`** is how long a gated action waits for the approval callback; on timeout it is denied.
+  `None` or `0` waits forever; negative values are rejected. A `TimeoutError` raised by the callback itself is reported as
+  "approval callback failed", not as a timeout.
+- **Non-web schemes:** `chrome://`, `chrome-extension://`, `devtools://` and similar are blocked at the browser layer,
+  and `file:` / `view-source:` are rejected by browser-use (no hostname). browser-use always allows `data:` and `blob:`
+  URLs; those are only stopped by the tool-layer navigation gate, not by the browser profile.
+- **`start_url`** must be `http(s)`, not blocked, inside `allowed_domains` (when set) and not local (unless allowed);
+  otherwise the run returns `status="error"`, `error_kind="start_url_blocked"` before anything is launched.
 
 - `blocked_domains` always includes `SAFETY_DEFAULTS` (banks, payments, government, medical, password managers); extra entries are added, none can be removed (also via `model_copy(update=...)`). Entries are lowercased with trailing dots stripped.
 - `allowed_domains` restricts navigation to those domains. Blocked domains win: an allowed domain equal to or under a blocked one is dropped, and a list that is left empty raises `ValueError`.
@@ -119,10 +147,10 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 
 ## Sinks and tracing
 
-A sink is any `async def sink(event)`. Events: `StateEvent, ModelInfoEvent, ThoughtEvent, ActionDetailEvent, ProgressEvent, TokenEvent, ScreenshotEvent, SummaryEvent, ErrorEvent, DoneEvent, HumanNeededEvent, StepCompletedEvent`. A failing sink never crashes a run.
+A sink is any `async def sink(event)`. Events: `StateEvent, ModelInfoEvent, ThoughtEvent, ActionDetailEvent, ProgressEvent, TokenEvent, ScreenshotEvent, SummaryEvent, ErrorEvent, DoneEvent, HumanNeededEvent, StepCompletedEvent`. A failing sink never crashes a run: the failure is logged once per event (`logger.warning(..., exc_info=True)`, naming the event type). A sink that times out (5s) three times in a row is dropped for the rest of the run, with one warning.
 
 - `QueueSink(data_q, control_q=None)`: lossy `put_nowait` for data events; lifecycle events (state, model_info, summary, error_msg, done) block up to 2s.
-- `JsonlTraceSink(path, include_screenshots=False)`: one JSON line per event, appended to the file (an existing file is not truncated); each record has `ts` (UTC ISO 8601) and `run_id` (uuid4 per sink).
+- `JsonlTraceSink(path, include_screenshots=False)`: one JSON line per event, appended to the file (an existing file is not truncated); each record has `ts` (UTC ISO 8601) and `run_id`: the run's id (the same as `RunResult.run_id`, stamped on every event by `BrowserAgent`), or the sink's own uuid4 for events emitted outside a run.
 - `CallbackSink(fn)`: sync or async function.
 
 The screenshot loop only runs when at least one sink wants screenshots (a trace-only sink does not).
@@ -147,7 +175,39 @@ captcha, recaptcha, hcaptcha, cloudflare, bot detection, access denied, verify y
 
 ## RunResult
 
-`run_id, task, status ("success"|"failed"|"error"|"timeout"|"stopped"), success (bool|None), final_result, steps (list of StepRecord: index, action_type, target_label, value, url, error, duration_ms), step_count, duration_s, cost_usd (None for Ollama), errors, urls_visited, blocked_actions`; `.to_dict()` gives plain JSON-able data.
+`run_id, task, status ("success"|"failed"|"error"|"timeout"|"stopped"), success (bool|None), final_result, steps (list of StepRecord: index, action_type, target_label, value, url, error, duration_ms), step_count, duration_s, cost_usd (None for Ollama), errors, urls_visited, blocked_actions, error_kind`; `.to_dict()` gives plain JSON-able data.
+
+`error_kind` says why a run ended badly (`None` for success or a plain agent "failed"):
+
+| `error_kind` | meaning |
+|---|---|
+| `chrome_missing` | no Chrome/Chromium found (`ChromeNotFoundError`) |
+| `preflight` | provider / API key / model check failed (`PreFlightError` or your `preflight=` callable) |
+| `config` | invalid configuration found while building the LLM or browser |
+| `cdp_connect` | could not attach to Chrome at `BrowserConfig.cdp_url` |
+| `timeout` | `timeout_s` elapsed (`status="timeout"`) |
+| `captcha` | CAPTCHA / human check stopped the run (`on_captcha="fail"`) |
+| `stopped` | `stop()` was called (`status="stopped"`) |
+| `start_url_blocked` | `start_url` not http(s), blocked, outside `allowed_domains` or local |
+| `agent_error` | any other error during the run |
+| `invalid_argument` | MCP only: a tool argument was rejected before the run started |
+| `busy` | MCP only: another task is already running on this server |
+| `internal` | MCP only: unexpected server error outside the run |
+
+`ChromeNotFoundError` and `PreFlightError` are exported from `local_browser_agent`.
+
+**Reuse and stopping.** A `BrowserAgent` can be reused for sequential runs but not run concurrently: a second
+`run()` while one is in flight raises `RuntimeError` (use one instance per concurrent run). `stop()` lets the current
+step finish for about 2 seconds, then cancels the in-flight action (model call, browser action or a pending
+approval callback), so a stopped run ends within a few seconds with `status="stopped"`.
+
+## Logging
+
+Importing `local_browser_agent` (and browser-use through it) installs **no handlers on the root logger**: the
+package sets `BROWSER_USE_SETUP_LOGGING=false` before importing browser-use unless you already set it. Library
+logs go to the `local_browser_agent` logger (and `browser_use`), so configure them with the standard `logging`
+module; unconfigured, Python shows only warnings and errors on stderr. Set `BROWSER_USE_SETUP_LOGGING=true`
+before the import to get browser-use's own stderr handler back. `lba` configures logging itself (`--log-level`, `-q`).
 
 ## CLI
 
@@ -162,13 +222,17 @@ uv run lba eval ...     # evaluation suite (when installed)
 ```
 
 **Exit codes:** `0` success; `1` the run failed, errored, timed out, or the pre-flight check failed; `2` usage or
-configuration error (invalid flags / `LBA_*` values, or `lba eval` unavailable); `130` interrupted (Ctrl-C).
+configuration error (invalid flags such as `--max-steps 0`, `--timeout -1`, a malformed `--cdp-url`, an unwritable
+`--trace` path, invalid `LBA_*` values, or `lba eval` unavailable); `130` interrupted (Ctrl-C). Flag overrides go
+through the same validation as `AgentConfig`, and error messages are one `field: message` line per problem.
 
 **Output streams:** with `--json`, stdout is always one JSON document shaped like `RunResult`, including when
 pre-flight fails (then `status` is `"error"`, `success` is `null`, `errors` holds the message, `steps` is empty);
-the human-readable message goes to stderr. Without `--json`, stdout holds the human summary and diagnostics go
-to stderr. Logs always go to stderr; `--json` defaults to `warning` level, otherwise `info`; ANSI colour is
-stripped when stderr is not a terminal.
+the human-readable message goes to stderr. Without `--json`, stdout holds the human summary (status, steps, result,
+blocked actions) and the failure messages go to stderr. Logs always go to stderr. `-q` and `--json` mean errors only
+from this library and nothing at all from browser-use (no emoji, no tracebacks); `--log-level` overrides that and
+applies to everything. The default is `info` (`warning` for `mcp`). ANSI colour is stripped when stderr is not a
+terminal. The library itself configures no logging on import; only the CLI and MCP entry points do.
 
 **Pre-flight:** unless `--no-preflight`, `lba run` checks the provider first. For `ollama` it queries the local
 server; for `anthropic` and `openai` it makes a **live API call** (listing models) with your key, so it needs
@@ -176,25 +240,32 @@ network access and can fail on a bad key or an outage. Chrome-not-found is also 
 
 **Trace (`--trace PATH`):** `JsonlTraceSink` *appends* to an existing file (it never truncates), one JSON object
 per event. Each record has `ts` (ISO 8601, UTC) and `run_id` (a uuid4 per sink, i.e. per CLI invocation), so
-several runs can share a file. A pre-flight failure still writes `error_msg`, `state: error` and `done` events.
+several runs can share a file. A pre-flight failure still writes `error_msg`, `state: error` and `done` events, with
+the same `run_id` as the `--json` output. The path is checked up front: if it cannot be written the CLI exits 2.
 
 ## MCP server
 
 Tools: `run_browser_task(task, start_url?, max_steps?, allowed_domains?)` and `get_agent_config()` (no secrets;
-API key shown as `set`, URL credentials/tokens and `model.extra` values redacted).
+API key shown as `set`, URL credentials/tokens and `model.extra` values redacted). Both declare an `outputSchema`, so
+clients receive `structuredContent`. The server sends `instructions` on `initialize` (what the tools do, one task at
+a time, the safety gates, the key `LBA_*` variables).
 
+- Configuration comes from the `LBA_*` environment variables in the [Configuration table](#configuration)
+  (plus `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` for those providers). It is validated once at startup: a bad value
+  prints a clear message to stderr and `lba mcp` exits with code 2 instead of failing every call.
 - One task at a time; a concurrent call fails at once with a `busy` error.
-- `max_steps` must be 1-200; `allowed_domains`, if given, must be non-empty. Invalid input is rejected.
-- If the server has `LBA_ALLOWED_DOMAINS`, a call's `allowed_domains` can only **narrow** it: a requested domain
-  is kept only if it equals or is a subdomain of a server domain; an empty result returns an error and nothing runs.
-  Without a server allowlist the call's list is used. Blocked domains (banks, payments, ...) always stay blocked.
-- Any status other than `success` is returned with `isError: true`; the `RunResult` dict is in `structuredContent`
-  (and the text content).
-
-Configuration comes from `LBA_*` environment variables: `LBA_PROVIDER`, `LBA_MODEL`, `LBA_API_KEY`, `LBA_BASE_URL`,
-`LBA_HEADLESS`, `LBA_CDP_URL`, `LBA_MAX_STEPS`, `LBA_TIMEOUT_S`, `LBA_ALLOWED_DOMAINS` (comma-separated), plus
-`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` for those providers. See `AgentConfig.from_env` in
-`local_browser_agent/config.py` for the full list.
+- `max_steps` must be 1-200; `allowed_domains`, if given, must be non-empty; `start_url`, if given, must be an
+  `http(s)` URL with a host.
+- If the server has `LBA_ALLOWED_DOMAINS`, a call's `allowed_domains` can only **narrow** it, using browser-use's
+  matching: `*.a.com` covers `a.com` and every subdomain, a plain `a.com` covers only `a.com` (and `www.a.com`). So
+  with server `*.a.com` a call may ask for `a.com`, `x.a.com` or `*.x.a.com`, but with a plain server `a.com` a call
+  entry `*.a.com` or `x.a.com` is dropped. If nothing survives, an error is returned and nothing runs. Without a
+  server allowlist the call's list is used. Blocked domains (banks, payments, ...) always stay blocked.
+- **One error shape.** Every failure, including schema violations (`max_steps=0`, `allowed_domains=[]`), rejected
+  arguments, a busy server and bad `LBA_*` values, is returned with `isError: true` and a complete `RunResult`-shaped
+  object in `structuredContent` (and as JSON in the text content): `status: "error"`, `success: null`, `errors`,
+  and an `error_kind` of `invalid_argument`, `busy`, `config` or `internal`. Failed real runs return their own
+  `RunResult` (any status other than `success` is `isError: true`).
 
 Run it without cloning anything, via uvx:
 

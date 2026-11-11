@@ -69,7 +69,7 @@ def test_restrict_domains_normalises_and_rejects_globs():
             restrict_domains(None, [bad])
         with pytest.raises(ValueError):
             restrict_domains(["a.com"], [bad])
-    assert restrict_domains(["a.com"], ["https://x.a.com/p", "evil.com"]) == ["x.a.com"]
+    assert restrict_domains(["*.a.com"], ["https://x.a.com/p", "evil.com"]) == ["x.a.com"]
 
 
 def test_profile_never_allows_blocked(monkeypatch):

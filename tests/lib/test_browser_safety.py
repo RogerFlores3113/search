@@ -126,7 +126,7 @@ async def test_blocks_when_denied_or_raises(base_act):
 async def test_non_commerce_and_other_actions_delegate(base_act):
     t = GuardedTools()
     assert (await t.act(ClickModel(click={"index": 2}), SESSION)).extracted_content == "ok"
-    assert (await t.act(ClickModel(navigate={"url": "https://x"}), SESSION)).extracted_content == "ok"
+    assert (await t.act(ClickModel(navigate={"url": "https://x.example"}), SESSION)).extracted_content == "ok"
     assert len(base_act) == 2 and not t.blocked_actions
     # unknown element fails closed
     assert (await t.act(ClickModel(click={"index": 99}), SESSION)).error
