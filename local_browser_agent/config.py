@@ -1,6 +1,7 @@
 """Pydantic configuration models for the library."""
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 from typing import Any, Literal
@@ -18,6 +19,8 @@ from local_browser_agent.safety import (
     normalize_allowed_domain,
     normalize_blocked_domain,
 )
+
+logger = logging.getLogger("local_browser_agent")
 
 
 _MASK = "***"
@@ -260,12 +263,19 @@ class SafetyPolicy(BaseModel):
         allowed = d.get("allowed_domains")
         if allowed is not None:
             blocked = d["blocked_domains"]
-            kept = [
-                n for x in allowed
-                if not allowed_matches_blocked(n := normalize_allowed_domain(x), blocked)
-            ]
+            kept: list[str] = []
+            dropped: list[str] = []
+            for x in allowed:
+                n = normalize_allowed_domain(x)
+                (dropped if allowed_matches_blocked(n, blocked) else kept).append(n)
+            if dropped:
+                logger.warning(
+                    "allowed_domains entries %s were dropped because they cover or sit under a blocked domain "
+                    "(blocked domains always win)", sorted(set(dropped)))
             if allowed and not kept:
-                raise ValueError("allowed_domains contains only blocked domains; blocked domains always win")
+                raise ValueError(
+                    "allowed_domains contains only blocked domains; blocked domains always win "
+                    f"(dropped: {sorted(set(dropped))})")
             d["allowed_domains"] = list(dict.fromkeys(kept))
 
     def model_post_init(self, __context: Any) -> None:

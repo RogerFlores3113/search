@@ -9,8 +9,8 @@
 * 2 - the comparison is not meaningful or the input is unusable: unreadable/malformed file, a
   different ``taskset_hash`` (unless ``--allow-taskset-change``), tasks whose runs were mostly
   infrastructure errors or that have infra errors and no passes with infra errors >= real
-  failures (INVALID), a task present with zero runs, NaN/inf scores or rates, or fewer than
-  ``--min-n`` runs on a task. A candidate that ran only a subset of the baseline's tasks is
+  failures (INVALID), a task present with zero runs, NaN/inf scores or rates, or fewer candidate runs than the baseline had (default) or than
+  ``--min-n`` on a task. A candidate that ran only a subset of the baseline's tasks is
   compared on the overlapping tasks when their per-task hashes match, else it is exit 2
 """
 from __future__ import annotations
@@ -37,6 +37,26 @@ def _num(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _validate_counts(path: str, tid: str, entry: dict[str, Any]) -> None:
+    """Reject self-contradictory per-task numbers (a hand-edited or corrupt file). NaN/inf pass through
+    here: they are reported as INVALID tasks by the comparison itself."""
+    rate, n = entry["pass_rate"], entry["n"]
+    if not math.isfinite(n) or n < 0 or n != int(n):
+        raise CompareError(f"{path}: task {tid!r} has an invalid run count n={n!r} (need a whole number >= 0)")
+    if math.isfinite(rate) and not 0.0 <= rate <= 1.0:
+        raise CompareError(f"{path}: task {tid!r} has pass_rate {rate!r} outside 0..1")
+    passes = entry.get("passes")
+    if passes is not None:
+        if not _num(passes):
+            raise CompareError(f"{path}: task {tid!r} has a non-numeric 'passes'")
+        if not 0 <= passes <= n:
+            raise CompareError(f"{path}: task {tid!r} has passes={passes!r} outside 0..n (n={n!r})")
+        if n > 0 and math.isfinite(rate) and abs(rate - passes / n) > 1e-6:
+            raise CompareError(
+                f"{path}: task {tid!r} is inconsistent: pass_rate {rate!r} != passes/n = {passes}/{int(n)}"
+            )
+
+
 def _validate(data: dict[str, Any], path: str) -> None:
     tasks = data["tasks"]
     if not isinstance(tasks, dict):
@@ -47,6 +67,7 @@ def _validate(data: dict[str, Any], path: str) -> None:
         for key in ("pass_rate", "n"):
             if not _num(entry.get(key)):
                 raise CompareError(f"{path}: task {tid!r} is missing a numeric {key!r}")
+        _validate_counts(path, tid, entry)
         for key in ("safety_violations", "mean_score", "mean_steps", "cost_usd", "infra_errors"):
             if entry.get(key) is not None and not _num(entry[key]):
                 raise CompareError(f"{path}: task {tid!r} has a non-numeric {key!r}")
@@ -247,11 +268,15 @@ def compare_results(
     *,
     tolerance: float = 0.0,
     score_tolerance: float = 0.1,
-    min_n: int = 1,
+    min_n: int | None = None,
     allow_taskset_change: bool = False,
     strict: bool = False,
 ) -> Comparison:
-    """``a`` is the baseline, ``b`` the candidate."""
+    """``a`` is the baseline, ``b`` the candidate.
+
+    ``min_n`` (default ``None``): every task must have at least as many candidate runs as the
+    baseline had for it, else the comparison is invalid (exit 2). An explicit ``min_n`` replaces
+    that rule with a fixed floor on both sides."""
     ta, tb = a["tasks"], b["tasks"]
     warnings: list[str] = []
     problems: list[str] = []
@@ -306,15 +331,19 @@ def compare_results(
             )
         )
     for d in deltas:
-        if d.n_differs:
+        if d.n_differs and not d.invalid:
             warnings.append(f"{d.task_id}: runs differ ({d.a_n} vs {d.b_n}); pass rates are not equally precise")
         if d.steps_rose:
             warnings.append(f"{d.task_id}: mean steps rose {d.a_steps:.1f} -> {d.b_steps:.1f}")
         if d.cost_rose:
             warnings.append(f"{d.task_id}: cost rose ${d.a_cost:.4f} -> ${d.b_cost:.4f}")
-        for n, side, present in ((d.a_n, "baseline", d.a_rate is not None), (d.b_n, "candidate", d.b_rate is not None)):
-            if present and 0 < n < min_n:
-                invalid_reasons.append(f"{d.task_id}: {side} has {n} run(s), fewer than --min-n {min_n}")
+        for n, side, present, floor in (
+            (d.a_n, "baseline", d.a_rate is not None, min_n if min_n is not None else 1),
+            (d.b_n, "candidate", d.b_rate is not None, min_n if min_n is not None else d.a_n),
+        ):
+            if present and 0 < n < floor:
+                why = f"--min-n {min_n}" if min_n is not None else f"the baseline's {d.a_n} (pass --min-n to lower it)"
+                invalid_reasons.append(f"{d.task_id}: {side} has {n} run(s), fewer than {why}")
     return Comparison(
         deltas=deltas, warnings=warnings, problems=problems, invalid_reasons=invalid_reasons, strict=strict
     )
@@ -322,11 +351,11 @@ def compare_results(
 
 def render_comparison(cmp: Comparison, a_name: str = "A", b_name: str = "B") -> str:
     def pct(x: float | None) -> str:
-        return "-" if x is None else f"{x * 100:.0f}%"
+        return "-" if x is None or not math.isfinite(x) else f"{x * 100:.0f}%"
 
     rows = [["task", a_name, b_name, "delta", "flags"]]
     for d in cmp.deltas:
-        delta = "-" if d.delta is None else f"{d.delta * 100:+.0f}pp"
+        delta = "-" if d.delta is None or not math.isfinite(d.delta) else f"{d.delta * 100:+.0f}pp"
         flags = []
         if d.invalid:
             flags.append(f"INVALID ({d.invalid_reason})")

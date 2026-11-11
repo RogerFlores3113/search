@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -18,6 +19,8 @@ from local_browser_agent.safety import (
     normalize_allowed_domain,
     try_normalize_blocked_domain,
 )
+
+logger = logging.getLogger("local_browser_agent")
 
 # Non-web schemes the agent must never reach (chrome://settings/passwords, extensions, devtools).
 # browser-use only consults these patterns when allowed_domains is unset; with an allow-list
@@ -95,7 +98,9 @@ def blocked_patterns(blocked_domains) -> list[str]:
 
     ``*.d`` already matches ``d``, ``www.d`` and every subdomain, and ``*.d.`` matches the
     trailing-dot spellings, so a plain ``d`` entry would be redundant. Two patterns per domain
-    keep a default policy well under browser-use's 100-entry list-to-set conversion.
+    put the default policy (about 166 entries) over browser-use's 100-entry list-to-set conversion, which
+    drops every ``*.`` pattern; :func:`_restore_domain_lists` puts the lists back, and the log filter hides
+    browser-use's "Optimizing domain list" message.
     """
     out: list[str] = []
     for d in sorted({_norm_domain(x) for x in blocked_domains if _norm_domain(x)}):
@@ -126,12 +131,15 @@ def build_browser_profile(browser: BrowserConfig, safety: SafetyPolicy) -> Any:
         # browser-use ignores prohibited_domains when allowed_domains is set, so the allow-list
         # itself must be unable to reach a blocked site. SafetyPolicy already guarantees this;
         # re-check here because a policy can be built with model_construct or mutated.
-        allowed = list(dict.fromkeys(
-            n for d in safety.allowed_domains
-            if not allowed_matches_blocked(n := normalize_allowed_domain(d), blocked)
-        ))
+        normalized = [normalize_allowed_domain(d) for d in safety.allowed_domains]
+        dropped = [n for n in normalized if allowed_matches_blocked(n, blocked)]
+        allowed = list(dict.fromkeys(n for n in normalized if n not in dropped))
+        if dropped:
+            logger.warning("allowed_domains entries %s were dropped because they cover or sit under a blocked "
+                           "domain (blocked domains always win)", sorted(set(dropped)))
         if not allowed:
-            raise ValueError("allowed_domains contains only blocked domains; blocked domains always win")
+            raise ValueError("allowed_domains contains only blocked domains; blocked domains always win "
+                             f"(dropped: {sorted(set(dropped))})")
         if not safety.allow_local_network:
             local = [a for a in allowed if is_local_host(a.removeprefix("*."))]
             if local:

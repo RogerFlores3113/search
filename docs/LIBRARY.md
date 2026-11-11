@@ -26,6 +26,27 @@ result = asyncio.run(run_task("Find the cheapest USB-C cable on example-shop.tes
 print(result.status, result.final_result)
 ```
 
+Checking the outcome, streaming events and approving gated actions:
+
+```python
+import asyncio
+from local_browser_agent import ActionRequest, AgentConfig, run_task
+
+async def sink(event):  # any async callable; add `sink.wants_screenshots = False` to skip screenshots
+    if event.type == "progress":
+        print(f"step {event.step}/{event.max_steps}")
+
+async def approval(req: ActionRequest) -> bool:  # asked before a purchase-like click; no callback = deny
+    return input(f"Allow {req.action_name} on {req.url} ({req.element_label})? [y/N] ").lower() == "y"
+
+result = asyncio.run(run_task("Add a USB-C cable to the cart", AgentConfig.from_env(),
+                              sinks=[sink], approval=approval, sink_timeout_s=10))
+if result.status == "success":
+    print(result.final_result)
+else:  # run failures never raise; they come back here
+    print(result.status, result.error_kind, result.errors)  # e.g. error chrome_missing / cdp_connect / timeout
+```
+
 `run_task_sync(...)` is the same call wrapped in `asyncio.run`. For control (pause/resume/stop), use
 `BrowserAgent(config, sinks=..., approval=...)` and `await agent.run(task, start_url=None)`.
 `AgentConfig.from_env()` builds a config from the `LBA_*` variables below (`ANTHROPIC_API_KEY` /
@@ -143,7 +164,7 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 - **`start_url`** must be `http(s)`, not blocked, inside `allowed_domains` (when set) and not local (unless allowed);
   otherwise the run returns `status="error"`, `error_kind="start_url_blocked"` before anything is launched.
 
-- `blocked_domains` always includes `SAFETY_DEFAULTS` (banks, payments, government, medical, password managers); extra entries are added, none can be removed (also via `model_copy(update=...)`). Entries are lowercased with trailing dots stripped.
+- `blocked_domains` always includes `SAFETY_DEFAULTS`: about 90 domains covering banks, brokerages, crypto exchanges, payment apps (PayPal and its country sites, Venmo, Cash App, Wise, Zelle), identity providers and account settings (`accounts.google.com`, `myaccount.google.com`, `appleid.apple.com`, `login.microsoftonline.com`, `login.live.com`, `account.microsoft.com`), the AWS console and sign-in, tax sites, government, medical and password managers. Extra entries are added, none can be removed (also via `model_copy(update=...)`). Entries are normalised: scheme, userinfo, port, path and a leading `*.` are stripped and the host is canonicalised (so `https://evil.com:8080/x` and `*.evil.com` both mean `evil.com`, and `bücher.de` means `xn--bcher-kva.de`); an entry with no usable host raises `ValueError`. `github.com` stays reachable; its settings pages are path-level and not blocked. For a logged-in everyday Chrome profile, prefer an `allowed_domains` list for the sites the task needs.
 - **Host canonicalisation:** before any domain, IP or local-network check a host is canonicalised like Chrome does
   (percent-decoding, NFKC, zero-width/format characters removed, `。` `．` `｡` read as dots, lowercase, trailing dot
   removed, IDNA/punycode). A host that cannot be canonicalised is denied.
@@ -153,14 +174,15 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 - **Enter / Space** on a focused control are checked against the live focused element; when it cannot be read they
   are gated unless the last known focus was a text field.
 - `allowed_domains` restricts navigation to those domains. Public suffixes such as `*.co.uk` or `com.au` are rejected;
-  name a specific site (`*.example.co.uk`). Blocked domains win: an allowed domain equal to or under a blocked one is dropped, and a list that is left empty raises `ValueError`.
+  name a specific site (`*.example.co.uk`). Shared-hosting suffixes such as `github.io`, `herokuapp.com`, `vercel.app` or `pages.dev` are rejected the same way. Blocked domains win: an allowed entry that is equal to, under, or a wildcard covering a blocked domain is dropped with a warning naming it (for example `*.google.com` covers `accounts.google.com`, so allow `google.com` and `www.google.com` instead), and a list that is left empty raises `ValueError`.
 - The guardrail prompt is appended to the system prompt.
 - **Commerce gate:** click actions whose target label matches a commerce pattern ("Buy now", "Checkout", "Place order", "Pay", ...) are blocked in the tool layer, independent of the model. If you pass `approval=async (ActionRequest) -> bool`, it is asked first (`ActionRequest` has `action_name, params, element_label, url`); returning `True` lets the click through. Without a callback the click is blocked, the agent gets an error, and the attempt is listed in `RunResult.blocked_actions`.
-- The element label is read from the accessibility name / aria-label / text of the clicked element via `browser_session.get_element_by_index`; coordinate clicks and unlabeled elements cannot be gated.
+- The element label is read from the accessibility name / aria-label / text of the clicked element via `browser_session.get_element_by_index`, and the classification also covers its nearest interactive ancestors (up to 16 levels: label text, aria-label, title, value, `href`, `formaction`, form `action`), so a click on a `<span>` inside a "Place order" button or a `/checkout` link is gated like a click on the button itself. Labels are matched case-insensitively with spacing, zero-width characters and common lookalike letters removed ("BuY NoW", "buynow", "ʙᴜʏ" all count). Coordinate clicks and unlabeled elements cannot be gated.
+- `upload_file` always asks the approval callback (it sends a local file to a site), and `select_dropdown` is gated when the chosen option reads as a purchase. "Add to cart" is not gated.
 
 ## Sinks and tracing
 
-A sink is any `async def sink(event)`. Events: `StateEvent, ModelInfoEvent, ThoughtEvent, ActionDetailEvent, ProgressEvent, TokenEvent, ScreenshotEvent, SummaryEvent, ErrorEvent, DoneEvent, HumanNeededEvent, StepCompletedEvent`. A failing sink never crashes a run: the first failure of each sink is logged with a traceback, later ones as a one-line warning (naming the event type and the sink's running failure count), so a broken sink cannot flood the log. A sink that times out (5s) three times in a row is dropped for the rest of the run, with one warning.
+A sink is any `async def sink(event)`. Events: `StateEvent, ModelInfoEvent, ThoughtEvent, ActionDetailEvent, ProgressEvent, TokenEvent, ScreenshotEvent, SummaryEvent, ErrorEvent, DoneEvent, HumanNeededEvent, StepCompletedEvent`. A failing sink never crashes a run: the first failure of each sink is logged with a traceback, later ones as a one-line warning (naming the event type and the sink's running failure count), so a broken sink cannot flood the log. A sink that times out (5s) three times in a row is dropped for the rest of the run, with one warning. Both numbers are configurable per run: `run_task(..., sink_timeout_s=10, sink_max_timeouts=5)` (also `run_task_sync` and `BrowserAgent(...)`); the module defaults are `runner.SINK_TIMEOUT_S` and `runner.SINK_MAX_TIMEOUTS`.
 
 - `QueueSink(data_q, control_q=None)`: lossy `put_nowait` for data events; lifecycle events (state, model_info, summary, error_msg, done) block up to 2s.
 - `JsonlTraceSink(path, include_screenshots=False)`: one JSON line per event, appended to the file (an existing file is not truncated); each record has `ts` (UTC ISO 8601) and `run_id`: the run's id (the same as `RunResult.run_id`, stamped on every event by `BrowserAgent`), or the sink's own uuid4 for events emitted outside a run.
@@ -234,7 +256,7 @@ approval callback), so a stopped run ends within a few seconds with `status="sto
 
 ## Logging
 
-Importing `local_browser_agent` (and browser-use through it) installs **no handlers on the root logger**: the
+Importing `local_browser_agent` (and browser-use through it) installs **no handlers on the root logger** (the package logger only gets a `NullHandler`, per stdlib etiquette): the
 package sets `BROWSER_USE_SETUP_LOGGING=false` before importing browser-use unless you already set it. Library
 logs go to the `local_browser_agent` logger (and `browser_use`), so configure them with the standard `logging`
 module; unconfigured, Python shows only warnings and errors on stderr. Set `BROWSER_USE_SETUP_LOGGING=true`
@@ -247,7 +269,9 @@ To get the same tidy output in your own program, call `local_browser_agent.confi
 emoji/traceback-laden console handler with one plain stderr handler, strips ANSI colour when stderr is not a
 terminal, and (at every level except `debug`) drops browser-use's misleading "Optimizing domain list ... pattern
 matching is not supported for lists >= 100" warning, since wildcard `allowed_domains` entries are handled by this
-package. It is safe to call repeatedly.
+package. At warning level and above it also drops browser-use's duplicate multi-line ERROR records about a failed
+browser start ("Root CDP client not initialized", ...); the failure is in `RunResult.errors` / `error_kind`. They
+are kept at `info` / `debug`. It is safe to call repeatedly.
 
 ## CLI
 
@@ -306,6 +330,10 @@ a time, the safety gates, the key `LBA_*` variables).
   (plus `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` for those providers). It is validated once at startup: a bad value
   prints a clear message to stderr and `lba mcp` exits with code 2 instead of failing every call.
 - One task at a time; a concurrent call fails at once with a `busy` error.
+- **Progress.** When the client sends a `progressToken`, `run_browser_task` emits an MCP progress notification
+  per agent step (`progress` = step, `total` = max steps, `message` = e.g. `Step 3/25: click: Sign in`).
+  Clients without a token are unaffected. Both tools advertise `additionalProperties: false` in their `inputSchema`.
+  An unusable `allowed_domains` entry such as `*.com` is `invalid_argument`; an unreachable `LBA_CDP_URL` is `cdp_connect`.
 - `max_steps` must be 1-200; `allowed_domains`, if given, must be non-empty; `start_url`, if given, must be an
   `http(s)` URL with a host. Unknown arguments are rejected with `invalid_argument` naming the key(s). All of this
   validation (and loading the `LBA_*` config) happens before the busy check, so an invalid call is reported as

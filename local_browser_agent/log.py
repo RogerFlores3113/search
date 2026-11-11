@@ -55,6 +55,27 @@ class _DomainListWarning(logging.Filter):
             return True
 
 
+_START_FAILURE_MARKERS = ("BrowserSession.on_BrowserStartEvent", "Root CDP client not initialized",
+                          "Agent run failed with exception")
+
+
+class _StartFailureNoise(logging.Filter):
+    """Drops browser-use's multi-line ERROR records about a failed browser start / agent run.
+
+    The same failure is always reported once, cleanly, in ``RunResult.errors`` / ``error_kind``; the
+    raw records ("Root CDP client not initialized", ...) only repeat it. Used for quiet third-party
+    levels (warning and above); at info / debug they are kept."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno < logging.ERROR:
+            return True
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        return not any(m in msg for m in _START_FAILURE_MARKERS)
+
+
 class _StderrHandler(logging.Handler):
     """Writes to whatever ``sys.stderr`` is at emit time (so redirection and capture work)."""
 
@@ -155,7 +176,8 @@ def configure_logging(level: str = "warning", *, color: bool | None = None,
         lg.setLevel(tp_numeric)
         lg.propagate = False
         if tp != "off":
-            lg.addHandler(own_handler(_NoTraceFormatter(plain), tp_numeric, _StripAnsi(), _StripEmoji()))
+            extra = (_StartFailureNoise(),) if tp_numeric >= logging.WARNING else ()
+            lg.addHandler(own_handler(_NoTraceFormatter(plain), tp_numeric, _StripAnsi(), _StripEmoji(), *extra))
         for h in lg.handlers:  # handlers someone else added keep working, minus colour codes
             h.setLevel(tp_numeric)
             if not color and not any(isinstance(f, _StripAnsi) for f in h.filters):

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import ipaddress
 import json
 import logging
+import os
 import re
 import unicodedata
 from collections.abc import Awaitable, Callable, Iterable
@@ -23,8 +25,19 @@ logger = logging.getLogger("local_browser_agent")
 SAFETY_DEFAULTS: frozenset[str] = frozenset({
     # Banking
     "chase.com", "wellsfargo.com", "bankofamerica.com", "citi.com", "usbank.com",
+    "capitalone.com", "americanexpress.com", "discover.com",
+    # Brokerage / crypto
+    "schwab.com", "fidelity.com", "vanguard.com", "etrade.com", "robinhood.com",
+    "coinbase.com", "kraken.com", "binance.com",
     # Payment
     "paypal.com", "venmo.com", "stripe.com", "square.com", "braintree.com",
+    "cash.app", "wise.com", "zellepay.com",
+    # PayPal sibling TLDs (browser-use patterns cannot express ``paypal.*``, so the main ones are listed)
+    "paypal.me", "paypal.co.uk", "paypal.de", "paypal.fr", "paypal.it", "paypal.es", "paypal.ca",
+    "paypal.com.au", "paypal.nl", "paypal.ch", "paypal.at", "paypal.be", "paypal.pl", "paypal.ie",
+    "paypal.co.jp", "paypal.com.br", "paypal.in", "paypal.com.mx",
+    # Tax (account pages live under these domains)
+    "intuit.com", "turbotax.com",
     # Government
     "irs.gov", "ssa.gov", "healthcare.gov", "va.gov", "dhs.gov",
     "state.gov", "fbi.gov", "whitehouse.gov",
@@ -33,6 +46,12 @@ SAFETY_DEFAULTS: frozenset[str] = frozenset({
     # Credential / Identity
     "lastpass.com", "1password.com", "bitwarden.com", "dashlane.com",
     "nordpass.com", "okta.com", "auth0.com",
+    # Identity providers and account settings. Path-level pages (github.com/settings, the AWS
+    # console under a path) cannot be expressed as domain rules and are deliberately NOT listed:
+    # github.com itself stays reachable; the AWS console and sign-in hosts are blocked by host.
+    "accounts.google.com", "myaccount.google.com", "appleid.apple.com",
+    "login.microsoftonline.com", "login.live.com", "account.microsoft.com",
+    "console.aws.amazon.com", "signin.aws.amazon.com",
 })
 
 GUARDRAIL_PROMPT = (
@@ -68,6 +87,9 @@ INPUT_ACTIONS = frozenset({"input", "input_text", "input_text_by_index"})
 KEY_ACTIONS = frozenset({"send_keys"})
 EVAL_ACTIONS = frozenset({"evaluate", "execute_js", "execute_javascript"})
 NAVIGATE_ACTIONS = frozenset({"navigate", "go_to_url"})
+# Sends a local file to the website: always needs approval.
+UPLOAD_ACTIONS = frozenset({"upload_file", "upload_file_to_element"})
+SELECT_ACTIONS = frozenset({"select_dropdown", "select_dropdown_option"})
 
 # Phrases matched as whole words (Latin scripts), after normalisation.
 MULTILINGUAL_COMMERCE_PATTERNS: tuple[str, ...] = (
@@ -79,6 +101,12 @@ MULTILINGUAL_COMMERCE_PATTERNS: tuple[str, ...] = (
     "complete your purchase", "complete your order", "place my order", "pay invoice", "pay your invoice",
     "submit payment", "order and pay", "proceed to buy", "1 click buy", "one click buy", "1 click order",
     "upgrade now", "place bid", "place a bid", "place your bid",
+    "start free trial", "start my free trial", "start your free trial", "send payment", "pay bill", "pay my bill",
+    "pay your bill", "agree and pay", "accept and pay", "accept and continue to pay", "sign up and pay",
+    "authorize payment", "authorise payment", "approve payment", "apple pay", "google pay", "g pay", "gpay",
+    "upgrade plan", "upgrade your plan", "upgrade account", "upgrade to pro", "upgrade to premium",
+    "upgrade to plus", "withdraw funds", "transfer funds", "confirm transfer", "rent now", "finish order",
+    "continue to payment",
     # de
     "kaufen", "jetzt kaufen", "zahlen", "bezahlen", "jetzt bezahlen", "zur kasse", "kasse",
     "bestellen", "jetzt bestellen", "kostenpflichtig bestellen", "zahlungspflichtig bestellen",
@@ -117,6 +145,7 @@ EXACT_COMMERCE_LABELS: frozenset[str] = frozenset({
     "شراء", "اشتر", "ادفع", "اطلب", "खरीदें", "भुगतान करें", "ऑर्डर करें",
     "öde", "satın al", "kup", "zapłać", "zamów", "köp", "betala", "beställ", "beli", "bayar", "pesan",
     "mua", "thanh toán", "đặt hàng",
+    "αγορά", "αγορα", "اشتري", "upgrade",
 })
 
 # Multi-word CTAs in non-Latin-script and other languages, matched as whole phrases.
@@ -145,6 +174,7 @@ NON_LATIN_COMMERCE_PATTERNS: tuple[str, ...] = (
 
 # Start-of-label matches ("Buy 2 for $20", "Donate $50").
 _STARTS_WITH = ("buy ", "donate ", "kaufen ", "comprar ", "acheter ", "acquista ")
+_STARTS_WITH_MAX_WORDS = 6
 
 # CJK keywords are matched as substrings (no word boundaries in those scripts).
 CJK_COMMERCE_KEYWORDS: tuple[str, ...] = (
@@ -172,7 +202,23 @@ _INFO_PREFIXES = ("how to ", "how do ", "what is ", "what are ", "why ", "learn 
 _INFO_SUFFIXES = frozenset({
     "explained", "history", "guide", "faq", "faqs", "policy", "policies", "details", "info", "information",
     "tutorial", "help", "terms", "report", "reports", "accepted", "methods", "attention", "tips",
+    "tracking", "status", "page", "pages", "design", "process", "analysis", "article", "blog",
 })
+# Nouns that turn a CTA phrase into a topic ("Place order tracking", "Buy now history"): they suppress a
+# CTA that starts the label. The weaker ones above ("details", "faq", "info", "help", "terms") are what an
+# attacker appends to a real button, so they only suppress when the label is longer and clearly an explainer.
+_NOUN_MODIFIERS = frozenset({
+    "explained", "history", "policy", "policies", "methods", "attention", "tracking", "status", "page",
+    "pages", "design", "process", "analysis", "article", "blog",
+})
+# Second words that make "Buy ..."/"Donate ..." a topic instead of a CTA ("Buy-in", "Buy side analysis").
+_STARTS_WITH_TOPIC_WORDS = frozenset({"in", "vs", "versus", "side", "guide", "guides", "tips", "hub", "button"})
+# Exact labels that are ordinary words once a bare number is attached ("Book 3", "Order 2").
+_AMBIGUOUS_EXACT = frozenset({"book", "order", "reserve", "buchen", "boeken", "réserver", "reserver", "reservar", "prenota"})
+_CURRENCY_RE = re.compile(r"[$€£¥₹₩₽]")
+# Phrases matched as whole squeezed tokens ("Bu y now", "BUYNOW", "Buy\u200bnow", "Buy now details").
+_CHECKOUT_PHRASES = ("proceed to checkout", "go to checkout", "secure checkout", "express checkout",
+                     "continue to checkout", "guest checkout", "complete checkout")
 _STRONG_PHRASES = frozenset({
     "place order", "place your order", "confirm order", "complete purchase", "complete order",
     "submit order", "confirm purchase", "confirm payment", "pay now", "complete payment",
@@ -188,6 +234,10 @@ _HOMOGLYPHS = str.maketrans({
     "у": "y", "х": "x", "і": "i", "ј": "j", "ѕ": "s", "ԁ": "d", "ӏ": "l", "ᴀ": "a", "ɡ": "g",
     "α": "a", "β": "b", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p", "τ": "t",
     "υ": "u", "χ": "x", "η": "n", "μ": "u", "ω": "w", "ς": "s",
+    # Armenian look-alikes and IPA / small-cap letters that NFKC leaves alone ("ʙᴜʏ ɴᴏᴡ", "Bսy now").
+    "ս": "u", "օ": "o", "ց": "g", "ɓ": "b", "ƀ": "b", "ʙ": "b", "ᴄ": "c", "ᴅ": "d", "ᴇ": "e", "ꜰ": "f",
+    "ʜ": "h", "ɪ": "i", "ᴊ": "j", "ᴋ": "k", "ʟ": "l", "ᴍ": "m", "ɴ": "n", "ᴏ": "o", "ᴘ": "p", "ʀ": "r",
+    "ꜱ": "s", "ᴛ": "t", "ᴜ": "u", "ᴠ": "v", "ᴡ": "w", "ʏ": "y", "ᴢ": "z",
 })
 
 # --- Transactional URL signals ---------------------------------------------------------
@@ -221,17 +271,32 @@ _URL_STEP_KEYS = frozenset({"step", "checkout_step", "checkoutstep", "checkout-s
 _PAGE_EXT_RE = re.compile(r"\.(?:php|aspx?|html?|jsp|do|cgi|action)$", re.IGNORECASE)
 _URL_NEGATIVE_TOKENS = frozenset({
     "history", "faq", "help", "policy", "policies", "terms", "methods", "settings", "docs", "blog",
+    "news", "article", "articles", "press", "tutorial", "tutorials",
 })
 _URL_HOST_LABELS = frozenset({"checkout", "pay", "payments", "billing", "donate"})
+_URL_COMMERCE_HOSTS = frozenset({"buy.stripe.com", "checkout.stripe.com"})
+# Query parameters whose value is where the visitor lands next (``?next=/checkout``).
+_URL_REDIRECT_KEYS = frozenset({
+    "next", "return", "return_to", "returnto", "return_url", "returnurl", "redirect", "redirect_to",
+    "redirectto", "redirect_url", "redirecturl", "redirect_uri", "continue", "goto", "dest", "destination",
+})
+# Segments that make a following "checkout" segment part of a store, not of an article path.
+_URL_SHOP_PRECEDERS = frozenset({
+    "cart", "carts", "store", "stores", "shop", "shops", "basket", "bag", "secure", "order", "orders",
+    "my", "account", "mycart", "onepage", "servlet",
+})
 # A path segment (separators removed) that is transactional wherever it appears.
 _URL_CHECKOUT_SEGMENTS = frozenset({
     "checkout", "checkouts", "placeorder", "buynow", "paynow", "confirmpayment",
     "kasse", "caisse", "cassa", "makepayment", "makeapayment", "securepayment",
+    "expresscheckout", "onestepcheckout", "onepagecheckout", "guestcheckout", "checkoutview", "checkoutnow",
+    "checkoutstep",
 })
+_URL_CHECKOUT_STEP_RE = re.compile(r"^checkoutstep\d*$")
 # Segments that are transactional only as the first path segment (after an optional locale),
 # either alone, followed by an id, or followed by an action word.
 _URL_ROOT_SEGMENTS = frozenset({
-    "pay", "payment", "payments", "billing", "subscribe", "donate", "purchase",
+    "pay", "payment", "payments", "billing", "subscribe", "donate", "purchase", "buy",
     "zahlung", "paiement", "pagamento", "betaling",
 })
 _URL_ROOT_ACTIONS = frozenset({
@@ -318,6 +383,12 @@ PUBLIC_SUFFIXES: frozenset[str] = frozenset({
     "co.kr", "or.kr", "go.kr", "ac.kr", "co.id", "or.id", "go.id", "ac.id", "co.th", "or.th", "go.th", "ac.th",
     "com.eg", "com.sa", "com.pk", "com.ng", "co.ke", "com.gh", "com.bd", "com.lk", "com.np", "com.ru",
     "com.pl", "com.pt", "com.es", "com.gr", "com.cy", "com.de", "co.at", "or.at", "co.hu", "co.ve",
+    # Shared hosting / PaaS suffixes: every customer is an unrelated registrant (PSL private section).
+    "github.io", "herokuapp.com", "blogspot.com", "pages.dev", "vercel.app", "netlify.app", "web.app",
+    "firebaseapp.com", "azurewebsites.net", "cloudfront.net", "appspot.com", "workers.dev", "gitlab.io",
+    "onrender.com", "fly.dev", "glitch.me", "repl.co", "surge.sh", "wixsite.com", "weebly.com",
+    "myshopify.com", "s3.amazonaws.com", "amazonaws.com", "herokudns.com", "ngrok.io", "ngrok-free.app",
+    "trycloudflare.com", "azureedge.net", "blob.core.windows.net", "web.core.windows.net",
 })
 
 
@@ -479,6 +550,7 @@ def _core(text: str) -> str:
 
 _EXACT_NORM = frozenset(normalize_text(x) for x in EXACT_COMMERCE_LABELS)
 _EXACT_SQUEEZED = frozenset(x.replace(" ", "") for x in _EXACT_NORM)
+_AMBIGUOUS_EXACT = frozenset("".join(normalize_text(x).split()) for x in _AMBIGUOUS_EXACT)
 
 
 def _strip_marks(text: str) -> str:
@@ -501,40 +573,138 @@ def _fold_homoglyphs(text: str) -> str:
     return text.translate(_HOMOGLYPHS)
 
 
+_NOISE_WORDS = frozenset({"item", "items", "product", "products", "article", "articles", "x", "qty"})
+# Strong phrases that stay gated whenever the label starts with them, even with a topic-like last word.
+_GATED_STARTS = ("pay now", "buy now", "place order", "place your order", "complete purchase", "complete order",
+                 "confirm purchase", "proceed to checkout")
+# Of those, the purchase/order-style ones that "history/tracking/status" turns into a topic.
+_TOPIC_EXEMPT_STARTS = frozenset({"place order", "complete purchase", "complete order", "confirm purchase"})
+_TOPIC_TAILS = frozenset({"history", "tracking", "status"})
+
+
+def _is_noise(word: str) -> bool:
+    """Counts, prices and quantities that may trail a CTA: "(3", "items)", "$45.00", "x2", "qty"."""
+    w = word.strip("()[]{}.,:;!·•")
+    return (not w or any(c.isdigit() for c in w) or bool(_CURRENCY_RE.search(w)) or w in _NOISE_WORDS)
+
+
+def _starts_with_cta_topic(text: str, words: list[str]) -> bool:
+    """A label that starts with a strong CTA and ends in a topic noun, but is still the CTA."""
+    for ph in _GATED_STARTS:
+        if text == ph or text.startswith(ph + " "):
+            tail = text[len(ph):].split()
+            if len(tail) >= 3:
+                return False  # a longer heading: "Pay now pay later policy"
+            if len(tail) == 1 and tail[0] in _TOPIC_TAILS and ph in _TOPIC_EXEMPT_STARTS:
+                return False  # "Place order tracking"
+            return True
+    return False
+
+
+_CHECKOUT_FOLLOWERS = ("now", "with", "securely", "and", "via", "online", "as", "here")
+
+
 def _bare_verb_cta(text: str) -> bool:
     """True for pay/purchase/checkout used as a call to action rather than as a loose word."""
-    words = text.split()
     for v in _BARE_VERBS:
-        if _phrase_in(v, text):
-            # "pay now", "pay with ...", "pay securely", "pay $20", "pay and continue"
-            if re.match(rf"^{v}(?: (?:now|with|securely|and|via|by|online|here))\b", text) or (
-                    text.startswith(v + " ") and _AMOUNT_RE.search(text)):
+        if not _phrase_in(v, text):
+            continue
+        checkout = v in ("checkout", "check out")
+        # "pay now", "pay with ...", "pay securely", "pay $20", "pay and continue"; for checkout only these
+        # shapes too, so "Check out our blog" or "Checkout page design" are not a CTA.
+        if re.match(rf"^{v}(?: (?:{'|'.join(_CHECKOUT_FOLLOWERS)}))\b", text) or (
+                not checkout and text.startswith(v + " ") and _AMOUNT_RE.search(text)):
+            return True
+        if checkout and text.startswith(v + " ") and all(_is_noise(w) for w in text[len(v):].split()):
+            return True  # "Checkout - 3 items"
+        if checkout and _core(text) == v:
+            return True  # the whole label is "Checkout" / "Check out"
+        for pre in _BARE_PREFIXES:
+            if not text.startswith(pre + v):
+                continue
+            tail = text[len(pre + v):]
+            if tail == "" or (not checkout and tail.startswith(" ")):
                 return True
-            if any(text.startswith(pre + v) and text[len(pre + v):len(pre + v) + 1] in ("", " ") for pre in _BARE_PREFIXES):
-                return True
-            # "checkout" is a CTA as a short label ("Checkout", "Checkout with PayPal"); "Pay"/"Purchase" are not.
-            if v in ("checkout", "check out") and len(words) <= 4:
+            if checkout and tail.startswith(" ") and all(_is_noise(w) for w in tail.split()):
+                return True  # "Checkout - 3 items", "Proceed to checkout ($45.00)"
+            if checkout and tail.startswith(" ") and tail.split()[0] in _CHECKOUT_FOLLOWERS:
                 return True
     return False
 
 
-def _label_hit(text: str, patterns: tuple[str, ...]) -> bool:
+def _squeeze(phrase: str) -> str:
+    return "".join(phrase.split())
+
+
+@functools.lru_cache(maxsize=16)
+def _cta_set(pats: tuple[str, ...]) -> tuple[frozenset[str], int]:
+    """Squeezed multi-word CTA phrases (spaces removed) and the longest one's length."""
+    phrases = {p for p in (*pats, *_STRONG_PHRASES, *(normalize_text(c) for c in _CHECKOUT_PHRASES)) if " " in p}
+    ctas = frozenset(_squeeze(p) for p in phrases)
+    return ctas, max((len(c) for c in ctas), default=0)
+
+
+def _cta_run(words: list[str], ctas: frozenset[str], max_len: int) -> tuple[str, int] | None:
+    """Find a CTA phrase spelled by a run of whole tokens at the start or end of the label.
+
+    Token runs are concatenated, so "Bu y now", "BUYNOW" and "b UY nOW" all spell ``buynow``.
+    Returns ``("whole" | "start" | "end", token_count)`` or None.
+    """
+    n = len(words)
+    best: tuple[str, int] | None = None
+    acc = ""
+    for i in range(n):
+        acc += words[i]
+        if len(acc) > max_len:
+            break
+        if acc in ctas:
+            best = ("whole" if i == n - 1 else "start", i + 1)
+    if best and best[0] == "whole":
+        return best
+    acc = ""
+    for i in range(n - 1, -1, -1):
+        acc = words[i] + acc
+        if len(acc) > max_len:
+            break
+        if acc in ctas:
+            return ("end", n - i)
+    return best
+
+
+def _label_hit(text: str, patterns: tuple[str, ...], ctas: frozenset[str] = frozenset(), max_len: int = 0) -> bool:
     """Match one normalised variant of a label; see is_commerce_label."""
     words = text.split()
     if not words:
         return False
     core = _core(text)
-    if core in _STRONG_PHRASES or any(_phrase_in(p, text) for p in _STRONG_PHRASES):
+    topic = len(words) >= 2 and words[-1] in _NOUN_MODIFIERS
+    if topic and _starts_with_cta_topic(text, words):
         return True
+    if not topic and (core in _STRONG_PHRASES or any(_phrase_in(p, text) for p in _STRONG_PHRASES)):
+        return True
+    run = _cta_run(words, ctas, max_len) if ctas else None
     informational = text.startswith(_INFO_PREFIXES) or (len(words) >= 3 and words[-1] in _INFO_SUFFIXES)
+    if run is not None:
+        where, count = run
+        if where in ("whole", "end"):
+            return True  # "Learn more. Buy now": a label that ends with a full CTA stays gated
+        if topic:
+            return False  # "Place order tracking"
+        rest = words[count:]
+        if sum(w not in _INFO_SUFFIXES and not _is_noise(w) for w in rest) < 2:
+            return True  # "Buy now details", "Buy now FAQ": a short info tail cannot hide a CTA
     if informational:
         return False
     for p in patterns:
         if p and _phrase_in(p, text):
             return True
-    if core in _EXACT_NORM or _bare_verb_cta(text):
+    sq = _squeeze(core)
+    if core in _EXACT_NORM or sq in _EXACT_SQUEEZED:
+        return not (sq in _AMBIGUOUS_EXACT and any(c.isdigit() for c in text) and not _CURRENCY_RE.search(text))
+    if _bare_verb_cta(text):
         return True
-    if any(text.startswith(s) for s in _STARTS_WITH):
+    if any(text.startswith(s) for s in _STARTS_WITH) and len(words) <= _STARTS_WITH_MAX_WORDS \
+            and words[1] not in _STARTS_WITH_TOPIC_WORDS:
         return True
     return any(k in text for k in _CJK_NORM) and not any(n in text for n in _CJK_NEG_NORM)
 
@@ -559,7 +729,8 @@ def is_commerce_label(label: str | None, patterns: Iterable[str] = DEFAULT_COMME
                                                           *NON_LATIN_COMMERCE_PATTERNS)) if p)
     stripped = _strip_marks(text)
     variants = dict.fromkeys((text, _fold_homoglyphs(text), stripped, _fold_homoglyphs(stripped)))
-    if any(_label_hit(v, pats) for v in variants):
+    ctas, max_len = _cta_set(pats)
+    if any(_label_hit(v, pats, ctas, max_len) for v in variants):
         return True
     if _letterspaced(stripped):
         squeezed = _fold_homoglyphs(stripped).replace(" ", "")
@@ -573,7 +744,19 @@ def _path_tokens(path: str) -> list[str]:
     return [t for t in re.split(r"[\W_]+", _CAMEL_RE.sub(" ", path).casefold()) if t]
 
 
-def is_commerce_url(url: str | None, broad: bool = False) -> bool:
+def _clean_url_path(path: str) -> str:
+    """Percent-decode (twice), NFKC, drop invisible characters and ``;jsessionid``-style matrix params."""
+    for _ in range(2):
+        decoded = unquote(path)
+        if decoded == path:
+            break
+        path = decoded
+    path = unicodedata.normalize("NFKC", path)
+    path = "".join(c for c in path if unicodedata.category(c) != "Cf")
+    return re.sub(r";[^/]*", "", path)
+
+
+def is_commerce_url(url: str | None, broad: bool = False, _depth: int = 0) -> bool:
     """True when a URL looks transactional.
 
     By default a URL counts only when it has a transactional shape: a ``checkout.*`` style
@@ -582,7 +765,11 @@ def is_commerce_url(url: str | None, broad: bool = False) -> bool:
     ``/subscribe`` or ``/donate`` that is alone, followed by an id, or followed by an action
     (``/payment/confirm``). ``/wiki/Payment``, ``/help/payment-methods`` or ``/subscriptions``
     do not match. With ``broad=True`` any path token such as "payment" or "donation" matches
-    (used for form actions, where the URL is the submit target).
+    (used for form actions, where the URL is the submit target). The path is percent-decoded
+    first (``/%63heckout``) and matrix parameters are dropped (``/checkout;jsessionid=1``). A
+    ``checkout`` segment must be the first segment, the last one, or follow a shop-like segment
+    (``/cart/checkout``), so ``/blog/checkout/our-launch`` does not match. ``next`` / ``return`` /
+    ``redirect`` style query values (``?next=/checkout``) are checked as URLs of their own.
     """
     if not url or not isinstance(url, str):
         return False
@@ -597,28 +784,35 @@ def is_commerce_url(url: str | None, broad: bool = False) -> bool:
     if parts.fragment and re.match(r"^!?/", parts.fragment):  # hash-routed apps: /app#/checkout
         frag = parts.fragment.lstrip("!")
         path, _, query = frag.partition("?")
-        if is_commerce_url(urlunsplit((parts.scheme or "https", parts.netloc, path, query, "")), broad):
+        if is_commerce_url(urlunsplit((parts.scheme or "https", parts.netloc, path, query, "")), broad, _depth):
             return True
-    if host.split(".")[0] in _URL_HOST_LABELS and host.count(".") >= 2:
+    if host in _URL_COMMERCE_HOSTS or (host.split(".")[0] in _URL_HOST_LABELS and host.count(".") >= 2):
         return True
     for k, v in parse_qsl(parts.query, keep_blank_values=True):
-        k, v = k.casefold(), v.casefold().strip()
-        if k in _URL_STEP_KEYS and (v in _URL_STEP_VALUES or (k.startswith("checkout") and v)):
+        k, v = k.casefold(), v.strip()
+        if k in _URL_STEP_KEYS and (v.casefold() in _URL_STEP_VALUES or (k.startswith("checkout") and v)):
             return True
-    tokens = _path_tokens(parts.path)
+        if k in _URL_REDIRECT_KEYS and _depth == 0 and v.startswith(("/", "http")):
+            target = v if not v.startswith("/") else urlunsplit((parts.scheme or "https", parts.netloc, v, "", ""))
+            if is_commerce_url(target, broad, _depth + 1):
+                return True
+    clean = _clean_url_path(parts.path or "")
+    tokens = _path_tokens(clean)
     if not tokens or any(t in _URL_NEGATIVE_TOKENS for t in tokens):
         return False
     if any(pair in _URL_BIGRAMS for pair in zip(tokens, tokens[1:], strict=False)):
         return True
     if broad:
         return any(t in _URL_TOKENS for t in tokens)
-    segments = [_PAGE_EXT_RE.sub("", seg) for seg in unicodedata.normalize("NFKC", parts.path or "").split("/") if seg]
-    joined = ["".join(_path_tokens(seg)) for seg in segments]
-    if any(j in _URL_CHECKOUT_SEGMENTS for j in joined):
-        return True
-    if joined and _LOCALE_RE.match(segments[0].casefold()):
-        joined = joined[1:]
+    segments = [_PAGE_EXT_RE.sub("", seg) for seg in clean.split("/") if seg]
+    if segments and _LOCALE_RE.match(segments[0].casefold()):
         segments = segments[1:]
+    joined = ["".join(_path_tokens(seg)) for seg in segments]
+    last = len(joined) - 1
+    for i, j in enumerate(joined):
+        if (j in _URL_CHECKOUT_SEGMENTS or _URL_CHECKOUT_STEP_RE.match(j)) and (
+                i in (0, last) or joined[i - 1] in _URL_SHOP_PRECEDERS or joined[i - 1].isdigit()):
+            return True
     if not joined or joined[0] not in _URL_ROOT_SEGMENTS:
         return False
     rest = joined[1:]
@@ -629,7 +823,7 @@ def is_commerce_url(url: str | None, broad: bool = False) -> bool:
     return len(rest) == 1 and (rest[0] in _URL_ROOT_ACTIONS or bool(_ID_RE.match(segments[1].casefold())))
 
 
-_TARGET_DEPTH = 8  # ancestor levels inspected for link/form destinations on a click
+_TARGET_DEPTH = 16  # ancestor levels inspected for link/form destinations on a click
 
 
 def _attrs(node: Any) -> dict[str, str]:
@@ -662,9 +856,33 @@ def _is_submit_like(node: Any) -> bool:
     return False
 
 
+def _click_chain(node: Any, limit: int = 16) -> list[Any]:
+    """``node`` followed by its ancestors, nearest first (at most ``limit`` elements in all)."""
+    out: list[Any] = []
+    cur = node
+    while cur is not None and len(out) < limit:
+        out.append(cur)
+        cur = getattr(cur, "parent_node", None)
+    return out
+
+
+def _label_chain(node: Any, limit: int = 16) -> list[Any]:
+    """The elements whose labels describe what a click on ``node`` does: the node itself and, when it
+    is a child of a link/button (``<span>`` or ``<img>`` inside ``<button>``), its ancestors up to and
+    including the nearest interactive one. Never reaches past it, so a page-wide wrapper's text is not
+    mistaken for the click target's label."""
+    out: list[Any] = []
+    for cur in _click_chain(node, limit):
+        out.append(cur)
+        if _is_clickable_control(cur):
+            return out
+    return out[:1]  # no interactive ancestor: only the node's own label counts
+
+
 def _in_form_submit(node: Any) -> bool:
-    """A submit control that sits inside a <form> (ambiguous when its label cannot be trusted)."""
-    return _is_submit_like(node) and _ancestor_form(node) is not None
+    """A submit control that sits inside a <form> (ambiguous when its label cannot be trusted), also
+    when the click lands on a child of such a control."""
+    return any(_is_submit_like(n) and _ancestor_form(n) is not None for n in _label_chain(node))
 
 
 def _is_clickable_control(node: Any) -> bool:
@@ -672,6 +890,18 @@ def _is_clickable_control(node: Any) -> bool:
     return _tag(node) in ("button", "a") or str(a.get("role", "")).lower() in ("button", "link") or (
         _tag(node) == "input" and str(a.get("type", "")).lower() in _SUBMIT_TYPES
     )
+
+
+def attr_is_commerce(value: Any, patterns: Iterable[str] = DEFAULT_COMMERCE_PATTERNS) -> bool:
+    """Like :func:`is_commerce_label` for machine-written attributes (id, name, data-testid, ...):
+    ``btn-checkout`` or ``checkout-form`` also count, because nobody reads those as prose."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    if is_commerce_label(value, patterns):
+        return True
+    words = normalize_text(value).split()
+    return (len(words) <= 4 and ("checkout" in words or "check out" in " ".join(words))
+            and words[-1] not in _NOUN_MODIFIERS)
 
 
 def form_looks_transactional(node: Any) -> bool:
@@ -682,7 +912,7 @@ def form_looks_transactional(node: Any) -> bool:
     fa = _attrs(form)
     if is_commerce_url(fa.get("action"), broad=True):
         return True
-    return any(is_commerce_label(fa.get(k)) for k in ("id", "name", "aria-label"))
+    return any(attr_is_commerce(fa.get(k)) for k in ("id", "name", "aria-label"))
 
 
 def element_risk(node: Any, page_url: str | None, label: str | None,
@@ -700,11 +930,27 @@ def element_risk(node: Any, page_url: str | None, label: str | None,
         if is_commerce_url(a.get(key), broad=key == "formaction"):
             return f"{key} {a.get(key)!r} points to a checkout/payment URL"
     for key in ("name", "id", "aria-label", "title", "value", "data-testid", "data-action"):
-        if is_commerce_label(a.get(key), patterns):
+        if attr_is_commerce(a.get(key), patterns):
             return f"attribute {key}={a.get(key)!r} looks like a purchase/commerce action"
-    if _is_submit_like(node) and form_looks_transactional(node):
+    chain = _label_chain(node)
+    for anc in _click_chain(node)[1:]:  # a click on a child activates the link/form it sits in
+        aa = _attrs(anc)
+        for key in ("href", "formaction", "data-href", "data-url"):
+            if is_commerce_url(aa.get(key), broad=key == "formaction"):
+                return f"ancestor {key} {aa.get(key)!r} points to a checkout/payment URL"
+        if _tag(anc) == "form" and is_commerce_url(aa.get("action"), broad=True):
+            return f"ancestor form action {aa.get('action')!r} points to a checkout/payment URL"
+    for anc in chain[1:]:
+        for part in label_parts(anc):
+            if is_commerce_label(part, patterns):
+                return f"enclosing control label {part!r} looks like a purchase/commerce action"
+        aa = _attrs(anc)
+        for key in ("name", "id", "aria-label", "title", "value", "data-testid", "data-action"):
+            if attr_is_commerce(aa.get(key), patterns):
+                return f"enclosing control attribute {key}={aa.get(key)!r} looks like a purchase/commerce action"
+    if any(_is_submit_like(n) and form_looks_transactional(n) for n in chain):
         return "submit button inside a checkout/payment/order form"
-    if is_commerce_url(page_url) and _is_clickable_control(node):
+    if is_commerce_url(page_url) and any(_is_clickable_control(n) for n in chain):
         return "clickable control on a checkout/payment page"
     if not label and is_commerce_url(page_url):
         return "unlabeled control on a checkout/payment page"
@@ -922,11 +1168,20 @@ _LIVE_JS = """function() {
   const f = el.closest ? el.closest('form') : null;
   const txt = String(el.innerText || el.textContent || '').slice(0, 300);
   const chain = [];
-  const keep = ['href', 'formaction', 'data-href', 'action', 'type'];
+  const keep = ['href', 'formaction', 'data-href', 'data-url', 'action', 'type', 'role', 'aria-label', 'title', 'value',
+                'name', 'id', 'data-testid', 'data-action'];
+  const interactive = (e) => {
+    const g = String(e.tagName || '').toLowerCase(), r = String(e.getAttribute && e.getAttribute('role') || '').toLowerCase();
+    const ty = String(e.getAttribute && e.getAttribute('type') || '').toLowerCase();
+    return g === 'a' || g === 'button' || r === 'button' || r === 'link' || (g === 'input' && ['submit', 'image', 'button'].includes(ty));
+  };
   let p = el.parentElement;
-  for (let i = 0; p && i < 8; i++, p = p.parentElement) {
+  let seen = interactive(el);
+  for (let i = 0; p && i < 16; i++, p = p.parentElement) {
     const o = {}; for (const k of keep) if (p.hasAttribute && p.hasAttribute(k)) o[k] = String(p.getAttribute(k)).slice(0, 2000);
-    chain.push({tag: String(p.tagName || '').toLowerCase(), attrs: o});
+    const item = {tag: String(p.tagName || '').toLowerCase(), attrs: o};
+    if (!seen) { item.text = String(p.innerText || p.textContent || '').slice(0, 300); seen = interactive(p); }
+    chain.push(item);
   }
   return JSON.stringify({tag: String(el.tagName || '').toLowerCase(), attrs: a, text: txt, form: f ? attrs(f) : null, chain: chain});
 }"""
@@ -952,9 +1207,10 @@ def _node_from_live(data: dict[str, Any]) -> Any:
     if isinstance(chain, list):  # ancestors, nearest first; rebuild the parent links (closest form kept)
         parent = None
         for item in reversed([c for c in chain if isinstance(c, dict)]):
+            item_text = str(item.get("text") or "")
             parent = SimpleNamespace(node_name=str(item.get("tag") or ""), attributes=dict(item.get("attrs") or {}),
                                      ax_node=None, node_value="", parent_node=parent,
-                                     get_all_children_text=lambda: "")
+                                     get_all_children_text=lambda t=item_text: t)
         if form is not None and not any(_tag(c) == "form" for c in _walk_up(parent)):
             form.parent_node = parent
             parent = form
@@ -1317,7 +1573,7 @@ class GuardedTools(Tools):
                     reason, label = f"live page element changed: {live_reason}", live_label
                 ambiguous = ambiguous or not live_label or _in_form_submit(live)
             elif state == "failed" and reason is None and (
-                    ambiguous or _commerce_capable(node) or is_commerce_url(url)):
+                    ambiguous or any(_commerce_capable(n) for n in _label_chain(node)) or is_commerce_url(url)):
                 reason = "live element could not be re-read, so its current label is unknown (failing closed)"
             elif state == "unavailable" and not self._lba_warned_no_live:
                 self._lba_warned_no_live = True
@@ -1335,6 +1591,20 @@ class GuardedTools(Tools):
             self._lba_text_focus = False  # navigation, tab switches, ... move focus off the field
         if name in CLICK_ACTIONS:
             return await self._lba_classify_click(name, params, browser_session)
+        if name in UPLOAD_ACTIONS:
+            path = params.get("path") or params.get("file_path")
+            url, _ = await self._lba_url(browser_session)
+            shown = os.path.basename(str(path)) if path else None
+            return ActionRequest(action_name=name, params=dict(params), element_label=shown, url=url,
+                                 reason="uploads a local file to the website")
+        if name in SELECT_ACTIONS:
+            self._lba_text_focus = False
+            choice = params.get("text")
+            if isinstance(choice, str) and is_commerce_label(choice, self._lba_patterns):
+                url, _ = await self._lba_url(browser_session)
+                return ActionRequest(action_name=name, params=dict(params), element_label=choice, url=url,
+                                     reason=f"dropdown option {choice!r} looks like a purchase/commerce action")
+            return None
         if name in NAVIGATE_ACTIONS:
             dest = params.get("url")
             candidate = navigation_candidate(dest)[0] if isinstance(dest, str) else None

@@ -11,10 +11,14 @@ See: .planning/phases/04-distribution/04-RESEARCH.md Pattern 1
 """
 from __future__ import annotations
 
+import logging
 import os
 import secrets
+import shutil
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 APP_NAME = "local-browser-agent"
 DATA_DIR_ENV = "LBA_DATA_DIR"
@@ -81,10 +85,11 @@ def get_secret_key() -> bytes:
 
 
 def get_settings_path() -> Path:
-    """Return path to settings.json in the platform config directory.
+    """Return path to settings.json (it also holds the encrypted API key blobs).
 
-    Unlike get_user_data_dir(), this always uses platformdirs.user_config_dir
-    in both dev and frozen modes — settings are config, not data.
+    ``LBA_DATA_DIR``, when set, holds settings.json next to history.db and secret.bin.
+    Otherwise it lives in the platform config directory (always platformdirs, in dev and
+    frozen modes alike; settings are config, not data):
 
     Dev mode:   ~/.config/local-browser-agent/settings.json  (Linux)
                 ~/Library/Preferences/local-browser-agent/settings.json (macOS)
@@ -93,7 +98,20 @@ def get_settings_path() -> Path:
 
     Always calls mkdir(parents=True, exist_ok=True) so callers never have to.
     """
-    from platformdirs import user_config_dir
-    path = Path(user_config_dir(APP_NAME)) / "settings.json"
+    if os.environ.get(DATA_DIR_ENV, "").strip():
+        path = get_user_data_dir() / "settings.json"
+        if not path.exists():
+            # settings.json used to live in the platform config dir even with LBA_DATA_DIR set: carry it over once.
+            from platformdirs import user_config_dir
+            legacy = Path(user_config_dir(APP_NAME)) / "settings.json"
+            try:
+                if legacy.is_file() and legacy.resolve() != path.resolve():
+                    shutil.copy2(legacy, path)
+                    logger.info("Copied existing settings from %s to %s", legacy, path)
+            except OSError as e:
+                logger.warning("Could not copy existing settings from %s: %s", legacy, e)
+    else:
+        from platformdirs import user_config_dir
+        path = Path(user_config_dir(APP_NAME)) / "settings.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path

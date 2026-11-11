@@ -198,7 +198,11 @@ def test_compare_steps_and_cost_warn_only_unless_strict(tmp_path, capsys):
 
 def test_compare_flags_differing_n_and_min_n(tmp_path, capsys):
     a, b = doc({"t1": entry(n=3)}), doc({"t1": entry(n=1)})
-    assert run_compare(tmp_path, a, b) == 0
+    # default: the candidate needs at least as many runs as the baseline had
+    assert run_compare(tmp_path, a, b) == 2
+    assert "baseline's 3" in capsys.readouterr().out
+    # an explicit --min-n replaces that rule; the n difference is then a warning
+    assert run_compare(tmp_path, a, b, "--min-n", "1") == 0
     assert "runs differ (3 vs 1)" in capsys.readouterr().out
     assert run_compare(tmp_path, a, b, "--min-n", "2") == 2
 
@@ -231,7 +235,7 @@ def fake_config(**browser):
     )
 
 
-def test_preflight_failure_runs_nothing_and_exits_2(tmp_path, capsys):
+def test_preflight_failure_runs_nothing_and_exits_3(tmp_path, capsys):
     calls = []
 
     async def fake(instruction, config, *, start_url):
@@ -239,7 +243,7 @@ def test_preflight_failure_runs_nothing_and_exits_2(tmp_path, capsys):
 
     rc = cli.main(["--tasks", "table-max-row", "--out", str(tmp_path)], run_fn=fake, config=fake_config(),
                   preflight=lambda cfg: ["Google Chrome was not found."])
-    assert rc == 2 and not calls
+    assert rc == 3 and not calls
     assert "pre-flight failed" in capsys.readouterr().err
 
 

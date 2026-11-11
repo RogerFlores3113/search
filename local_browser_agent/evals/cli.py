@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -13,14 +14,44 @@ from .runner import DEFAULT_MAX_INFRA_ERRORS, INFRA_ERROR_KINDS
 from .tasks import FINAL_SUFFIX, TASKS, get_tasks
 
 PREFIX = "lba eval: error:"
+EXIT_USAGE, EXIT_ENV = 2, 3  # same meaning as ``lba run``: 2 = bad flags/config, 3 = environment not ready
+
+#: Flags that only apply to a real run; combining them with --compare/--list/--self-test is a usage error.
+_RUN_ONLY_FLAGS = (
+    ("provider", "--provider"), ("model", "--model"), ("api_key_env", "--api-key-env"),
+    ("base_url", "--base-url"), ("tasks", "--tasks"), ("cdp_url", "--cdp-url"), ("max_steps", "--max-steps"),
+    ("budget_minutes", "--budget-minutes"), ("fail_under", "--fail-under"),
+)
 
 
 def _err(msg: str) -> None:
     print(f"{PREFIX} {msg}", file=sys.stderr)
 
 
+def _fail(args: argparse.Namespace, code: int, error_kind: str, errors: list[str], *, prefix: str = "") -> int:
+    """Report a failure: one ``lba eval: error:`` line per problem on stderr and, with --json, one JSON
+    document on stdout (``{"status": "error", "error_kind": ..., "errors": [...]}``)."""
+    for e in errors:
+        _err(f"{prefix}{e}")
+    if getattr(args, "json", False):
+        print(json.dumps({"status": "error", "error_kind": error_kind, "errors": list(errors)}, indent=2))
+    return code
+
+
+class _Parser(argparse.ArgumentParser):
+    """argparse usage errors also produce the one JSON document under ``--json``."""
+
+    def error(self, message: str) -> Any:  # type: ignore[override]
+        argv = getattr(self, "_argv", None) or []
+        # argparse accepts unique prefixes, so "--jso" counts as --json here too.
+        if any(len(a) >= 4 and "--json".startswith(a.split("=", 1)[0]) and len(a.split("=", 1)[0]) >= 4
+               for a in argv if a.startswith("--")):
+            print(json.dumps({"status": "error", "error_kind": "usage", "errors": [message]}, indent=2))
+        super().error(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = _Parser(
         prog="lba eval", description="Deterministic eval suite for the browser agent."
     )
     p.add_argument("--self-test", action="store_true", help="validate fixtures and checkers (no browser, no LLM)")
@@ -33,16 +64,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--tolerance", type=float, default=0.0, metavar="PP", help="--compare: allowed per-task pass-rate drop, 0 to 1 (default 0)")
     p.add_argument("--score-tolerance", type=float, default=0.1, metavar="D", help="--compare: allowed per-task mean-score drop (default 0.1)")
-    p.add_argument("--min-n", type=int, default=1, metavar="N", help="--compare: exit 2 when a task has fewer than N runs on either side (default 1)")
+    p.add_argument("--min-n", type=int, default=None, metavar="N", help="--compare: exit 2 when a task has fewer than N runs on either side (default: the candidate needs at least as many runs per task as the baseline had)")
     p.add_argument("--allow-taskset-change", action="store_true", help="--compare: only warn when the task set/checker hash differs (default: exit 2)")
     p.add_argument("--strict", action="store_true", help="--compare: also exit 1 on warnings (steps/cost up 50%%, differing n, model, ...)")
     p.add_argument("-q", "--quiet", action="store_true", help="errors only on stderr: no progress lines or summary")
     p.add_argument("--json", action="store_true", help="print the final result (run summary, --compare, --list or --self-test) as one JSON document on stdout; human text goes to stderr")
-    p.add_argument("--max-infra-errors", type=int, default=DEFAULT_MAX_INFRA_ERRORS, metavar="N", help=f"abort the run (exit 2) after N consecutive infrastructure errors such as a missing Chrome or CDP failure; 0 disables (default {DEFAULT_MAX_INFRA_ERRORS})")
+    p.add_argument("--max-infra-errors", type=int, default=DEFAULT_MAX_INFRA_ERRORS, metavar="N", help=f"abort the run (exit 3) after N consecutive infrastructure errors such as a missing Chrome or CDP failure; 0 disables (default {DEFAULT_MAX_INFRA_ERRORS})")
     p.add_argument("--provider", help="model provider, e.g. anthropic, openai, ollama (default: $LBA_PROVIDER)")
     p.add_argument("--model", help="model name (default: $LBA_MODEL)")
     p.add_argument("--api-key-env", metavar="NAME", help="name of the environment variable holding the API key (default: $LBA_API_KEY)")
     p.add_argument("--base-url", help="model API base URL, e.g. http://localhost:11434 for Ollama (default: $LBA_BASE_URL)")
+    p.add_argument("--cdp-url", help="attach to a running browser via CDP instead of launching Chrome")
+    p.add_argument("--max-steps", type=int, help="override every task's step budget (1 to 500)")
     p.add_argument("--tasks", help="comma-separated task ids (default: all)")
     p.add_argument("--repeats", type=int, default=1, help="runs per task (default 1)")
     p.add_argument("--timeout", type=float, default=180.0, help="per-run timeout in seconds (default 180)")
@@ -116,8 +149,7 @@ def _cmd_compare(a_path: str, b_path: str, args: argparse.Namespace) -> int:
             strict=args.strict,
         )
     except (CompareError, KeyError, TypeError, ValueError) as exc:
-        print(f"{PREFIX} {exc}", file=sys.stderr)
-        return 2
+        return _fail(args, EXIT_USAGE, "invalid_input", [str(exc)])
     if args.json:
         print(json.dumps(cmp.to_dict(), indent=2))
         if not args.quiet:
@@ -187,6 +219,8 @@ def _build_config(args: argparse.Namespace, api_key: str | None) -> Any:
     model = ModelConfig.model_validate(update)
     bupdate = {f: getattr(cfg.browser, f) for f in type(cfg.browser).model_fields}
     bupdate["headless"] = not args.headed
+    if getattr(args, "cdp_url", None) is not None:
+        bupdate["cdp_url"] = args.cdp_url.strip()
     browser = BrowserConfig.model_validate(bupdate)
     cfg = cfg.model_copy(update={"model": model, "browser": browser})
     return cfg
@@ -244,15 +278,35 @@ def main(
     """CLI entry. ``run_fn`` / ``config`` / ``preflight`` are injection points for tests.
 
     Exit codes: 0 ok; 1 a gate failed (``--fail-under``, ``--fail-on-violation``), the run was
-    incomplete, or every run errored; 2 bad arguments, failed pre-flight (no Chrome / provider
-    unusable) or an invalid ``--compare``.
+    incomplete, or every run errored; 2 bad arguments/config or an invalid ``--compare``;
+    3 environment not ready (no Chrome, provider unreachable, CDP failure, or the fail-fast stop
+    after repeated infrastructure errors), like ``lba run``. With ``--json`` stdout always holds
+    exactly one JSON document, ``{"status": "error", "error_kind": ..., "errors": [...]}`` on failure.
     """
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    parser._argv = list(sys.argv[1:] if argv is None else argv)  # type: ignore[attr-defined]
+    args = parser.parse_args(argv)
+
+    def usage(msg: str) -> int:
+        return _fail(args, EXIT_USAGE, "usage", [msg])
 
     if sum(bool(x) for x in (args.compare, args.list, args.self_test)) > 1:
-        _err("choose one of --compare, --list, --self-test")
-        return 2
+        return usage("choose one of --compare, --list, --self-test")
     if args.compare:
+        ignored = [flag for dest, flag in _RUN_ONLY_FLAGS if getattr(args, dest) not in (None, parser.get_default(dest))]
+        ignored += [flag for dest, flag in (("repeats", "--repeats"), ("timeout", "--timeout"), ("out", "--out"),
+                                            ("max_infra_errors", "--max-infra-errors"))
+                    if getattr(args, dest) != parser.get_default(dest)]
+        ignored += [flag for dest, flag in (("headed", "--headed"), ("fail_on_violation", "--fail-on-violation"))
+                    if getattr(args, dest)]
+        if ignored:
+            return usage(f"--compare does not run anything; these flags would be ignored: {', '.join(ignored)}")
+        for dest, flag in (("tolerance", "--tolerance"), ("score_tolerance", "--score-tolerance")):
+            v = getattr(args, dest)
+            if not math.isfinite(v) or not 0.0 <= v <= 1.0:
+                return usage(f"{flag} must be between 0 and 1")
+        if args.min_n is not None and args.min_n < 1:
+            return usage("--min-n must be >= 1")
         return _cmd_compare(*args.compare, args)
     if args.list:
         return _cmd_list(args)
@@ -263,24 +317,24 @@ def main(
     try:
         get_tasks(task_ids)
     except KeyError as exc:
-        print(f"{PREFIX} {exc.args[0]}", file=sys.stderr)
-        return 2
+        return usage(str(exc.args[0]))
     if args.repeats < 1:
-        print(f"{PREFIX} --repeats must be >= 1", file=sys.stderr)
-        return 2
+        return usage("--repeats must be >= 1")
     if args.fail_under is not None and not 0.0 <= args.fail_under <= 1.0:
-        print(f"{PREFIX} --fail-under must be between 0 and 1", file=sys.stderr)
-        return 2
-
+        return usage("--fail-under must be between 0 and 1")
     if args.max_infra_errors < 0:
-        _err("--max-infra-errors must be >= 0")
-        return 2
+        return usage("--max-infra-errors must be >= 0")
     if args.timeout <= 0:
-        print(f"{PREFIX} --timeout must be > 0", file=sys.stderr)
-        return 2
+        return usage("--timeout must be > 0")
     if args.budget_minutes is not None and args.budget_minutes <= 0:
-        print(f"{PREFIX} --budget-minutes must be > 0", file=sys.stderr)
-        return 2
+        return usage("--budget-minutes must be > 0")
+    if args.max_steps is not None and not 1 <= args.max_steps <= 500:
+        return usage("--max-steps must be between 1 and 500")
+    if args.cdp_url is not None:
+        from local_browser_agent.cli import _valid_cdp_url  # noqa: PLC0415
+
+        if not _valid_cdp_url(args.cdp_url):
+            return usage(f"invalid --cdp-url: expected an http(s):// or ws(s):// URL with a host, got {args.cdp_url!r}")
 
     real_run = config is None
     if real_run:
@@ -290,31 +344,30 @@ def main(
         configure_logging("error" if quiet_logs else "warning", third_party="off" if quiet_logs else None)
     if config is None:
         if not (args.provider or os.environ.get("LBA_PROVIDER")) or not (args.model or os.environ.get("LBA_MODEL")):
-            print(
-                f"{PREFIX} a provider and model are required for a real run "
-                "(--provider/--model or LBA_PROVIDER/LBA_MODEL)",
-                file=sys.stderr,
-            )
-            return 2
+            return _fail(args, EXIT_USAGE, "config", [
+                "a provider and model are required for a real run "
+                "(--provider/--model or LBA_PROVIDER/LBA_MODEL)"])
         api_key = None
         if args.api_key_env:
             api_key = os.environ.get(args.api_key_env)
             if not api_key:
-                print(f"{PREFIX} environment variable {args.api_key_env} is not set", file=sys.stderr)
-                return 2
+                return _fail(args, EXIT_USAGE, "config", [f"environment variable {args.api_key_env} is not set"])
         try:
             config = _build_config(args, api_key)
         except ValueError as exc:  # pydantic.ValidationError is a ValueError
-            print(f"{PREFIX} invalid configuration: {exc}", file=sys.stderr)
-            return 2
+            from local_browser_agent.cli import _config_problems  # noqa: PLC0415
+
+            return _fail(args, EXIT_USAGE, "config", _config_problems(exc), prefix="invalid configuration: ")
 
     if real_run or preflight is not None:
         problems = (preflight or preflight_problems)(config)
         if problems:
-            for prob in problems:
-                print(f"{PREFIX} pre-flight failed: {prob}", file=sys.stderr)
+            from local_browser_agent.chrome import CHROME_NOT_FOUND_MESSAGE  # noqa: PLC0415
+
+            kind = "chrome_missing" if any(p == CHROME_NOT_FOUND_MESSAGE for p in problems) else "preflight"
+            _fail(args, EXIT_ENV, kind, problems, prefix="pre-flight failed: ")
             print("no tasks were run", file=sys.stderr)
-            return 2
+            return EXIT_ENV
 
     from .runner import run_suite  # noqa: PLC0415
 
@@ -340,6 +393,7 @@ def main(
             timeout_s=args.timeout,
             budget_s=args.budget_minutes * 60 if args.budget_minutes else None,
             max_infra_errors=args.max_infra_errors,
+            max_steps=args.max_steps,
         )
     )
     if not args.quiet:
@@ -355,7 +409,7 @@ def _gate(result: Any, args: argparse.Namespace) -> int:
     code = 0
     if result.meta.get("infra_abort"):
         print(f"gate: {result.meta['infra_abort']}", file=sys.stderr)
-        return 2
+        return EXIT_ENV
     if result.runs and all(r.status == "error" or r.infra_error for r in result.runs):
         print("gate: every run errored; the results say nothing about the model", file=sys.stderr)
         code = 1
@@ -365,7 +419,7 @@ def _gate(result: Any, args: argparse.Namespace) -> int:
     if args.fail_on_violation and result.safety_violations:
         print(f"gate: {result.safety_violations} safety violation(s)", file=sys.stderr)
         code = 1
-    if args.fail_under is not None and result.success_rate < args.fail_under:
+    if args.fail_under is not None and result.has_valid_runs and result.success_rate < args.fail_under:
         print(
             f"gate: success rate {result.success_rate:.2f} is below {args.fail_under:.2f}",
             file=sys.stderr,

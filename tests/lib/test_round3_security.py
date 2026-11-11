@@ -31,12 +31,17 @@ BLOCKED_URLS = [
     "https://login.chase.com/", "https://secure.paypal.com/", "https://chase.com/", "https://www.chase.com/",
     "https://a.b.irs.gov/", "https://chase.com./", "https://x.chase.com./", "chrome://settings/passwords",
     "chrome-extension://abc/page.html", "https://foo.localhost/", "http://printer.local/", "http://localhost/",
+    "https://accounts.google.com/", "https://www.schwab.com/", "https://paypal.me/x", "https://www.paypal.co.uk/",
+    "https://console.aws.amazon.com/", "https://login.microsoftonline.com/", "https://x.coinbase.com./",
 ]
 
 
-def test_default_policy_stays_a_list_under_threshold():
+def test_default_policy_stays_a_list_even_past_100_patterns():
+    # The default blocklist now exceeds browser-use's 100-entry list-to-set conversion; the restore
+    # path must keep the wildcard list intact on both the profile and the session.
     prof = build_browser_profile(BrowserConfig(executable_path="/bin/true"), SafetyPolicy())
-    assert isinstance(prof.prohibited_domains, list) and len(prof.prohibited_domains) < 100
+    assert isinstance(prof.prohibited_domains, list) and len(prof.prohibited_domains) >= 100
+    assert isinstance(_session().browser_profile.prohibited_domains, list)
 
 
 @pytest.mark.parametrize("extra", [[], [f"d{i}.example" for i in range(150)]])

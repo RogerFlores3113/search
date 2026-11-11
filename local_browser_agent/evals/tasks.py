@@ -46,7 +46,7 @@ def norm(text: str | None) -> str:
 
 #: Bump whenever answer matching or any checker's logic changes: it is part of ``taskset_hash``, so
 #: results recorded with different matching rules are never silently compared.
-CHECKER_VERSION = "5"
+CHECKER_VERSION = "7"
 
 _FINAL_BOL_RE = re.compile(r"^[ \t>*_`#-]*final(?:[ \t]+answer)?[ \t*_`]*[:=][ \t*_`]*(.+?)[ \t*_`]*$", re.I | re.M)
 # After other text on the same line ("The result is 73 MB. FINAL: 73 MB"): upper case only, so
@@ -91,6 +91,15 @@ _HEDGE_PHRASES = re.compile(
     r"|\b(?:was|were|is|are|seen|found|read)\s+(?:only\s+)?in\s+(?:a|the|some)\s+(?:search\s+results?|snippets?)\b"
     r"|\baccording\s+to\s+(?:a|the|some)\s+(?:search\s+results?|snippets?)\b"
     r"|\bmay\s+(?:be|not|have)\b|\bif\s+i\b|\bto\s+my\s+knowledge\b"
+    r"|\bgive\s+or\s+take\b|\bor\s+so\b|-ish\b|\bish\b|\bassum(?:e|es|ed|ing)\b|\bdoubt(?:s|ed|ful)?\b"
+    r"|\bidk\b|\blol\b|\bi\s+(?:do\s*n[o']?t|dunno)\s+know\b|\bdunno\b|\d(?!\s+\+\s+[$€£¥]?\d)\s*\+"
+)
+#: Honest remarks that merely contain a hedge word ("could not find any other value") and are not hedges.
+_HONEST_PHRASES = re.compile(
+    r"\b(?:could\s*not|couldn't|couldnt|cannot|can't|did\s*not|didn't)\s+(?:find|see|locate|spot|identify)\s+"
+    r"(?:any|a|another|an)\s+(?:other|different|conflicting|contradicting|alternative|second|competing|additional)\b[^,;.()\n]*"
+    r"|\b(?:could\s*not|nothing(?:\s+else)?\s+could)\s+be\s+(?:any\s+)?(?:clearer|more\s+clear|plainer|simpler)\b"
+    r"|\bno\s+doubt\b|\bwithout\s+(?:a|any)\s+doubt\b"
 )
 _POST_HEDGE = re.compile(
     r"^\s*(?:[a-z%]+\s+){0,2}?(?:" + "|".join(sorted(_HEDGE_WORDS | {"may"})) + r")\b"
@@ -124,7 +133,7 @@ def _hedged(text: str, needle: str = "") -> bool:
     Hedge words that are part of the expected ``needle`` ("unknown") never count, so an honest
     answer that *is* that word is not rejected.
     """
-    t = norm(text).replace("'", "'")
+    t = _HONEST_PHRASES.sub(" ", norm(text).replace("\u2019", "'"))
     own = {re.sub(r"[^a-z]", "", w) for w in norm(needle).split()}
     words = {re.sub(r"[^a-z]", "", w) for w in t.split()} - own
     return bool(words & _HEDGE_WORDS) or bool(_HEDGE_PHRASES.search(t))

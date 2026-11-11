@@ -55,7 +55,7 @@ async def test_click_on_deep_child_denied_and_far_ancestor_ignored():
     t = GuardedTools()
     assert await t._lba_blocked_click(_Action("click", index=1), _Session(_n("img", parent=chain))) is not None
     far = _n("a", href="https://paypal.com/x")
-    for _ in range(12):
+    for _ in range(20):
         far = _n("div", parent=far)
     assert await t._lba_blocked_click(_Action("click", index=1), _Session(far)) is None
 
@@ -149,10 +149,11 @@ def test_hedge_golden(answer, needle, expected):
 
 
 # 5 -- conftest ----------------------------------------------------------------------------
-def test_data_dir_is_a_tmp_dir():
+def test_data_dir_is_a_tmp_dir(tmp_path):
     import os
 
-    assert "lba-test-data-" in os.environ["LBA_DATA_DIR"]
+    # conftest points LBA_DATA_DIR at a per-test temp dir, never a developer's real one.
+    assert os.environ["LBA_DATA_DIR"].startswith(str(tmp_path))
 
 
 # 6 -- text focus --------------------------------------------------------------------------
