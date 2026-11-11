@@ -77,7 +77,8 @@ async def test_run_without_disclaimer_returns_403():
         resp = await client.post("/run", data={"task": "do something"})
 
     assert resp.status_code == 403, f"expected 403; got {resp.status_code}"
-    assert resp.json() == {"status": "disclaimer_required"}
+    assert resp.json()["status"] == "disclaimer_required"
+    assert resp.json()["detail"]
 
 
 async def test_pause_without_disclaimer_returns_403():
@@ -88,7 +89,8 @@ async def test_pause_without_disclaimer_returns_403():
         resp = await client.post("/pause")
 
     assert resp.status_code == 403
-    assert resp.json() == {"status": "disclaimer_required"}
+    assert resp.json()["status"] == "disclaimer_required"
+    assert resp.json()["detail"]
 
 
 async def test_stop_without_disclaimer_returns_403():
@@ -99,7 +101,8 @@ async def test_stop_without_disclaimer_returns_403():
         resp = await client.post("/stop")
 
     assert resp.status_code == 403
-    assert resp.json() == {"status": "disclaimer_required"}
+    assert resp.json()["status"] == "disclaimer_required"
+    assert resp.json()["detail"]
 
 
 async def test_accept_disclaimer_sets_signed_cookie():

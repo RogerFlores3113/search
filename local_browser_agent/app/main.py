@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from local_browser_agent.app.events import DoneEvent, ErrorEvent, StateEvent
 from local_browser_agent.app import db as history_db
+from local_browser_agent.app.chrome_detect import chrome_is_installed
 from local_browser_agent.app.paths import get_secret_key
 from local_browser_agent.app.runner import run_agent, stop_agent
 
@@ -62,7 +63,11 @@ def _disclaimer_accepted(request: Request) -> bool:
 
 
 def _disclaimer_required_response() -> JSONResponse:
-    return JSONResponse({"status": "disclaimer_required"}, status_code=403)
+    return JSONResponse(
+        {"status": "disclaimer_required",
+         "detail": "Please accept the notice first. Reload the page to see it."},
+        status_code=403,
+    )
 
 
 def _resource_path(relative: str) -> str:
@@ -127,18 +132,34 @@ _REQUIRE_TOKEN = True
 
 
 def _hostname_of(netloc: str) -> str:
-    """Hostname part of a Host header / URL netloc (port stripped, lower-cased)."""
+    """Hostname of a Host header / URL netloc, lower-cased; "" unless it is a single host[:port].
+
+    Strict on purpose: userinfo ("localhost:1@evil.com"), several hosts
+    ("localhost:8080, evil.com"), whitespace, paths and non-numeric ports all give "".
+    """
     netloc = netloc.strip().lower()
+    if not netloc or any(c in netloc for c in ",@/\\?# \t\r\n"):
+        return ""
     if netloc.startswith("["):
         end = netloc.find("]")
-        return netloc[: end + 1] if end != -1 else netloc
-    return netloc.rsplit(":", 1)[0] if ":" in netloc else netloc
+        if end == -1:
+            return ""
+        host, rest = netloc[: end + 1], netloc[end + 1:]
+    else:
+        host, sep, rest = netloc.partition(":")
+        rest = sep + rest if sep else ""
+        if not host:
+            return ""
+    if rest and not (rest.startswith(":") and rest[1:].isascii() and rest[1:].isdigit()):
+        return ""
+    return host
 
 
 def _host_allowed(host_header: str | None) -> bool:
     if not host_header:
         return False
-    return _hostname_of(host_header) in (_LOCAL_HOSTNAMES | _EXTRA_ALLOWED_HOSTS)
+    hostname = _hostname_of(host_header)
+    return bool(hostname) and hostname in (_LOCAL_HOSTNAMES | _EXTRA_ALLOWED_HOSTS)
 
 
 def _origin_ok(request: Request) -> bool:
@@ -277,7 +298,10 @@ async def index(request: Request):
     when truly unaccepted — eliminates the brief flash where the modal
     appears for a user who has already clicked through on a previous visit.
     """
-    if getattr(request.app.state, "chrome_missing", False):
+    # Cheap filesystem check on every page load, so installing Chrome while the app is
+    # running (then pressing "Check again") works without a restart.
+    request.app.state.chrome_missing = not chrome_is_installed()
+    if request.app.state.chrome_missing:
         return templates.TemplateResponse(request=request, name="no_chrome.html", context={})
     return templates.TemplateResponse(
         request=request,
@@ -327,9 +351,17 @@ async def run_endpoint(request: Request, task: str = Form(..., max_length=2000),
     global _active_task, _active_queue, _active_control_queue, _last_run_delivered
     if not _disclaimer_accepted(request):
         return _disclaimer_required_response()
+    task = task.strip()
+    if not task:
+        return JSONResponse(
+            {"status": "error", "detail": "Type a task for the agent first."}, status_code=422
+        )
     async with _start_lock:
         if _active_task is not None and not _active_task.done():
-            return JSONResponse({"status": "busy"}, status_code=409)
+            return JSONResponse(
+                {"status": "busy", "detail": "A run is already in progress. Stop it first, or wait for it to finish."},
+                status_code=409,
+            )
         data_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
         control_queue: asyncio.Queue = _TrackingQueue(maxsize=16)
         _last_run.clear()
@@ -355,10 +387,13 @@ async def pause_endpoint(request: Request):
         return _disclaimer_required_response()
     agent = _active_agent
     if agent is None:
-        return JSONResponse({"status": "no_active_run"}, status_code=400)
+        return JSONResponse({"status": "no_active_run", "detail": "No run is active."}, status_code=400)
     if not agent.is_active:
         # Still in pre-flight: nothing to pause yet (Stop does work).
-        return JSONResponse({"status": "starting"}, status_code=409)
+        return JSONResponse(
+            {"status": "starting", "detail": "The agent is still starting up. Pause works once it has started."},
+            status_code=409,
+        )
     if agent.is_paused:
         agent.resume()
         return JSONResponse({"status": "resumed"})
@@ -377,7 +412,7 @@ async def stop_endpoint(request: Request):
         return _disclaimer_required_response()
     agent = _active_agent
     if agent is None:
-        return JSONResponse({"status": "no_active_run"}, status_code=400)
+        return JSONResponse({"status": "no_active_run", "detail": "No run is active."}, status_code=400)
     # Also cancels a run that is still in pre-flight (no browser-use agent yet).
     stop_agent(agent)
     return JSONResponse({"status": "stopped"})

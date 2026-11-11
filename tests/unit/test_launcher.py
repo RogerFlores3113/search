@@ -51,7 +51,7 @@ def test_main_redirects_paths_when_frozen(monkeypatch):
     # Stub chrome_is_installed so it doesn't do OS calls
     monkeypatch.setattr(main_mod, "chrome_is_installed", lambda: True)
 
-    main_mod.main()
+    main_mod.main([])
 
     # After frozen main() runs, DB_PATH and TRAINING_FILE should point under user_data_dir
     import local_browser_agent.app.db as db_mod
@@ -75,7 +75,7 @@ def test_main_sets_chrome_missing_flag_when_chrome_absent(monkeypatch):
     monkeypatch.setattr(main_mod, "schedule_browser_open", lambda **kw: None)
     monkeypatch.setattr(main_mod, "chrome_is_installed", lambda: False)
 
-    main_mod.main()
+    main_mod.main([])
 
     from local_browser_agent.app.main import app
     assert app.state.chrome_missing is True

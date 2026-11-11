@@ -18,6 +18,7 @@ def _app_test_defaults(monkeypatch):
     monkeypatch.setattr(main_mod, "_EXTRA_ALLOWED_HOSTS", {"test", "testserver"})
     monkeypatch.setattr(main_mod, "_REQUIRE_TOKEN", False)
     monkeypatch.setattr(runner_mod, "chrome_is_installed", lambda: True)
+    monkeypatch.setattr(main_mod, "chrome_is_installed", lambda: True)
 
 
 @pytest.fixture

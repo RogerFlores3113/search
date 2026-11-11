@@ -5,11 +5,14 @@ import pytest
 from starlette.testclient import TestClient
 
 
-def test_root_returns_no_chrome_when_flag_set():
+def test_root_returns_no_chrome_when_flag_set(monkeypatch):
     """When app.state.chrome_missing=True, GET / returns the Chrome-required page."""
     from local_browser_agent.app.main import app
 
-    app.state.chrome_missing = True
+    import local_browser_agent.app.main as main_mod
+
+    monkeypatch.setattr(main_mod, "chrome_is_installed", lambda: False)
+    app.state.chrome_missing = False
     try:
         client = TestClient(app, raise_server_exceptions=True)
         response = client.get("/")
@@ -17,6 +20,7 @@ def test_root_returns_no_chrome_when_flag_set():
         html = response.text
         assert "Google Chrome is required" in html
         assert "https://www.google.com/chrome" in html
+        assert "Check again" in html
     finally:
         app.state.chrome_missing = False
 
@@ -31,3 +35,18 @@ def test_root_returns_index_when_chrome_present():
     assert response.status_code == 200
     # Phase-3 identifier present in index.html
     assert 'name="task"' in response.text
+
+
+def test_chrome_is_rechecked_on_every_request(monkeypatch):
+    """Installing Chrome while the app runs: the next GET / serves the real UI."""
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.main import app
+
+    installed = {"v": False}
+    monkeypatch.setattr(main_mod, "chrome_is_installed", lambda: installed["v"])
+    client = TestClient(app)
+    assert "Google Chrome is required" in client.get("/").text
+    installed["v"] = True
+    assert 'name="task"' in client.get("/").text
+    installed["v"] = False
+    assert "Google Chrome is required" in client.get("/").text

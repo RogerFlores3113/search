@@ -17,7 +17,7 @@ from pydantic import SecretStr
 from local_browser_agent import (
     AgentConfig, BrowserAgent, BrowserConfig, ModelConfig, QueueSink, SafetyPolicy,
 )
-from local_browser_agent.events import HumanNeededEvent, ModelInfoEvent
+from local_browser_agent.events import ErrorEvent, HumanNeededEvent, ModelInfoEvent, StateEvent
 from local_browser_agent.models import build_llm as _lib_build_llm
 from local_browser_agent.runner import extract_target_label as _extract_target_label  # noqa: F401
 from local_browser_agent.safety import GUARDRAIL_PROMPT  # noqa: F401  (re-exported)
@@ -255,13 +255,22 @@ async def pre_flight_check(cfg: "Settings") -> None:
 class _AppQueueSink(QueueSink):
     """QueueSink that keeps the app's provider label ("openai") on ModelInfoEvent."""
 
-    def __init__(self, data_q, control_q, provider_label: str) -> None:
+    def __init__(self, data_q, control_q, provider_label: str,
+                 stopped_before_start: Callable[[], bool] | None = None) -> None:
         super().__init__(data_q, control_q)
         self._label = provider_label
+        self._stopped_before_start = stopped_before_start or (lambda: False)
 
     async def __call__(self, event) -> None:
         if isinstance(event, ModelInfoEvent):
             event = ModelInfoEvent(provider=self._label, model_name=event.model_name)
+        elif self._stopped_before_start():
+            # Stop pressed during pre-flight is the user's choice, not a failure: no red
+            # error, and the state ends as "stopped" (matching the history row).
+            if isinstance(event, ErrorEvent):
+                return
+            if isinstance(event, StateEvent) and event.state in ("error", "complete"):
+                event = StateEvent(state="stopped")
         await super().__call__(event)
 
 
@@ -308,13 +317,15 @@ async def run_agent(
 
     cfg = build_agent_config(config, snapshot_prompt_id)
     sinks: list = []
+    stopped_in_preflight = False
     if queue is not None:
-        sinks.append(_AppQueueSink(queue, ctrl_q, snapshot_provider.lower()))
+        sinks.append(_AppQueueSink(queue, ctrl_q, snapshot_provider.lower(),
+                                   stopped_before_start=lambda: stopped_in_preflight or (
+                                       stop_event.is_set() and not browser_agent.is_active)))
     sinks.append(TrainingSink(snapshot_provider, snapshot_model))
     sinks.append(_console_sink)
 
     stop_event = asyncio.Event()
-    stopped_in_preflight = False
 
     async def _preflight() -> None:
         nonlocal stopped_in_preflight
