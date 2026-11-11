@@ -60,8 +60,9 @@ def test_config_field_assignment_works(monkeypatch_env):
         config.provider = original
 
 
-def test_settings_path_uses_user_config_dir():
+def test_settings_path_uses_user_config_dir(monkeypatch):
     """get_settings_path() must return a path ending in .../local-browser-agent/settings.json."""
+    monkeypatch.delenv("LBA_DATA_DIR", raising=False)  # conftest sets it suite-wide
     from local_browser_agent.app.paths import get_settings_path
     p = get_settings_path()
     assert p.name == "settings.json", f"Expected settings.json, got {p.name}"
