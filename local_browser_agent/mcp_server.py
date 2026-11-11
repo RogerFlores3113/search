@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import sys
 import uuid
 from typing import Annotated, Any
@@ -15,9 +16,11 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field
 
 try:  # optional extra; only needed to actually serve
+    from mcp.server.fastmcp import Context
     from mcp.types import CallToolResult, TextContent, ToolAnnotations
 except ImportError:  # pragma: no cover
     CallToolResult = TextContent = ToolAnnotations = None  # type: ignore[assignment,misc]
+    Context = Any  # type: ignore[assignment,misc]
 
 from local_browser_agent.config import AgentConfig, SafetyPolicy
 from local_browser_agent.log import format_validation_error
@@ -223,8 +226,46 @@ def _check_start_url(url: str) -> str | None:
     return None if ok else f"start_url must be an http(s):// URL with a host, got {_redact_url(url)!r}"
 
 
+class _ProgressSink:
+    """Event sink that turns the run's step events into MCP progress notifications."""
+
+    wants_screenshots = False  # never trigger the screenshot loop for a progress feed
+
+    def __init__(self, ctx: Any) -> None:
+        self.ctx = ctx
+        self._last: dict[int, str] = {}
+
+    @staticmethod
+    def _describe(ev: Any) -> str:
+        what = getattr(ev, "action_type", None) or "step"
+        target = getattr(ev, "target_label", None) or getattr(ev, "value", None) or getattr(ev, "url", None)
+        text = f"{what}: {target}" if target else str(what)
+        return _redact_url(text) if text.startswith(("http://", "https://")) else text[:120]
+
+    async def __call__(self, event: Any) -> None:
+        kind = getattr(event, "type", "")
+        if kind == "action_detail":
+            self._last[event.step] = self._describe(event)
+        elif kind == "progress":
+            msg = self._last.pop(event.step, None)
+            await self.ctx.report_progress(progress=event.step, total=event.max_steps,
+                                           message=f"Step {event.step}/{event.max_steps}" + (f": {msg}" if msg else ""))
+
+
+def _progress_sink(ctx: Any) -> _ProgressSink | None:
+    """A progress sink when the client asked for progress (sent a progressToken), else None."""
+    if ctx is None:
+        return None
+    try:
+        meta = ctx.request_context.meta
+        token = getattr(meta, "progressToken", None) if meta else None
+    except Exception:  # no request context (called outside a request)
+        return None
+    return _ProgressSink(ctx) if token is not None else None
+
+
 async def _run(task: str, start_url: str | None, max_steps: int | None,
-               allowed_domains: list[str] | None) -> dict:
+               allowed_domains: list[str] | None, ctx: Any = None) -> dict:
     def err(msg: str, kind: str) -> dict:
         return _error(msg, kind, task if isinstance(task, str) else "")
 
@@ -243,7 +284,10 @@ async def _run(task: str, start_url: str | None, max_steps: int | None,
         if max_steps is not None:
             cfg.max_steps = max_steps
         if allowed_domains is not None:
-            effective = restrict_domains(cfg.safety.allowed_domains, allowed_domains)
+            try:
+                effective = restrict_domains(cfg.safety.allowed_domains, allowed_domains)
+            except ValueError as e:  # e.g. "*.com": the caller's argument is bad, not the server config
+                return err(f"invalid allowed_domains: {format_validation_error(e)}", "invalid_argument")
             if not effective:
                 return err("none of the requested allowed_domains are permitted by this server's "
                            "LBA_ALLOWED_DOMAINS policy; nothing was run", "invalid_argument")
@@ -258,7 +302,9 @@ async def _run(task: str, start_url: str | None, max_steps: int | None,
             # stdout carries the MCP JSON-RPC stream; send any stray print() from
             # browser-use (e.g. its pause banner) to stderr instead of corrupting it.
             with contextlib.redirect_stdout(sys.stderr):
-                result = await run_task(task, cfg, start_url=start_url)
+                sink = _progress_sink(ctx)
+                extra = {"sinks": [sink]} if sink is not None else {}
+                result = await run_task(task, cfg, start_url=start_url, **extra)
         except Exception as e:  # run_task reports failures in the result; this is a last resort
             return err(f"internal error: {type(e).__name__}: {e}", "internal")
         d = result.to_dict()
@@ -307,8 +353,9 @@ async def run_browser_task(
     allowed_domains: Annotated[list[str] | None, Field(
         min_length=1, description="Restrict navigation to these domains (and subdomains). Cannot widen the "
         "server's LBA_ALLOWED_DOMAINS. Omit for the server policy; an empty list is rejected.")] = None,
+    ctx: Context = None,  # type: ignore[assignment]  # injected by FastMCP; not part of the input schema
 ) -> Annotated[CallToolResult, RunResultModel]:
-    return _as_result(await _run(task, start_url, max_steps, allowed_domains))
+    return _as_result(await _run(task, start_url, max_steps, allowed_domains, ctx))
 
 
 def get_agent_config() -> Annotated[CallToolResult, AgentConfigModel]:
@@ -357,6 +404,8 @@ def build_server() -> Any:
                                              task if isinstance(task, str) else ""))
                 raise
 
+    # The mcp library warns "Tool 'x' not listed, no validation will be performed" for unknown tool names.
+    logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.ERROR)
     server = _Server("local-browser-agent", instructions=SERVER_INSTRUCTIONS)
     server.tool(description=RUN_DESCRIPTION, annotations=ToolAnnotations(
         title="Run browser task", readOnlyHint=False, destructiveHint=False, idempotentHint=False,
@@ -365,6 +414,8 @@ def build_server() -> Any:
                 "safety settings). Secrets are never included: the API key is shown only as 'set', URL "
                 "credentials and tokens are redacted.", annotations=ToolAnnotations(
         title="Show config", readOnlyHint=True, openWorldHint=False), structured_output=True)(get_agent_config)
+    for t in server._tool_manager.list_tools():  # advertise that unknown keys are rejected
+        t.parameters["additionalProperties"] = False
     return server
 
 

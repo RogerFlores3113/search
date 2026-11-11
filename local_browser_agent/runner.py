@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import dataclasses
 import logging
 import time
@@ -47,6 +48,7 @@ _CONNECTION_ERROR_MARKERS = (
     "all connection attempts failed", "connect call failed", "connection refused",
     "econnrefused", "cannot connect to host", "failed to connect", "connecterror",
 )
+_CONNECT_TIMEOUT_MARKERS = ("connect() timed out", "too slow or unresponsive", "root cdp client not initialized")
 SCREENSHOT_INTERVAL_S = 0.5
 _SCREENSHOT_BACKOFF_CAP_S = 4.0
 _SCREENSHOT_TIMEOUT_S = 3.0
@@ -158,6 +160,18 @@ async def _screenshot_loop(browser: Any, emit, stop: asyncio.Event | None = None
             await asyncio.sleep(min(SCREENSHOT_INTERVAL_S * (2 ** (failures - 1)), _SCREENSHOT_BACKOFF_CAP_S))
 
 
+def _retrieve_exception(task: asyncio.Future) -> None:
+    """Mark a finished task's exception as retrieved; if it is still running, do so when it finishes."""
+    def _consume(t: asyncio.Future) -> None:
+        if not t.cancelled():
+            t.exception()
+
+    if task.done():
+        _consume(task)
+    else:
+        task.add_done_callback(_consume)
+
+
 class BrowserAgent:
     """Runs one natural-language task at a time in a browser.
 
@@ -169,8 +183,13 @@ class BrowserAgent:
 
     def __init__(self, config: AgentConfig | None = None, *, sinks: Iterable[Any] = (),
                  approval: ApprovalCallback | None = None,
-                 preflight: Callable[[], Awaitable[None]] | None = None) -> None:
+                 preflight: Callable[[], Awaitable[None]] | None = None,
+                 sink_timeout_s: float | None = None, sink_max_timeouts: int | None = None) -> None:
         self.config = config or AgentConfig()
+        # Per-call limit for one sink and the number of consecutive timeouts after which the sink is
+        # dropped for the run. None = the module defaults SINK_TIMEOUT_S / SINK_MAX_TIMEOUTS (read at run time).
+        self.sink_timeout_s = sink_timeout_s
+        self.sink_max_timeouts = sink_max_timeouts
         self.sinks = list(sinks)
         self.approval = approval
         self.preflight = preflight
@@ -237,6 +256,8 @@ class BrowserAgent:
         if self._run_id and getattr(event, "run_id", None) == "":
             event.run_id = self._run_id
         etype = getattr(event, "type", type(event).__name__)
+        sink_timeout = SINK_TIMEOUT_S if self.sink_timeout_s is None else self.sink_timeout_s
+        max_timeouts = SINK_MAX_TIMEOUTS if self.sink_max_timeouts is None else self.sink_max_timeouts
         for sink in self.sinks:
             key = id(sink)
             if key in self._sinks_dropped:
@@ -244,7 +265,7 @@ class BrowserAgent:
             if step_event and not getattr(sink, "wants_step_events", False):
                 continue
             try:
-                async with asyncio.timeout(SINK_TIMEOUT_S):
+                async with asyncio.timeout(sink_timeout):
                     await sink(event)
                 self._sink_timeouts[key] = 0
             except TimeoutError:
@@ -252,12 +273,12 @@ class BrowserAgent:
                 self._sink_timeouts[key] = n
                 if key in self._sinks_dropped:
                     continue  # dropped by a concurrent emit while this one was waiting
-                if n >= SINK_MAX_TIMEOUTS:
+                if n >= max_timeouts:
                     self._sinks_dropped.add(key)
                     logger.warning("event sink %r timed out %d times in a row (last on %r event, limit %gs); "
-                                   "dropping it for the rest of the run", sink, n, etype, SINK_TIMEOUT_S)
+                                   "dropping it for the rest of the run", sink, n, etype, sink_timeout)
                 else:
-                    logger.debug("event sink %r timed out on %r event after %gs", sink, etype, SINK_TIMEOUT_S)
+                    logger.debug("event sink %r timed out on %r event after %gs", sink, etype, sink_timeout)
             except Exception as e:  # a failing sink must never crash a run
                 n = self._sink_failures.get(key, 0) + 1
                 self._sink_failures[key] = n
@@ -326,7 +347,13 @@ class BrowserAgent:
             """Friendly message when attaching to ``browser.cdp_url`` failed to connect."""
             url = cfg.browser.cdp_url
             low = text.lower()
-            if not url or "net::" in low or not any(m in low for m in _CONNECTION_ERROR_MARKERS):
+            if not url or "net::" in low:
+                return None
+            if any(m in low for m in _CONNECT_TIMEOUT_MARKERS):
+                return (f"Timed out connecting to Chrome at {redact_url(url)}. "
+                        "The endpoint accepted the connection but did not answer; is it a Chrome "
+                        "--remote-debugging-port?")
+            if not any(m in low for m in _CONNECTION_ERROR_MARKERS):
                 return None
             return (f"Could not connect to Chrome at {redact_url(url)}. "
                     "Is Chrome running with --remote-debugging-port?")
@@ -563,6 +590,12 @@ class BrowserAgent:
                 finally:
                     if not main_task.done():
                         main_task.cancel()
+                        # We may be unwinding because run() itself was cancelled. Wait (bounded,
+                        # shielded) for the inner task so its outcome is retrieved here instead of
+                        # being logged later as "Task exception was never retrieved".
+                        with contextlib.suppress(BaseException):
+                            await asyncio.shield(asyncio.wait({main_task}, timeout=TEARDOWN_TIMEOUT_S))
+                    _retrieve_exception(main_task)
             except Exception as e:
                 error_msg = self._redact(f"{type(e).__name__}: {e}" if str(e) == "" else str(e))
                 cdp_msg = _cdp_connect_message(str(e))
@@ -666,7 +699,8 @@ class BrowserAgent:
 
 
 async def run_task(task: str, config: AgentConfig | None = None, *, sinks: Iterable[Any] = (),
-                   approval: ApprovalCallback | None = None, start_url: str | None = None) -> RunResult:
+                   approval: ApprovalCallback | None = None, start_url: str | None = None,
+                   sink_timeout_s: float | None = None, sink_max_timeouts: int | None = None) -> RunResult:
     """Run one natural-language task in Chrome and return its :class:`RunResult`.
 
     Args:
@@ -676,15 +710,21 @@ async def run_task(task: str, config: AgentConfig | None = None, *, sinks: Itera
         approval: Async callback asked before any gated purchase-like action; without
             one, gated actions are denied.
         start_url: Optional page to open before the agent starts.
+        sink_timeout_s: Seconds one sink call may take before it is abandoned (default ``SINK_TIMEOUT_S``, 5).
+        sink_max_timeouts: Consecutive timeouts after which a sink is dropped for the rest of the
+            run (default ``SINK_MAX_TIMEOUTS``, 3).
 
     Never raises for run failures: errors (including a missing Chrome or provider
     problems) come back as ``status="error"`` with messages in ``RunResult.errors``.
     """
-    return await BrowserAgent(config, sinks=sinks, approval=approval).run(task, start_url=start_url)
+    agent = BrowserAgent(config, sinks=sinks, approval=approval,
+                         sink_timeout_s=sink_timeout_s, sink_max_timeouts=sink_max_timeouts)
+    return await agent.run(task, start_url=start_url)
 
 
 def run_task_sync(task: str, config: AgentConfig | None = None, *, sinks: Iterable[Any] = (),
-                  approval: ApprovalCallback | None = None, start_url: str | None = None) -> RunResult:
+                  approval: ApprovalCallback | None = None, start_url: str | None = None,
+                  sink_timeout_s: float | None = None, sink_max_timeouts: int | None = None) -> RunResult:
     """Blocking wrapper around :func:`run_task` for scripts without an event loop.
 
     Raises ``RuntimeError`` when called from inside a running event loop (use ``await run_task(...)``).
@@ -696,4 +736,5 @@ def run_task_sync(task: str, config: AgentConfig | None = None, *, sinks: Iterab
     else:
         raise RuntimeError("run_task_sync() cannot be called from a running event loop; "
                            "use `await run_task(...)` instead")
-    return asyncio.run(run_task(task, config, sinks=sinks, approval=approval, start_url=start_url))
+    return asyncio.run(run_task(task, config, sinks=sinks, approval=approval, start_url=start_url,
+                                sink_timeout_s=sink_timeout_s, sink_max_timeouts=sink_max_timeouts))

@@ -26,6 +26,27 @@ result = asyncio.run(run_task("Find the cheapest USB-C cable on example-shop.tes
 print(result.status, result.final_result)
 ```
 
+Checking the outcome, streaming events and approving gated actions:
+
+```python
+import asyncio
+from local_browser_agent import ActionRequest, AgentConfig, run_task
+
+async def sink(event):  # any async callable; add `sink.wants_screenshots = False` to skip screenshots
+    if event.type == "progress":
+        print(f"step {event.step}/{event.max_steps}")
+
+async def approval(req: ActionRequest) -> bool:  # asked before a purchase-like click; no callback = deny
+    return input(f"Allow {req.action_name} on {req.url} ({req.element_label})? [y/N] ").lower() == "y"
+
+result = asyncio.run(run_task("Add a USB-C cable to the cart", AgentConfig.from_env(),
+                              sinks=[sink], approval=approval, sink_timeout_s=10))
+if result.status == "success":
+    print(result.final_result)
+else:  # run failures never raise; they come back here
+    print(result.status, result.error_kind, result.errors)  # e.g. error chrome_missing / cdp_connect / timeout
+```
+
 `run_task_sync(...)` is the same call wrapped in `asyncio.run`. For control (pause/resume/stop), use
 `BrowserAgent(config, sinks=..., approval=...)` and `await agent.run(task, start_url=None)`.
 `AgentConfig.from_env()` builds a config from the `LBA_*` variables below (`ANTHROPIC_API_KEY` /
@@ -160,7 +181,7 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 
 ## Sinks and tracing
 
-A sink is any `async def sink(event)`. Events: `StateEvent, ModelInfoEvent, ThoughtEvent, ActionDetailEvent, ProgressEvent, TokenEvent, ScreenshotEvent, SummaryEvent, ErrorEvent, DoneEvent, HumanNeededEvent, StepCompletedEvent`. A failing sink never crashes a run: the first failure of each sink is logged with a traceback, later ones as a one-line warning (naming the event type and the sink's running failure count), so a broken sink cannot flood the log. A sink that times out (5s) three times in a row is dropped for the rest of the run, with one warning.
+A sink is any `async def sink(event)`. Events: `StateEvent, ModelInfoEvent, ThoughtEvent, ActionDetailEvent, ProgressEvent, TokenEvent, ScreenshotEvent, SummaryEvent, ErrorEvent, DoneEvent, HumanNeededEvent, StepCompletedEvent`. A failing sink never crashes a run: the first failure of each sink is logged with a traceback, later ones as a one-line warning (naming the event type and the sink's running failure count), so a broken sink cannot flood the log. A sink that times out (5s) three times in a row is dropped for the rest of the run, with one warning. Both numbers are configurable per run: `run_task(..., sink_timeout_s=10, sink_max_timeouts=5)` (also `run_task_sync` and `BrowserAgent(...)`); the module defaults are `runner.SINK_TIMEOUT_S` and `runner.SINK_MAX_TIMEOUTS`.
 
 - `QueueSink(data_q, control_q=None)`: lossy `put_nowait` for data events; lifecycle events (state, model_info, summary, error_msg, done) block up to 2s.
 - `JsonlTraceSink(path, include_screenshots=False)`: one JSON line per event, appended to the file (an existing file is not truncated); each record has `ts` (UTC ISO 8601) and `run_id`: the run's id (the same as `RunResult.run_id`, stamped on every event by `BrowserAgent`), or the sink's own uuid4 for events emitted outside a run.
@@ -234,7 +255,7 @@ approval callback), so a stopped run ends within a few seconds with `status="sto
 
 ## Logging
 
-Importing `local_browser_agent` (and browser-use through it) installs **no handlers on the root logger**: the
+Importing `local_browser_agent` (and browser-use through it) installs **no handlers on the root logger** (the package logger only gets a `NullHandler`, per stdlib etiquette): the
 package sets `BROWSER_USE_SETUP_LOGGING=false` before importing browser-use unless you already set it. Library
 logs go to the `local_browser_agent` logger (and `browser_use`), so configure them with the standard `logging`
 module; unconfigured, Python shows only warnings and errors on stderr. Set `BROWSER_USE_SETUP_LOGGING=true`
@@ -247,7 +268,9 @@ To get the same tidy output in your own program, call `local_browser_agent.confi
 emoji/traceback-laden console handler with one plain stderr handler, strips ANSI colour when stderr is not a
 terminal, and (at every level except `debug`) drops browser-use's misleading "Optimizing domain list ... pattern
 matching is not supported for lists >= 100" warning, since wildcard `allowed_domains` entries are handled by this
-package. It is safe to call repeatedly.
+package. At warning level and above it also drops browser-use's duplicate multi-line ERROR records about a failed
+browser start ("Root CDP client not initialized", ...); the failure is in `RunResult.errors` / `error_kind`. They
+are kept at `info` / `debug`. It is safe to call repeatedly.
 
 ## CLI
 
@@ -306,6 +329,10 @@ a time, the safety gates, the key `LBA_*` variables).
   (plus `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` for those providers). It is validated once at startup: a bad value
   prints a clear message to stderr and `lba mcp` exits with code 2 instead of failing every call.
 - One task at a time; a concurrent call fails at once with a `busy` error.
+- **Progress.** When the client sends a `progressToken`, `run_browser_task` emits an MCP progress notification
+  per agent step (`progress` = step, `total` = max steps, `message` = e.g. `Step 3/25: click: Sign in`).
+  Clients without a token are unaffected. Both tools advertise `additionalProperties: false` in their `inputSchema`.
+  An unusable `allowed_domains` entry such as `*.com` is `invalid_argument`; an unreachable `LBA_CDP_URL` is `cdp_connect`.
 - `max_steps` must be 1-200; `allowed_domains`, if given, must be non-empty; `start_url`, if given, must be an
   `http(s)` URL with a host. Unknown arguments are rejected with `invalid_argument` naming the key(s). All of this
   validation (and loading the `LBA_*` config) happens before the busy check, so an invalid call is reported as

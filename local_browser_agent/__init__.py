@@ -24,6 +24,11 @@ else:
 # sets their level directly.
 os.environ.setdefault("BROWSER_USE_SETUP_LOGGING", "false")
 
+import logging as _logging  # noqa: E402
+
+# Library etiquette: never trigger logging.lastResort for an application that configured nothing.
+_logging.getLogger("local_browser_agent").addHandler(_logging.NullHandler())
+
 try:
     __version__ = _metadata.version("local-browser-agent")
 except _metadata.PackageNotFoundError:  # pragma: no cover - running from a bare checkout
