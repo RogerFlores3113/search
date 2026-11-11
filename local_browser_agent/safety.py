@@ -1,13 +1,17 @@
 """Safety policy primitives: default blocked domains, guardrail prompt, commerce click gate."""
 from __future__ import annotations
 
+import asyncio
+import ipaddress
+import json
 import logging
 import re
 import unicodedata
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from browser_use.agent.views import ActionResult
 from browser_use.tools.service import Tools
@@ -36,22 +40,20 @@ GUARDRAIL_PROMPT = (
     "2. NEVER submit forms containing credit card numbers, CVVs, bank account details, "
     "Social Security Numbers, or passwords on any site the user did not explicitly name.\n"
     "3. NEVER submit credentials (username/password) on any site not explicitly named.\n"
-    "4. If you encounter such an element, set is_done=True, success=False, explain what you found.\n"
+    "4. If you encounter such an element, do not activate it: stop that step, continue with whatever "
+    "does not need it, and report what you found so the user can decide.\n"
 )
 
 DEFAULT_COMMERCE_PATTERNS: tuple[str, ...] = (
     "buy now",
     "buy it now",
-    "purchase",
-    "checkout",
-    "check out",
-    "pay",
     "pay now",
     "place order",
     "place your order",
     "confirm order",
     "confirm purchase",
     "complete purchase",
+    "purchase now",
     "complete order",
     "submit order",
     "subscribe and pay",
@@ -105,7 +107,36 @@ EXACT_COMMERCE_LABELS: frozenset[str] = frozenset({
     "buy", "order", "book", "subscribe", "donate", "pay", "purchase", "reserve", "place order",
     "spenden", "buchen", "donar", "reservar", "suscribirse", "réserver", "reserver",
     "prenota", "dona", "assinar", "doar", "boeken", "doneren",
+    # ru / uk / ar / hi / tr / pl / sv / id / vi (single words that are only a CTA as a whole label)
+    "купить", "оплатить", "заказать", "купити", "сплатити", "оплатити", "замовити",
+    "شراء", "اشتر", "ادفع", "اطلب", "खरीदें", "भुगतान करें", "ऑर्डर करें",
+    "öde", "satın al", "kup", "zapłać", "zamów", "köp", "betala", "beställ", "beli", "bayar", "pesan",
+    "mua", "thanh toán", "đặt hàng",
 })
+
+# Multi-word CTAs in non-Latin-script and other languages, matched as whole phrases.
+NON_LATIN_COMMERCE_PATTERNS: tuple[str, ...] = (
+    # ru
+    "оформить заказ", "купить сейчас", "купить сразу", "оплатить заказ", "оплатить сейчас", "перейти к оплате",
+    "подтвердить заказ", "подтвердить оплату", "оформить подписку", "подписаться и оплатить",
+    # uk
+    "оформити замовлення", "купити зараз", "оплатити зараз", "підтвердити замовлення", "перейти до оплати",
+    # ar
+    "إتمام الطلب", "اتمام الطلب", "إتمام الشراء", "اتمام الشراء", "اشتر الآن", "اشتري الآن", "ادفع الآن",
+    "شراء الآن", "تأكيد الطلب", "تأكيد الدفع", "الدفع الآن", "تقديم الطلب",
+    # hi
+    "अभी खरीदें", "अभी भुगतान करें", "ऑर्डर दें", "ऑर्डर पक्का करें", "भुगतान करें",
+    # tr
+    "hemen satın al", "ödeme yap", "şimdi öde", "siparişi tamamla", "sipariş ver", "ödemeye geç",
+    # pl
+    "kup teraz", "zapłać teraz", "złóż zamówienie", "zamawiam i płacę", "do kasy", "przejdź do płatności",
+    # sv
+    "köp nu", "betala nu", "slutför köp", "lägg beställning", "till kassan", "slutför beställningen",
+    # id
+    "beli sekarang", "bayar sekarang", "pesan sekarang", "lanjut ke pembayaran", "selesaikan pembayaran",
+    # vi
+    "mua ngay", "thanh toán ngay", "đặt hàng ngay", "đặt mua", "tiến hành thanh toán",
+)
 
 # Start-of-label matches ("Buy 2 for $20", "Donate $50").
 _STARTS_WITH = ("buy ", "donate ", "kaufen ", "comprar ", "acheter ", "acquista ")
@@ -119,11 +150,40 @@ CJK_COMMERCE_KEYWORDS: tuple[str, ...] = (
     "订阅", "訂閱", "捐款", "捐赠", "捐贈", "转账", "轉賬", "汇款", "匯款", "预订", "預訂", "预定",
     # ko
     "구매", "결제", "주문", "구독", "후원", "기부", "송금", "예약",
+    # th (no word breaks)
+    "ซื้อ", "ชำระเงิน", "สั่งซื้อ", "สมัครสมาชิก", "จ่ายเงิน",
 )
 _CJK_NEGATIVE = (
     "履歴", "履歷", "历史", "歷史", "歴史", "내역", "기록", "詳細", "详情", "詳情", "상세", "一覧",
     "ガイド", "指南", "帮助", "幫助", "도움말", "キャンセル", "取消", "취소",
+    "ประวัติ", "รายละเอียด", "วิธี", "ยกเลิก",
 )
+
+# Labels that are informational, not a purchase CTA. They suppress the weaker matches when the
+# label starts like a how-to/explainer or ends in one of these words ("Buy now, pay later
+# explained", "Purchase history"). Strong phrases ("place order", "pay now", ...) are never
+# suppressed so a CTA cannot be hidden by appending a word.
+_INFO_PREFIXES = ("how to ", "how do ", "what is ", "what are ", "why ", "learn ", "about ", "when to ")
+_INFO_SUFFIXES = frozenset({
+    "explained", "history", "guide", "faq", "faqs", "policy", "policies", "details", "info", "information",
+    "tutorial", "help", "terms", "report", "reports", "accepted", "methods", "attention", "tips",
+})
+_STRONG_PHRASES = frozenset({
+    "place order", "place your order", "confirm order", "complete purchase", "complete order",
+    "submit order", "confirm purchase", "confirm payment", "pay now", "complete payment",
+})
+# Bare verbs that are a CTA only in a payment-shaped context, never as a loose word.
+_BARE_VERBS = ("pay", "purchase", "checkout", "check out")
+_BARE_PREFIXES = ("proceed to ", "secure ", "express ", "go to ", "continue to ", "guest ", "quick ", "instant ")
+_AMOUNT_RE = re.compile(r"[\d$€£¥₹₩₽]")
+
+# Cyrillic / Greek look-alikes folded to Latin so "Рay" (Cyrillic Р) still reads "pay".
+_HOMOGLYPHS = str.maketrans({
+    "а": "a", "в": "b", "е": "e", "к": "k", "м": "m", "н": "h", "о": "o", "р": "p", "с": "c", "т": "t",
+    "у": "y", "х": "x", "і": "i", "ј": "j", "ѕ": "s", "ԁ": "d", "ӏ": "l", "ᴀ": "a", "ɡ": "g",
+    "α": "a", "β": "b", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p", "τ": "t",
+    "υ": "u", "χ": "x", "η": "n", "μ": "u", "ω": "w", "ς": "s",
+})
 
 # --- Transactional URL signals ---------------------------------------------------------
 # Broad token matching: only used for form actions / formaction attributes, where a stray
@@ -139,14 +199,28 @@ _URL_BIGRAMS = frozenset({
     ("order", "submit"), ("order", "complete"), ("order", "review"), ("place", "order"),
     ("confirm", "order"), ("confirm", "payment"), ("confirm", "purchase"), ("complete", "purchase"),
     ("complete", "order"), ("buy", "now"), ("send", "money"), ("money", "transfer"),
+    ("order", "pay"), ("order", "payment"), ("basket", "payment"), ("basket", "checkout"),
+    ("basket", "pay"), ("cart", "payment"), ("gp", "buy"),
 })
+# Content sites where a path like /wiki/Checkout or /org/checkout (a repo) is not a payment page.
+# Only URL-shape signals are skipped there; labels and form actions still count.
+_CONTENT_HOSTS = frozenset({
+    "wikipedia.org", "wikimedia.org", "wikimedia.com", "github.com", "gitlab.com", "reddit.com",
+    "stackoverflow.com", "stackexchange.com", "medium.com", "news.ycombinator.com", "youtube.com",
+})
+_URL_STEP_VALUES = frozenset({
+    "payment", "pay", "review_order", "revieworder", "place_order", "placeorder", "billing_payment",
+    "payment_method", "payment_info",
+})
+_URL_STEP_KEYS = frozenset({"step", "checkout_step", "checkoutstep", "checkout-step"})
+_PAGE_EXT_RE = re.compile(r"\.(?:php|aspx?|html?|jsp|do|cgi|action)$", re.IGNORECASE)
 _URL_NEGATIVE_TOKENS = frozenset({
     "history", "faq", "help", "policy", "policies", "terms", "methods", "settings", "docs", "blog",
 })
 _URL_HOST_LABELS = frozenset({"checkout", "pay", "payments", "billing", "donate"})
 # A path segment (separators removed) that is transactional wherever it appears.
 _URL_CHECKOUT_SEGMENTS = frozenset({
-    "checkout", "placeorder", "buynow", "paynow", "confirmpayment",
+    "checkout", "checkouts", "placeorder", "buynow", "paynow", "confirmpayment",
     "kasse", "caisse", "cassa",
 })
 # Segments that are transactional only as the first path segment (after an optional locale),
@@ -269,29 +343,72 @@ def _core(text: str) -> str:
     return " ".join(t.split())
 
 
+_CJK_NORM = tuple(normalize_text(k) for k in CJK_COMMERCE_KEYWORDS)
+_CJK_NEG_NORM = tuple(normalize_text(k) for k in _CJK_NEGATIVE)
+
+
+def _fold_homoglyphs(text: str) -> str:
+    return text.translate(_HOMOGLYPHS)
+
+
+def _bare_verb_cta(text: str) -> bool:
+    """True for pay/purchase/checkout used as a call to action rather than as a loose word."""
+    words = text.split()
+    for v in _BARE_VERBS:
+        if _phrase_in(v, text):
+            # "pay now", "pay with ...", "pay securely", "pay $20", "pay and continue"
+            if re.match(rf"^{v}(?: (?:now|with|securely|and|via|by|online|here))\b", text) or (
+                    text.startswith(v + " ") and _AMOUNT_RE.search(text)):
+                return True
+            if any(text.startswith(pre + v) and text[len(pre + v):len(pre + v) + 1] in ("", " ") for pre in _BARE_PREFIXES):
+                return True
+            # "checkout" is a CTA as a short label ("Checkout", "Checkout with PayPal"); "Pay"/"Purchase" are not.
+            if v in ("checkout", "check out") and len(words) <= 4:
+                return True
+    return False
+
+
+def _label_hit(text: str, patterns: tuple[str, ...]) -> bool:
+    """Match one normalised variant of a label; see is_commerce_label."""
+    words = text.split()
+    if not words:
+        return False
+    core = _core(text)
+    if core in _STRONG_PHRASES or any(_phrase_in(p, text) for p in _STRONG_PHRASES):
+        return True
+    informational = text.startswith(_INFO_PREFIXES) or (len(words) >= 3 and words[-1] in _INFO_SUFFIXES)
+    if informational:
+        return False
+    for p in patterns:
+        if p and _phrase_in(p, text):
+            return True
+    if core in EXACT_COMMERCE_LABELS or _bare_verb_cta(text):
+        return True
+    if any(text.startswith(s) for s in _STARTS_WITH):
+        return True
+    return any(k in text for k in _CJK_NORM) and not any(n in text for n in _CJK_NEG_NORM)
+
+
 def is_commerce_label(label: str | None, patterns: Iterable[str] = DEFAULT_COMMERCE_PATTERNS) -> bool:
     """True when ``label`` looks like a purchase/payment/subscribe/donate call to action.
 
     The label is normalised (NFKC, zero-width removal, camelCase and separator folding,
-    casefold) so "BuyNow", "Buy-now" and fullwidth/zero-width variants match. Latin phrases
-    match as whole words ("payment history" does not match "pay"); CJK keywords match as
-    substrings; bare generic verbs ("Buy", "Subscribe", "Donate") match only as the whole
-    label so "Subscribe to newsletter", "Book details" and "Order history" pass.
+    casefold) so "BuyNow", "Buy-now" and fullwidth/zero-width variants match; Cyrillic and Greek
+    look-alike letters are also folded to Latin ("Рay"). Phrases match as whole words, CJK/Thai
+    keywords as substrings, and bare generic verbs ("Buy", "Pay", "Purchase", "Subscribe") only as
+    the whole label or in a payment-shaped context ("Pay now", "Pay $20"). Informational labels
+    ("How to pay", "Pay per click", "Purchase history", "Buy now, pay later explained") pass.
     """
     if not label:
         return False
-    text = normalize_text(label)
+    text = normalize_text(label).replace("&", " and ")
+    text = " ".join(text.split())
     if not text:
         return False
-    for p in (*patterns, *MULTILINGUAL_COMMERCE_PATTERNS):
-        p = normalize_text(p)
-        if p and _phrase_in(p, text):
-            return True
-    if _core(text) in EXACT_COMMERCE_LABELS:
-        return True
-    if any(text.startswith(s) for s in _STARTS_WITH):
-        return True
-    return any(k in text for k in CJK_COMMERCE_KEYWORDS) and not any(n in text for n in _CJK_NEGATIVE)
+    pats = tuple(p for p in (normalize_text(x) for x in (*patterns, *MULTILINGUAL_COMMERCE_PATTERNS,
+                                                          *NON_LATIN_COMMERCE_PATTERNS)) if p)
+    variants = dict.fromkeys((text, _fold_homoglyphs(text)))
+    return any(_label_hit(v, pats) for v in variants)
 
 
 def _path_tokens(path: str) -> list[str]:
@@ -316,9 +433,15 @@ def is_commerce_url(url: str | None, broad: bool = False) -> bool:
         parts = urlsplit(url.strip())
     except ValueError:
         return False
-    host = (parts.hostname or "").lower()
+    host = (parts.hostname or "").lower().rstrip(".")
+    if not broad and any(host == d or host.endswith("." + d) for d in _CONTENT_HOSTS):
+        return False
     if host.split(".")[0] in _URL_HOST_LABELS and host.count(".") >= 2:
         return True
+    for k, v in parse_qsl(parts.query, keep_blank_values=True):
+        k, v = k.casefold(), v.casefold().strip()
+        if k in _URL_STEP_KEYS and (v in _URL_STEP_VALUES or (k.startswith("checkout") and v)):
+            return True
     tokens = _path_tokens(parts.path)
     if not tokens or any(t in _URL_NEGATIVE_TOKENS for t in tokens):
         return False
@@ -326,7 +449,7 @@ def is_commerce_url(url: str | None, broad: bool = False) -> bool:
         return True
     if broad:
         return any(t in _URL_TOKENS for t in tokens)
-    segments = [seg for seg in unicodedata.normalize("NFKC", parts.path or "").split("/") if seg]
+    segments = [_PAGE_EXT_RE.sub("", seg) for seg in unicodedata.normalize("NFKC", parts.path or "").split("/") if seg]
     joined = ["".join(_path_tokens(seg)) for seg in segments]
     if any(j in _URL_CHECKOUT_SEGMENTS for j in joined):
         return True
@@ -369,6 +492,11 @@ def _is_submit_like(node: Any) -> bool:
     if tag == "input":
         return typ in ("submit", "image")
     return False
+
+
+def _in_form_submit(node: Any) -> bool:
+    """A submit control that sits inside a <form> (ambiguous when its label cannot be trusted)."""
+    return _is_submit_like(node) and _ancestor_form(node) is not None
 
 
 def _is_clickable_control(node: Any) -> bool:
@@ -443,10 +571,150 @@ def element_label(node: Any, max_len: int = 200) -> str | None:
         return None
 
 
-def _keys_press_enter(keys: Any) -> bool:
+_ENTER_TOKENS = frozenset({"enter", "return", "numpadenter", "\\n", "\\r"})
+_SPACE_TOKENS = frozenset({"space", "spacebar"})
+
+
+def _keys_kind(keys: Any) -> str | None:
+    """Classify a send_keys string: "enter" (submits), "space" (activates a focused button) or None."""
     if not isinstance(keys, str):
+        return None
+    if "\n" in keys or "\r" in keys or "\\n" in keys or "\\r" in keys:
+        return "enter"
+    toks = [t.strip().lower() for t in re.split(r"[+\s]+", keys) if t.strip()]
+    if any(t in _ENTER_TOKENS for t in toks):
+        return "enter"
+    if any(t in _SPACE_TOKENS for t in toks) or (not toks and " " in keys):
+        return "space"
+    return None
+
+
+def _keys_press_enter(keys: Any) -> bool:
+    return _keys_kind(keys) == "enter"
+
+
+_TRAILING_NEWLINE_RE = re.compile(r"[\r\n]\s*\Z")
+
+# --- Navigation guard --------------------------------------------------------------------
+_OPAQUE_SCHEME_RE = re.compile(r"^([a-z][a-z0-9+.\-]*):", re.IGNORECASE)
+_HOSTPORT_RE = re.compile(r"^\d+(?:[/?#]|$)")
+_LOCAL_SUFFIXES = (".localhost", ".local", ".internal", ".localdomain", ".home.arpa")
+
+
+def _parse_loose_ipv4(host: str) -> ipaddress.IPv4Address | None:
+    """Parse the legacy IPv4 spellings browsers accept (decimal, hex, octal, short forms)."""
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4 or any(not p for p in parts):
+        return None
+    nums: list[int] = []
+    for p in parts:
+        try:
+            if p.lower().startswith("0x"):
+                nums.append(int(p[2:] or "0", 16))
+            elif len(p) > 1 and p.startswith("0"):
+                nums.append(int(p, 8))
+            elif p.isdigit():
+                nums.append(int(p))
+            else:
+                return None
+        except ValueError:
+            return None
+    *head, last = nums
+    if any(n > 255 for n in head) or last >= 256 ** (4 - len(head)):
+        return None
+    value = last
+    for i, n in enumerate(head):
+        value |= n << (8 * (3 - i))
+    return ipaddress.IPv4Address(value)
+
+
+def _host_is_local(host: str) -> bool:
+    h = host.strip().lower().rstrip(".")
+    if not h:
+        return True
+    if h == "localhost" or h.endswith(_LOCAL_SUFFIXES):
+        return True
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address | None
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        ip = _parse_loose_ipv4(h)
+    if ip is None:
         return False
-    return any(tok.strip().lower() in ("enter", "return", "numpadenter") for tok in re.split(r"[+\s]+", keys))
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return not ip.is_global or ip.is_multicast
+
+
+def navigation_denial(dest: str, allow_local_network: bool = False) -> str | None:
+    """Return a denial message when ``dest`` must never be opened, else None.
+
+    Non-http(s) schemes (chrome://, file:, data:, javascript:, view-source:, devtools://, about:
+    other than about:blank, ...) are always denied. Loopback, private, link-local and other
+    non-public addresses (literal IPs only, no DNS lookups) are denied unless
+    ``allow_local_network`` is True.
+    """
+    raw = "".join(c for c in dest if unicodedata.category(c) != "Cc").strip().replace("\\", "/")
+    if not raw or raw.lower() in ("about:blank", "about:blank#"):
+        return None
+    m = _OPAQUE_SCHEME_RE.match(raw)
+    if m and not _HOSTPORT_RE.match(raw[m.end():]):
+        scheme = m.group(1).lower()
+        if scheme not in ("http", "https"):
+            return (f"Blocked by safety policy: {scheme}: URLs are not allowed. "
+                    "Only http(s) websites can be opened; choose another page.")
+        candidate = f"{scheme}://" + raw[m.end():].lstrip("/")
+    elif raw.startswith("//"):
+        candidate = "https:" + raw
+    else:
+        candidate = "http://" + raw  # schemeless or host:port
+    try:
+        host = urlsplit(candidate).hostname
+    except ValueError:
+        return "Blocked by safety policy: the address could not be parsed. Choose another page."
+    if host is None:
+        return None
+    if not allow_local_network and _host_is_local(host):
+        return (f"Blocked by safety policy: {host} is a local or private network address. "
+                "Only public websites can be opened; choose another page.")
+    return None
+
+
+# --- Live element read -------------------------------------------------------------------
+# The DOM snapshot the gate reads is cached from when the agent last looked at the page, so a
+# page script can swap a harmless label for a buy handler before the click lands. Just before a
+# click we re-read the element's current tag/attributes/text over CDP (DOM.resolveNode +
+# Runtime.callFunctionOn on its backend node id). A page can still change the element in the
+# milliseconds between this read and browser-use dispatching the click; closing that window
+# would need browser-use itself to re-check inside the click.
+_LIVE_JS = """function() {
+  const el = this;
+  const names = (e) => (e && e.getAttributeNames) ? e.getAttributeNames() : [];
+  const attrs = (e) => { const o = {}; for (const n of names(e)) o[n] = String(e.getAttribute(n)).slice(0, 300); return o; };
+  const a = attrs(el);
+  const t = String(el.type || '').toLowerCase();
+  if (typeof el.value === 'string' && el.value && ['submit', 'button', 'image', 'reset'].includes(t)) a.value = el.value.slice(0, 300);
+  const f = el.closest ? el.closest('form') : null;
+  const txt = String(el.innerText || el.textContent || '').slice(0, 300);
+  return JSON.stringify({tag: String(el.tagName || '').toLowerCase(), attrs: a, text: txt, form: f ? attrs(f) : null});
+}"""
+
+
+def _node_from_live(data: dict[str, Any]) -> Any:
+    form = None
+    if isinstance(data.get("form"), dict):
+        form = SimpleNamespace(node_name="form", attributes=data["form"], ax_node=None, node_value="",
+                               parent_node=None, get_all_children_text=lambda: "")
+    text = str(data.get("text") or "")
+    return SimpleNamespace(node_name=str(data.get("tag") or ""), attributes=dict(data.get("attrs") or {}),
+                           ax_node=None, node_value="", parent_node=form, get_all_children_text=lambda: text)
+
+
+async def _read_live_object(cdp: Any, object_id: str) -> Any:
+    res = await cdp.cdp_client.send.Runtime.callFunctionOn(
+        params={"objectId": object_id, "functionDeclaration": _LIVE_JS, "returnByValue": True},
+        session_id=cdp.session_id)
+    return _node_from_live(json.loads(res["result"]["value"]))
 
 
 class GuardedTools(Tools):
@@ -467,6 +735,8 @@ class GuardedTools(Tools):
         blocked_log: list[str] | None = None,
         allow_evaluate: bool = False,
         blocked_domains: Iterable[str] = SAFETY_DEFAULTS,
+        allow_local_network: bool = False,
+        approval_timeout_s: float | None = 120.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -474,6 +744,8 @@ class GuardedTools(Tools):
         self._lba_gate = gate_commerce_clicks
         self._lba_approval = approval
         self._lba_allow_evaluate = allow_evaluate
+        self._lba_allow_local = allow_local_network
+        self._lba_approval_timeout = approval_timeout_s if approval_timeout_s and approval_timeout_s > 0 else None
         self._lba_blocked = frozenset(SAFETY_DEFAULTS | {str(d).strip().lower().rstrip(".") for d in blocked_domains})
         self.blocked_actions: list[str] = blocked_log if blocked_log is not None else []
 
@@ -504,18 +776,29 @@ class GuardedTools(Tools):
     async def _lba_ask(self, req: ActionRequest) -> ActionResult | None:
         """Ask for approval; return an error ActionResult when denied, None when approved."""
         approved = False
+        timed_out = False
         if self._lba_approval is not None:
             try:
-                approved = bool(await self._lba_approval(req))
+                pending = self._lba_approval(req)
+                res = await (asyncio.wait_for(pending, self._lba_approval_timeout)
+                             if self._lba_approval_timeout else pending)
+                # Only an explicit True (or {"approved": True}) counts; "no", 1 or a Mock do not.
+                approved = res is True or (isinstance(res, dict) and res.get("approved") is True)
+            except TimeoutError:
+                logger.warning("approval callback timed out after %ss, denying", self._lba_approval_timeout)
+                timed_out = True
             except Exception as e:
                 logger.warning("approval callback failed, denying: %s", e)
-                approved = False
         if approved:
             return None
         desc = req.action_name + (f" on {req.element_label!r}" if req.element_label else "") + (
             f" at {req.url}" if req.url else "")
         self.blocked_actions.append(desc)
         why = f" ({req.reason})" if req.reason else ""
+        if timed_out:
+            return ActionResult(error=(
+                f"Approval for {desc}{why} timed out after {self._lba_approval_timeout:g}s and was treated as "
+                "denied. Do not retry it; continue the task without this step, or report what you found."))
         if req.action_name in EVAL_ACTIONS:
             if self._lba_approval is None:
                 msg = ("JavaScript evaluation is disabled in this session (set LBA_ALLOW_EVALUATE=true to allow). "
@@ -526,13 +809,15 @@ class GuardedTools(Tools):
             return ActionResult(error=msg)
         return ActionResult(
             error=(
-                f"Blocked by safety policy: {desc}{why} looks like a purchase/irreversible action "
-                "and was not approved. Do not retry; finish with success=False and report it."
+                f"Blocked by safety policy: {desc}{why} looks like a purchase/irreversible action. "
+                "This step needs the user's approval, which was not given. Do not retry it; continue the task "
+                "without it, or report what you found."
             )
         )
 
     def _lba_blocked_navigation(self, action: Any) -> ActionResult | None:
-        """Hard-deny navigation (including new-tab) to a blocked domain; no approval can lift it."""
+        """Hard-deny navigation (including new-tab) to a blocked domain, a non-http(s) scheme or (unless
+        allowed) a local/private address; no approval can lift it."""
         try:
             dumped = action.model_dump(exclude_unset=True)
         except Exception:
@@ -543,6 +828,10 @@ class GuardedTools(Tools):
             dest = params.get("url")
             if not isinstance(dest, str):
                 continue
+            denial = navigation_denial(dest, self._lba_allow_local)
+            if denial is not None:
+                self.blocked_actions.append(f"{name} at {dest}")
+                return ActionResult(error=denial)
             try:
                 host = urlsplit(dest.strip()).hostname
             except ValueError:
@@ -573,22 +862,68 @@ class GuardedTools(Tools):
                     return denied
         return await super().act(action, browser_session, *args, **kwargs)
 
+    async def _lba_live(self, node: Any, browser_session: Any) -> tuple[str, Any]:
+        """Re-read ``node`` from the live page. Returns ("ok", node) | ("unavailable", None) | ("failed", None)."""
+        backend_id = getattr(node, "backend_node_id", None)
+        if not callable(getattr(browser_session, "cdp_client_for_node", None)) or not isinstance(backend_id, int):
+            return "unavailable", None
+        try:
+            cdp = await browser_session.cdp_client_for_node(node)
+            res = await cdp.cdp_client.send.DOM.resolveNode(
+                params={"backendNodeId": backend_id}, session_id=cdp.session_id)
+            return "ok", await _read_live_object(cdp, res["object"]["objectId"])
+        except Exception as e:
+            logger.debug("live element read failed: %s", e)
+            return "failed", None
+
+    async def _lba_live_focused(self, browser_session: Any) -> tuple[str, Any]:
+        """Read the currently focused element (same return shape as _lba_live)."""
+        getter = getattr(browser_session, "get_or_create_cdp_session", None)
+        if not callable(getter):
+            return "unavailable", None
+        try:
+            cdp = await getter(None, focus=False)
+            res = await cdp.cdp_client.send.Runtime.evaluate(
+                params={"expression": "document.activeElement"}, session_id=cdp.session_id)
+            object_id = res["result"].get("objectId")
+            if not object_id:
+                return "failed", None
+            return "ok", await _read_live_object(cdp, object_id)
+        except Exception as e:
+            logger.debug("focused element read failed: %s", e)
+            return "failed", None
+
+    async def _lba_classify_click(self, name: str, params: dict[str, Any], browser_session: Any) -> ActionRequest | None:
+        node, ok = await self._lba_node(params, browser_session)
+        url, url_ok = await self._lba_url(browser_session)
+        label = element_label(node) if ok else None
+        if not ok:
+            reason: str | None = "target element could not be resolved (failing closed)"
+        else:
+            ambiguous = not label or _in_form_submit(node)
+            try:
+                reason = element_risk(node, url, label, self._lba_patterns)
+            except Exception as e:  # pragma: no cover - defensive
+                reason = f"element inspection failed ({e}); failing closed"
+            state, live = await self._lba_live(node, browser_session)
+            if state == "ok":
+                live_label = element_label(live)
+                live_reason = element_risk(live, url, live_label, self._lba_patterns)
+                if live_reason is not None and reason is None:
+                    reason, label = f"live page element changed: {live_reason}", live_label
+                ambiguous = ambiguous or not live_label or _in_form_submit(live)
+            elif state == "failed" and reason is None and ambiguous:
+                reason = "live element could not be re-read and the cached one is ambiguous (failing closed)"
+            if reason is None and not url_ok and ambiguous:
+                reason = "page URL could not be read for an unlabeled/submit control (failing closed)"
+        if reason is None:
+            return None
+        return ActionRequest(action_name=name, params=dict(params), element_label=label, url=url, reason=reason)
+
     async def _lba_classify(self, name: str, params: dict[str, Any], browser_session: Any) -> ActionRequest | None:
         """Return an ActionRequest when the action must be approved, else None."""
         if name in CLICK_ACTIONS:
-            node, ok = await self._lba_node(params, browser_session)
-            url, _ = await self._lba_url(browser_session)
-            label = element_label(node) if ok else None
-            if not ok:
-                reason: str | None = "target element could not be resolved (failing closed)"
-            else:
-                try:
-                    reason = element_risk(node, url, label, self._lba_patterns)
-                except Exception as e:  # pragma: no cover - defensive
-                    reason = f"element inspection failed ({e}); failing closed"
-            if reason is None:
-                return None
-            return ActionRequest(action_name=name, params=dict(params), element_label=label, url=url, reason=reason)
+            return await self._lba_classify_click(name, params, browser_session)
         if name in NAVIGATE_ACTIONS:
             dest = params.get("url")
             if isinstance(dest, str) and is_commerce_url(dest):
@@ -604,20 +939,35 @@ class GuardedTools(Tools):
             return ActionRequest(action_name=name, params=dict(params), element_label=snippet, url=url,
                                  reason="arbitrary JavaScript can submit forms or click anything")
         if name in KEY_ACTIONS:
-            if not _keys_press_enter(params.get("keys")):
+            kind = _keys_kind(params.get("keys"))
+            if kind is None:
                 return None
             url, ok = await self._lba_url(browser_session)
-            if not ok:
-                reason = "page URL could not be read (failing closed)"
+            if kind == "enter":
+                if not ok:
+                    reason = "page URL could not be read (failing closed)"
+                elif is_commerce_url(url):
+                    reason = "Enter pressed on a checkout/payment page"
+                else:
+                    return None
+                return ActionRequest(action_name=name, params=dict(params), element_label=str(params.get("keys")),
+                                     url=url, reason=reason)
+            # Space activates a focused button; gate when the focused element looks transactional.
+            state, focused = await self._lba_live_focused(browser_session)
+            if state == "ok":
+                risk = element_risk(focused, url, element_label(focused), self._lba_patterns)
+                if risk is None:
+                    return None
+                reason, label = f"Space pressed on a focused control: {risk}", element_label(focused)
             elif is_commerce_url(url):
-                reason = "Enter pressed on a checkout/payment page"
+                reason, label = "Space pressed on a checkout/payment page (focused element unknown)", None
             else:
                 return None
-            return ActionRequest(action_name=name, params=dict(params), element_label=str(params.get("keys")),
+            return ActionRequest(action_name=name, params=dict(params), element_label=label or str(params.get("keys")),
                                  url=url, reason=reason)
         if name in INPUT_ACTIONS:
             text = params.get("text")
-            if not isinstance(text, str) or not text.endswith(("\n", "\r")):
+            if not isinstance(text, str) or not _TRAILING_NEWLINE_RE.search(text):
                 return None
             node, ok = await self._lba_node(params, browser_session)
             url, url_ok = await self._lba_url(browser_session)
