@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from browser_use.agent.views import ActionResult
 from browser_use.tools.service import Tools
@@ -56,40 +58,250 @@ DEFAULT_COMMERCE_PATTERNS: tuple[str, ...] = (
     "start subscription",
 )
 
-# Click-type tool actions whose target is an element index.
+# Click-type tool actions whose target is an element index (or coordinates).
 CLICK_ACTIONS = frozenset({"click", "click_element_by_index", "click_element"})
+INPUT_ACTIONS = frozenset({"input", "input_text", "input_text_by_index"})
+KEY_ACTIONS = frozenset({"send_keys"})
+EVAL_ACTIONS = frozenset({"evaluate", "execute_js", "execute_javascript"})
+NAVIGATE_ACTIONS = frozenset({"navigate", "go_to_url"})
+
+# Phrases matched as whole words (Latin scripts), after normalisation.
+MULTILINGUAL_COMMERCE_PATTERNS: tuple[str, ...] = (
+    # en
+    "order now", "buy again", "make payment", "make a payment", "finalize order", "finalise order",
+    "confirm payment", "send money", "book now", "reserve now", "complete payment", "proceed to payment",
+    "proceed to pay", "pay securely", "pay with", "donate now", "subscribe now",
+    "confirm and pay", "confirm booking", "complete booking", "confirm your order", "complete checkout",
+    # de
+    "kaufen", "jetzt kaufen", "zahlen", "bezahlen", "jetzt bezahlen", "zur kasse", "kasse",
+    "bestellen", "jetzt bestellen", "kostenpflichtig bestellen", "zahlungspflichtig bestellen",
+    "bestellung abschliessen", "bestellung abschließen", "zahlung bestaetigen", "zahlung bestätigen",
+    "geld senden", "jetzt buchen", "jetzt spenden", "abonnieren", "kauf abschliessen",
+    # es
+    "comprar", "comprar ahora", "pagar", "pagar ahora", "realizar pedido", "finalizar compra",
+    "finalizar pedido", "confirmar pedido", "confirmar pago", "confirmar compra", "tramitar pedido",
+    "enviar dinero", "reservar ahora", "suscribirse", "suscríbete", "ir a pagar", "donar ahora",
+    # fr
+    "acheter", "acheter maintenant", "payer", "payer maintenant", "commander", "passer la commande",
+    "valider la commande", "finaliser la commande", "confirmer le paiement", "confirmer la commande",
+    "envoyer de l'argent", "faire un don", "réserver maintenant", "s'abonner",
+    "passer à la caisse", "procéder au paiement",
+    # it
+    "acquista", "acquista ora", "compra ora", "paga", "paga ora", "ordina", "ordina ora",
+    "conferma ordine", "conferma l'ordine", "conferma il pagamento", "completa l'ordine",
+    "completa ordine", "invia denaro", "prenota ora", "abbonati", "vai alla cassa",
+    # pt
+    "comprar agora", "confirmar pagamento", "fazer pedido", "enviar dinheiro", "reservar agora",
+    "assinar agora", "doar agora",
+    # nl
+    "kopen", "nu kopen", "betalen", "nu betalen", "bestelling plaatsen", "bestelling afronden",
+    "afrekenen", "bevestig betaling", "betaling bevestigen", "geld versturen", "nu boeken",
+    "nu bestellen", "abonneren", "nu doneren",
+)
+
+# Whole-label matches (label must equal one of these once digits/currency/punctuation are
+# removed). Keeps "Subscribe to newsletter", "Book details", "Order history" ungated.
+EXACT_COMMERCE_LABELS: frozenset[str] = frozenset({
+    "buy", "order", "book", "subscribe", "donate", "pay", "purchase", "reserve", "place order",
+    "spenden", "buchen", "donar", "reservar", "suscribirse", "réserver", "reserver",
+    "prenota", "dona", "assinar", "doar", "boeken", "doneren",
+})
+
+# Start-of-label matches ("Buy 2 for $20", "Donate $50").
+_STARTS_WITH = ("buy ", "donate ", "kaufen ", "comprar ", "acheter ", "acquista ")
+
+# CJK keywords are matched as substrings (no word boundaries in those scripts).
+CJK_COMMERCE_KEYWORDS: tuple[str, ...] = (
+    # ja
+    "購入", "注文", "支払", "決済", "申し込", "申込", "寄付", "送金", "予約", "レジに進", "お会計",
+    # zh
+    "购买", "購買", "支付", "付款", "结算", "結算", "下单", "下單", "提交订单", "提交訂單",
+    "订阅", "訂閱", "捐款", "捐赠", "捐贈", "转账", "轉賬", "汇款", "匯款", "预订", "預訂", "预定",
+    # ko
+    "구매", "결제", "주문", "구독", "후원", "기부", "송금", "예약",
+)
+_CJK_NEGATIVE = (
+    "履歴", "履歷", "历史", "歷史", "歴史", "내역", "기록", "詳細", "详情", "詳情", "상세", "一覧",
+    "ガイド", "指南", "帮助", "幫助", "도움말", "キャンセル", "取消", "취소",
+)
+
+# --- Transactional URL signals ---------------------------------------------------------
+_URL_TOKENS = frozenset({
+    "checkout", "payment", "payments", "pay", "placeorder", "subscribe", "subscription", "donate",
+    "donation", "donations", "billing", "purchase", "buynow", "paynow", "confirmpayment",
+    "kasse", "caisse", "cassa", "zahlung", "paiement", "pagamento", "betaling",
+})
+_URL_BIGRAMS = frozenset({
+    ("cart", "confirm"), ("cart", "checkout"), ("cart", "pay"), ("order", "place"), ("order", "confirm"),
+    ("order", "submit"), ("order", "complete"), ("place", "order"), ("confirm", "order"),
+    ("confirm", "payment"), ("confirm", "purchase"), ("complete", "purchase"), ("complete", "order"),
+    ("buy", "now"), ("send", "money"), ("money", "transfer"),
+})
+_URL_NEGATIVE_TOKENS = frozenset({
+    "history", "faq", "help", "policy", "policies", "terms", "methods", "settings", "docs", "blog",
+})
+_URL_HOST_LABELS = frozenset({"checkout", "pay", "payments", "billing", "donate"})
+
+_ZERO_WIDTH_RE = re.compile(r"[​-‏⁠-⁤﻿­᠎]")
+_SEPARATORS_RE = re.compile(r"[\-_./\\|:;,+*~·•–—]+")
+_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_SUBMIT_TYPES = frozenset({"submit", "image", "button"})
 
 
 @dataclass
 class ActionRequest:
-    """Describes a gated action for an approval callback."""
+    """Describes a gated action for an approval callback.
+
+    ``element_label`` is the click target's label (or the key sequence / script snippet for
+    non-click actions); ``url`` is the current page (or the destination for navigation);
+    ``reason`` says why the action was gated.
+    """
 
     action_name: str
     params: dict[str, Any] = field(default_factory=dict)
     element_label: str | None = None
     url: str | None = None
+    reason: str | None = None
 
 
 ApprovalCallback = Callable[[ActionRequest], Awaitable[bool]]
 
 
-def is_commerce_label(label: str | None, patterns: Iterable[str] = DEFAULT_COMMERCE_PATTERNS) -> bool:
-    """True when ``label`` contains any pattern as a whole-word phrase (case-insensitive).
+def normalize_text(text: str | None) -> str:
+    """NFKC, drop zero-width/control chars, split camelCase, fold separators, casefold."""
+    if not text:
+        return ""
+    t = unicodedata.normalize("NFKC", str(text))
+    t = _ZERO_WIDTH_RE.sub("", t)
+    t = "".join(" " if unicodedata.category(c) in ("Cc", "Zs", "Zl", "Zp") else c
+                for c in t if unicodedata.category(c) != "Cf")
+    t = _CAMEL_RE.sub(" ", t)
+    t = _SEPARATORS_RE.sub(" ", t)
+    return " ".join(t.casefold().split())
 
-    Word boundaries avoid substring false positives ("payment history" does not
-    match "pay"; "repay" does not match "pay"; "Pay now" and "Pay" do).
-    "payment" is intentionally not a pattern, so account/payment-settings links pass.
+
+def _phrase_in(phrase: str, text: str) -> bool:
+    return re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", text) is not None
+
+
+def _core(text: str) -> str:
+    """Normalised label with digits, currency symbols and punctuation removed."""
+    t = "".join(c for c in text if unicodedata.category(c)[0] in ("L", "M", "Z") or c == "'")
+    return " ".join(t.split())
+
+
+def is_commerce_label(label: str | None, patterns: Iterable[str] = DEFAULT_COMMERCE_PATTERNS) -> bool:
+    """True when ``label`` looks like a purchase/payment/subscribe/donate call to action.
+
+    The label is normalised (NFKC, zero-width removal, camelCase and separator folding,
+    casefold) so "BuyNow", "Buy-now" and fullwidth/zero-width variants match. Latin phrases
+    match as whole words ("payment history" does not match "pay"); CJK keywords match as
+    substrings; bare generic verbs ("Buy", "Subscribe", "Donate") match only as the whole
+    label so "Subscribe to newsletter", "Book details" and "Order history" pass.
     """
     if not label:
         return False
-    text = " ".join(label.lower().split())
-    for p in patterns:
-        p = " ".join(p.lower().split())
-        if not p:
-            continue
-        if re.search(rf"(?<![a-z0-9]){re.escape(p)}(?![a-z0-9])", text):
+    text = normalize_text(label)
+    if not text:
+        return False
+    for p in (*patterns, *MULTILINGUAL_COMMERCE_PATTERNS):
+        p = normalize_text(p)
+        if p and _phrase_in(p, text):
             return True
+    if _core(text) in EXACT_COMMERCE_LABELS:
+        return True
+    if any(text.startswith(s) for s in _STARTS_WITH):
+        return True
+    return any(k in text for k in CJK_COMMERCE_KEYWORDS) and not any(n in text for n in _CJK_NEGATIVE)
+
+
+def is_commerce_url(url: str | None) -> bool:
+    """True when a URL's host or path looks transactional (checkout, payment, order/place, ...)."""
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower()
+    if host.split(".")[0] in _URL_HOST_LABELS and host.count(".") >= 2:
+        return True
+    path = unicodedata.normalize("NFKC", parts.path or "")
+    tokens = [t for t in re.split(r"[\W_]+", _CAMEL_RE.sub(" ", path).casefold()) if t]
+    if not tokens or any(t in _URL_NEGATIVE_TOKENS for t in tokens):
+        return False
+    if any(t in _URL_TOKENS for t in tokens):
+        return True
+    return any(pair in _URL_BIGRAMS for pair in zip(tokens, tokens[1:], strict=False))
+
+
+def _attrs(node: Any) -> dict[str, str]:
+    a = getattr(node, "attributes", None)
+    return a if isinstance(a, dict) else {}
+
+
+def _tag(node: Any) -> str:
+    return str(getattr(node, "node_name", "") or "").lower()
+
+
+def _ancestor_form(node: Any) -> Any | None:
+    cur = node
+    for _ in range(40):
+        if cur is None:
+            return None
+        if _tag(cur) == "form":
+            return cur
+        cur = getattr(cur, "parent_node", None)
+    return None
+
+
+def _is_submit_like(node: Any) -> bool:
+    typ = str(_attrs(node).get("type", "")).lower()
+    tag = _tag(node)
+    if tag == "button":
+        return typ in ("", "submit")
+    if tag == "input":
+        return typ in ("submit", "image")
     return False
+
+
+def _is_clickable_control(node: Any) -> bool:
+    a = _attrs(node)
+    return _tag(node) in ("button", "a") or str(a.get("role", "")).lower() in ("button", "link") or (
+        _tag(node) == "input" and str(a.get("type", "")).lower() in _SUBMIT_TYPES
+    )
+
+
+def form_looks_transactional(node: Any) -> bool:
+    """True when the enclosing <form> of ``node`` has a transactional action/id/name."""
+    form = _ancestor_form(node)
+    if form is None:
+        return False
+    fa = _attrs(form)
+    if is_commerce_url(fa.get("action")):
+        return True
+    return any(is_commerce_label(fa.get(k)) for k in ("id", "name", "aria-label"))
+
+
+def element_risk(node: Any, page_url: str | None, label: str | None,
+                 patterns: Iterable[str] = DEFAULT_COMMERCE_PATTERNS) -> str | None:
+    """Return a reason string when a click target looks transactional, else None."""
+    if is_commerce_label(label, patterns):
+        return f"label {label!r} looks like a purchase/commerce action"
+    a = _attrs(node)
+    for key in ("href", "formaction", "data-href", "data-url"):
+        if is_commerce_url(a.get(key)):
+            return f"{key} {a.get(key)!r} points to a checkout/payment URL"
+    for key in ("name", "id", "aria-label", "title", "value", "data-testid", "data-action"):
+        if is_commerce_label(a.get(key), patterns):
+            return f"attribute {key}={a.get(key)!r} looks like a purchase/commerce action"
+    if _is_submit_like(node) and form_looks_transactional(node):
+        return "submit button inside a checkout/payment/order form"
+    if is_commerce_url(page_url) and _is_clickable_control(node):
+        return "clickable control on a checkout/payment page"
+    if not label and is_commerce_url(page_url):
+        return "unlabeled control on a checkout/payment page"
+    return None
 
 
 def element_label(node: Any, max_len: int = 200) -> str | None:
@@ -125,8 +337,20 @@ def element_label(node: Any, max_len: int = 200) -> str | None:
         return None
 
 
+def _keys_press_enter(keys: Any) -> bool:
+    if not isinstance(keys, str):
+        return False
+    return any(tok.strip().lower() in ("enter", "return", "numpadenter") for tok in re.split(r"[+\s]+", keys))
+
+
 class GuardedTools(Tools):
-    """Tools whose click actions are gated when the target looks like a commerce CTA."""
+    """Tools that gate irreversible actions: commerce clicks, Enter/newline submits on
+    checkout pages, JavaScript evaluation and navigation to checkout/payment URLs.
+
+    Lookup failures fail closed: an unresolvable click target is treated as gated, and with
+    no approval callback a gated action is denied. ``allow_evaluate=True`` disables the
+    always-gate on ``evaluate``.
+    """
 
     def __init__(
         self,
@@ -135,30 +359,61 @@ class GuardedTools(Tools):
         gate_commerce_clicks: bool = True,
         approval: ApprovalCallback | None = None,
         blocked_log: list[str] | None = None,
+        allow_evaluate: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._lba_patterns = tuple(patterns)
         self._lba_gate = gate_commerce_clicks
         self._lba_approval = approval
+        self._lba_allow_evaluate = allow_evaluate
         self.blocked_actions: list[str] = blocked_log if blocked_log is not None else []
 
-    async def _lba_resolve(self, params: dict[str, Any], browser_session: Any) -> tuple[str | None, str | None]:
-        """Return (label, url) for the click target; both best-effort."""
-        label = None
-        url = None
+    async def _lba_url(self, browser_session: Any) -> tuple[str | None, bool]:
+        """Return (url, ok); ok is False when the lookup failed."""
+        try:
+            url = await browser_session.get_current_page_url()
+            return (url if isinstance(url, str) else None), True
+        except Exception:
+            return None, False
+
+    async def _lba_node(self, params: dict[str, Any], browser_session: Any) -> tuple[Any, bool]:
+        """Return (node, ok). ok is False when the target could not be resolved."""
         try:
             index = params.get("index")
             if index is not None:
                 node = await browser_session.get_element_by_index(index)
-                label = element_label(node)
+            else:
+                x, y = params.get("coordinate_x"), params.get("coordinate_y")
+                if x is None or y is None:
+                    return None, False
+                node = await browser_session.get_dom_element_at_coordinates(x, y)
+            return node, node is not None
         except Exception as e:
-            logger.debug("element label lookup failed: %s", e)
-        try:
-            url = await browser_session.get_current_page_url()
-        except Exception:
-            url = None
-        return label, url
+            logger.debug("element lookup failed: %s", e)
+            return None, False
+
+    async def _lba_ask(self, req: ActionRequest) -> ActionResult | None:
+        """Ask for approval; return an error ActionResult when denied, None when approved."""
+        approved = False
+        if self._lba_approval is not None:
+            try:
+                approved = bool(await self._lba_approval(req))
+            except Exception as e:
+                logger.warning("approval callback failed, denying: %s", e)
+                approved = False
+        if approved:
+            return None
+        desc = req.action_name + (f" on {req.element_label!r}" if req.element_label else "") + (
+            f" at {req.url}" if req.url else "")
+        self.blocked_actions.append(desc)
+        why = f" ({req.reason})" if req.reason else ""
+        return ActionResult(
+            error=(
+                f"Blocked by safety policy: {desc}{why} looks like a purchase/irreversible action "
+                "and was not approved. Do not retry; finish with success=False and report it."
+            )
+        )
 
     async def act(self, action: Any, browser_session: Any, *args: Any, **kwargs: Any) -> ActionResult:
         if self._lba_gate:
@@ -167,27 +422,72 @@ class GuardedTools(Tools):
             except Exception:
                 dumped = {}
             for name, params in dumped.items():
-                if name not in CLICK_ACTIONS or not isinstance(params, dict):
+                if not isinstance(params, dict):
                     continue
-                label, url = await self._lba_resolve(params, browser_session)
-                if not is_commerce_label(label, self._lba_patterns):
+                req = await self._lba_classify(name, params, browser_session)
+                if req is None:
                     continue
-                approved = False
-                if self._lba_approval is not None:
-                    try:
-                        approved = bool(await self._lba_approval(
-                            ActionRequest(action_name=name, params=dict(params), element_label=label, url=url)
-                        ))
-                    except Exception as e:
-                        logger.warning("approval callback failed, denying: %s", e)
-                        approved = False
-                if not approved:
-                    desc = f"{name} on {label!r}" + (f" at {url}" if url else "")
-                    self.blocked_actions.append(desc)
-                    return ActionResult(
-                        error=(
-                            f"Blocked by safety policy: {desc} looks like a purchase/commerce action "
-                            "and was not approved. Do not retry; finish with success=False and report it."
-                        )
-                    )
+                denied = await self._lba_ask(req)
+                if denied is not None:
+                    return denied
         return await super().act(action, browser_session, *args, **kwargs)
+
+    async def _lba_classify(self, name: str, params: dict[str, Any], browser_session: Any) -> ActionRequest | None:
+        """Return an ActionRequest when the action must be approved, else None."""
+        if name in CLICK_ACTIONS:
+            node, ok = await self._lba_node(params, browser_session)
+            url, _ = await self._lba_url(browser_session)
+            label = element_label(node) if ok else None
+            if not ok:
+                reason: str | None = "target element could not be resolved (failing closed)"
+            else:
+                try:
+                    reason = element_risk(node, url, label, self._lba_patterns)
+                except Exception as e:  # pragma: no cover - defensive
+                    reason = f"element inspection failed ({e}); failing closed"
+            if reason is None:
+                return None
+            return ActionRequest(action_name=name, params=dict(params), element_label=label, url=url, reason=reason)
+        if name in NAVIGATE_ACTIONS:
+            dest = params.get("url")
+            if isinstance(dest, str) and is_commerce_url(dest):
+                return ActionRequest(action_name=name, params=dict(params), url=dest,
+                                     reason="navigation to a checkout/payment URL")
+            return None
+        if name in EVAL_ACTIONS:
+            if self._lba_allow_evaluate:
+                return None
+            code = params.get("code")
+            snippet = " ".join(str(code).split())[:200] if code is not None else None
+            url, _ = await self._lba_url(browser_session)
+            return ActionRequest(action_name=name, params=dict(params), element_label=snippet, url=url,
+                                 reason="arbitrary JavaScript can submit forms or click anything")
+        if name in KEY_ACTIONS:
+            if not _keys_press_enter(params.get("keys")):
+                return None
+            url, ok = await self._lba_url(browser_session)
+            if not ok:
+                reason = "page URL could not be read (failing closed)"
+            elif is_commerce_url(url):
+                reason = "Enter pressed on a checkout/payment page"
+            else:
+                return None
+            return ActionRequest(action_name=name, params=dict(params), element_label=str(params.get("keys")),
+                                 url=url, reason=reason)
+        if name in INPUT_ACTIONS:
+            text = params.get("text")
+            if not isinstance(text, str) or not text.endswith(("\n", "\r")):
+                return None
+            node, ok = await self._lba_node(params, browser_session)
+            url, url_ok = await self._lba_url(browser_session)
+            if not ok:
+                reason = "input target could not be resolved (failing closed)"
+            elif form_looks_transactional(node) or is_commerce_url(url):
+                reason = "text ending in a newline submits a checkout/payment form"
+            elif not url_ok:
+                reason = "page URL could not be read (failing closed)"
+            else:
+                return None
+            return ActionRequest(action_name=name, params=dict(params),
+                                 element_label=element_label(node) if ok else None, url=url, reason=reason)
+        return None
