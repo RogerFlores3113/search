@@ -462,6 +462,10 @@ def serve(log_level: str = "warning", *, third_party: str | None = None, strict:
     from local_browser_agent.log import configure_logging, quiet_filters
 
     configure_logging(log_level, third_party=third_party)
+    from local_browser_agent.config import unknown_env_warnings
+
+    for line in unknown_env_warnings():  # also covers ``python -m local_browser_agent.mcp_server``
+        print(line, file=sys.stderr)
     if strict is None:
         strict = _strict_from_env()
     try:

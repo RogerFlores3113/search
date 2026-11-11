@@ -71,3 +71,14 @@ def test_warn_is_stderr_only(monkeypatch, capsys):
     main_cli.warn_unknown_env()
     cap = capsys.readouterr()
     assert cap.out == "" and "LBA_TIMEOUT_S" in cap.err
+
+
+def test_serve_warns_unknown_env_once(monkeypatch, capsys):
+    """``serve()`` warns itself, so ``python -m local_browser_agent.mcp_server`` and ``lba mcp`` both warn, once."""
+    from local_browser_agent import mcp_server
+
+    monkeypatch.setenv("LBA_TIMEOUT", "5")
+    monkeypatch.setenv("LBA_MAX_STEPS", "0")  # strict exit before the handshake keeps the test offline
+    assert mcp_server.serve(strict=True) == 2
+    err = capsys.readouterr().err
+    assert err.count("unknown environment variable LBA_TIMEOUT ") == 1 and "did you mean LBA_TIMEOUT_S?" in err

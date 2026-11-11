@@ -401,7 +401,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         e.parser.print_usage(sys.stderr)
         print(f"{e.parser.prog}: error: {e.message}", file=sys.stderr)
         return EXIT_USAGE
-    if args.command in ("run", "mcp"):
+    if args.command == "run":
         warn_unknown_env()
     if args.command == "run":
         from local_browser_agent.log import quiet_filters
