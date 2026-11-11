@@ -11,7 +11,12 @@ from browser_use.browser.session import BrowserSession
 from local_browser_agent.chrome import CHROME_NOT_FOUND_MESSAGE, ChromeNotFoundError, find_chrome
 from local_browser_agent.config import BrowserConfig, SafetyPolicy
 from local_browser_agent.redact import redact_url
-from local_browser_agent.safety import allowed_matches_blocked, host_is_blocked, normalize_allowed_domain
+from local_browser_agent.safety import (
+    allowed_matches_blocked,
+    canonical_host,
+    host_is_blocked,
+    normalize_allowed_domain,
+)
 
 # Non-web schemes the agent must never reach (chrome://settings/passwords, extensions, devtools).
 # browser-use only consults these patterns when allowed_domains is unset; with an allow-list
@@ -65,6 +70,11 @@ def start_url_problem(url: str, safety: SafetyPolicy) -> str | None:
         return f"start_url must be an http(s) URL, got {shown!r}"
     if not host:
         return f"start_url has no host: {shown!r}"
+    # Check the host Chrome would actually connect to (percent-encoding, fullwidth dots, IDNA...).
+    canon = canonical_host(host)
+    if not canon:
+        return f"start_url host cannot be resolved safely: {shown!r}"
+    host = canon
     if host_is_blocked(host, safety.blocked_domains):
         return f"start_url host {host!r} is blocked by the safety policy"
     if safety.allowed_domains and not any(_allowed_covers(e, host) for e in safety.allowed_domains):

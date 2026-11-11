@@ -163,6 +163,7 @@ class _BrowserSection(BaseModel):
     llm_screenshot_width: int | None = None
     llm_screenshot_height: int | None = None
     keep_alive: bool | None = None
+    allow_downloads: bool | None = None
 
 
 class _SafetySection(BaseModel):

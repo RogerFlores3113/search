@@ -251,3 +251,15 @@ def test_public_suffix_rejected(entry):
 def test_specific_multipart_site_allowed():
     assert normalize_allowed_domain("*.example.co.uk") == "*.example.co.uk"
     assert normalize_allowed_domain("Bücher.de") == "xn--bcher-kva.de"
+
+
+@pytest.mark.parametrize("url", [
+    "http://%31%32%37%2e0.0.1/",
+    "http://127.0.0.1．/",
+    "https://ｐａｙｐａｌ.com/",
+    "https://pay​pal.com/",
+])
+def test_start_url_uses_canonical_host(url):
+    from local_browser_agent.browser import start_url_problem
+    from local_browser_agent.config import SafetyPolicy
+    assert start_url_problem(url, SafetyPolicy()) is not None
