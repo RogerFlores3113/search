@@ -224,6 +224,7 @@ def test_find_chrome_macos_channels(monkeypatch, channel, app):
 ])
 def test_find_chrome_linux_channels(monkeypatch, channel, binary):
     monkeypatch.setattr(chrome_mod.sys, "platform", "linux")
+    _exists_only(monkeypatch)  # hermetic: ignore browsers installed on the CI runner
     monkeypatch.setattr(chrome_mod.shutil, "which", lambda n: f"/usr/bin/{n}" if n in (binary, "google-chrome") else None)
     assert find_chrome(channel) == f"/usr/bin/{binary}"
     assert find_chrome() == "/usr/bin/google-chrome"
