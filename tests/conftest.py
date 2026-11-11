@@ -26,8 +26,8 @@ def training_dir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     training = tmp_path / "training"
     training.mkdir()
-    import agent.runner as runner_mod
-    monkeypatch.setattr(runner_mod, "TRAINING_FILE", training / "runs.jsonl")
+    import local_browser_agent.app.training_sink as training_sink_mod
+    monkeypatch.setattr(training_sink_mod, "TRAINING_FILE", training / "runs.jsonl")
     return training
 
 

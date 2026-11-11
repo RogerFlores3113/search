@@ -1,15 +1,15 @@
-"""Integration tests for pre_flight_check in agent/runner.py (MODEL-04 requirements)."""
+"""Integration tests for pre_flight_check in local_browser_agent/app/runner.py (MODEL-04 requirements)."""
 from __future__ import annotations
 
 import pytest
 
-from agent.config import Settings
-from agent.runner import PreFlightError
+from local_browser_agent.app.config import Settings
+from local_browser_agent.app.runner import PreFlightError
 
 
 async def test_preflight_passes_when_ollama_up_and_model_pulled(mock_ollama_tags_ok):
     """pre_flight_check must return normally when Ollama is up and model is available."""
-    from agent.runner import pre_flight_check
+    from local_browser_agent.app.runner import pre_flight_check
 
     # Should NOT raise PreFlightError or any exception
     await pre_flight_check(Settings())
@@ -19,7 +19,7 @@ async def test_preflight_exits_with_actionable_msg_when_ollama_down(
     mock_ollama_unreachable, capsys
 ):
     """pre_flight_check must raise PreFlightError and print 'ollama serve' when daemon is unreachable."""
-    from agent.runner import pre_flight_check
+    from local_browser_agent.app.runner import pre_flight_check
 
     with pytest.raises(PreFlightError):
         await pre_flight_check(Settings())
@@ -34,7 +34,7 @@ async def test_preflight_exits_with_pull_instruction_when_model_missing(
     mock_ollama_model_missing, capsys
 ):
     """pre_flight_check must raise PreFlightError and print 'ollama pull qwen3-vl:8b' when model absent."""
-    from agent.runner import pre_flight_check
+    from local_browser_agent.app.runner import pre_flight_check
 
     with pytest.raises(PreFlightError):
         await pre_flight_check(Settings())

@@ -1,4 +1,4 @@
-"""Tests for agent/__main__.py WIN-02 changes (Phase 14).
+"""Tests for local_browser_agent/app/__main__.py WIN-02 changes (Phase 14).
 
 Covers: freeze_support placement (AST), stdout/stderr redirect in frozen guard,
 and uvicorn.run() use_colors=False.
@@ -15,7 +15,7 @@ import pytest
 
 def test_freeze_support_is_first():
     """freeze_support() must be the very first call in if __name__ == '__main__': block."""
-    source = Path("agent/__main__.py").read_text(encoding="utf-8")
+    source = Path("local_browser_agent/app/__main__.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     # Find the if __name__ == '__main__': block at module level
@@ -72,9 +72,9 @@ def test_freeze_support_is_first():
 
 def test_stdout_redirect_in_frozen_guard(monkeypatch, tmp_path):
     """When frozen=True, main() redirects sys.stdout/stderr to app.log before uvicorn starts."""
-    # Pre-import agent.__main__ so agent.main is cached in sys.modules BEFORE
+    # Pre-import local_browser_agent.app.__main__ so local_browser_agent.app.main is cached in sys.modules BEFORE
     # frozen=True is set (avoids _MEIPASS lookup during cold import).
-    import agent.__main__ as main_mod
+    import local_browser_agent.app.__main__ as main_mod
     importlib.reload(main_mod)
 
     # Save original streams for cleanup
@@ -86,7 +86,7 @@ def test_stdout_redirect_in_frozen_guard(monkeypatch, tmp_path):
         importlib.reload(main_mod)
 
         # Patch get_user_data_dir to return tmp_path so log lands in test temp dir
-        import agent.paths as paths_mod
+        import local_browser_agent.app.paths as paths_mod
         monkeypatch.setattr(paths_mod, "get_user_data_dir", lambda: tmp_path)
 
         monkeypatch.setattr(main_mod.uvicorn, "run", lambda *a, **kw: None)
@@ -115,7 +115,7 @@ def test_uvicorn_use_colors_false(monkeypatch):
 
     monkeypatch.delattr(sys, "frozen", raising=False)
 
-    import agent.__main__ as main_mod
+    import local_browser_agent.app.__main__ as main_mod
     importlib.reload(main_mod)
 
     monkeypatch.setattr(main_mod.uvicorn, "run", lambda *a, **kw: calls.append(kw))

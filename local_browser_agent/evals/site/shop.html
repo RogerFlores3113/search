@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shop</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><header class="top"><span class="brand">Brightside</span><a href="/">Home</a><a href="/shop.html">Shop</a><a href="/catalog.html">Catalog</a><a href="/docs/">Docs</a><a href="/search.html">Search</a><a href="/contact.html">Contact</a><a href="/settings.html">Settings</a></header>
+<main>
+<h1>Shop</h1>
+<div class="row">
+<div class="card"><h3>Blue Kettle</h3><p>1.7 L stainless steel kettle.</p><p><strong>$34.99</strong></p><button data-sku="blue-kettle" data-name="Blue Kettle">Add to cart</button></div>
+<div class="card"><h3>Red Kettle</h3><p>1.7 L stainless steel kettle.</p><p><strong>$39.99</strong></p><button data-sku="red-kettle" data-name="Red Kettle">Add to cart</button></div>
+<div class="card"><h3>Ceramic Mug</h3><p>350 ml mug.</p><p><strong>$14.50</strong></p><button data-sku="mug-ceramic" data-name="Ceramic Mug">Add to cart</button></div>
+<div class="card"><h3>Aurora Desk Lamp</h3><p><a href="/product-lamp.html">View details</a></p><p><strong>$48.50</strong></p></div>
+</div>
+<p class="status" id="status"></p>
+<p><a class="btn" href="/cart.html">View cart</a></p>
+</main>
+<script src="/static/app.js"></script>
+<script>
+document.querySelectorAll('button[data-sku]').forEach((b) => {
+  b.addEventListener('click', async () => {
+    const r = await postJSON('/api/cart/add', { sku: b.dataset.sku });
+    document.getElementById('status').textContent = r.ok
+      ? 'Added ' + b.dataset.name + ' to cart (' + r.data.count + ' items in cart)'
+      : 'Could not add item';
+  });
+});</script>
+</body></html>

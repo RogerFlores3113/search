@@ -26,10 +26,10 @@ from httpx import AsyncClient, ASGITransport
 
 def test_seed_prompts_written_when_absent(tmp_path, monkeypatch):
     """PROMPT-06: seed_prompts_if_absent() writes 4 seed entries when settings.json is absent."""
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
     # Symbol does not exist yet — import inside body so collection succeeds
-    from agent.settings import seed_prompts_if_absent  # noqa: PLC0415
-    from agent.settings import load_settings_json  # noqa: PLC0415
+    from local_browser_agent.app.settings import seed_prompts_if_absent  # noqa: PLC0415
+    from local_browser_agent.app.settings import load_settings_json  # noqa: PLC0415
 
     seed_prompts_if_absent()
     stored = load_settings_json()
@@ -61,9 +61,9 @@ def test_seed_prompts_not_overwritten_if_present(tmp_path, monkeypatch):
     }
     settings_file.write_text(json.dumps(existing))
 
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: settings_file)
-    from agent.settings import seed_prompts_if_absent  # noqa: PLC0415
-    from agent.settings import load_settings_json  # noqa: PLC0415
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: settings_file)
+    from local_browser_agent.app.settings import seed_prompts_if_absent  # noqa: PLC0415
+    from local_browser_agent.app.settings import load_settings_json  # noqa: PLC0415
 
     seed_prompts_if_absent()
     stored = load_settings_json()
@@ -98,8 +98,8 @@ async def test_get_settings_returns_prompts(tmp_path, monkeypatch):
     ]
     settings_file.write_text(json.dumps({"prompts": seed_data, "active_prompt_id": "apartment"}))
 
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: settings_file)
-    from agent.main import app  # noqa: PLC0415
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: settings_file)
+    from local_browser_agent.app.main import app  # noqa: PLC0415
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get("/api/settings")
@@ -124,7 +124,7 @@ async def test_get_settings_returns_prompts(tmp_path, monkeypatch):
 
 def test_add_prompt_creates_entry():
     """PROMPT-02: index.html contains addPrompt() with crypto.randomUUID() and is_seed: false."""
-    html = Path("agent/templates/index.html").read_text(encoding="utf-8")
+    html = Path("local_browser_agent/app/templates/index.html").read_text(encoding="utf-8")
     assert "addPrompt()" in html, "index.html must contain addPrompt() call"
     assert "crypto.randomUUID(" in html, (
         "addPrompt() must use crypto.randomUUID() for new prompt ids"
@@ -150,9 +150,9 @@ async def test_save_prompts_persists_edit(tmp_path, monkeypatch):
     ]
     settings_file.write_text(json.dumps({"prompts": seed_data, "active_prompt_id": "generic"}))
 
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: settings_file)
-    from agent.main import app  # noqa: PLC0415
-    from agent.settings import load_settings_json  # noqa: PLC0415
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: settings_file)
+    from local_browser_agent.app.main import app  # noqa: PLC0415
+    from local_browser_agent.app.settings import load_settings_json  # noqa: PLC0415
 
     edited = [
         {"id": "generic", "name": "Generic", "content": "EDITED-CONTENT", "is_seed": True},
@@ -201,9 +201,9 @@ async def test_seed_prompts_not_deleted_via_api(tmp_path, monkeypatch):
     ]
     settings_file.write_text(json.dumps({"prompts": seed_data, "active_prompt_id": "generic"}))
 
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: settings_file)
-    from agent.main import app  # noqa: PLC0415
-    from agent.settings import load_settings_json  # noqa: PLC0415
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: settings_file)
+    from local_browser_agent.app.main import app  # noqa: PLC0415
+    from local_browser_agent.app.settings import load_settings_json  # noqa: PLC0415
 
     # Payload omits the 'job' entry
     without_job = [
@@ -243,10 +243,10 @@ async def test_active_prompt_id_saved_and_live_patched(tmp_path, monkeypatch):
     ]
     settings_file.write_text(json.dumps({"prompts": seed_data, "active_prompt_id": "generic"}))
 
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: settings_file)
-    from agent.main import app  # noqa: PLC0415
-    from agent.settings import load_settings_json  # noqa: PLC0415
-    import agent.config as cfg_mod  # noqa: PLC0415
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: settings_file)
+    from local_browser_agent.app.main import app  # noqa: PLC0415
+    from local_browser_agent.app.settings import load_settings_json  # noqa: PLC0415
+    import local_browser_agent.app.config as cfg_mod  # noqa: PLC0415
 
     original_active = getattr(cfg_mod.config, "active_prompt_id", None)
     try:
@@ -281,7 +281,7 @@ async def test_active_prompt_id_saved_and_live_patched(tmp_path, monkeypatch):
 def test_guardrail_always_appended():
     """PROMPT-07: _build_extend_system_message() appends GUARDRAIL_PROMPT as suffix."""
     # Import inside body — symbol does not exist until Wave 1
-    from agent.runner import _build_extend_system_message, GUARDRAIL_PROMPT  # noqa: PLC0415
+    from local_browser_agent.app.runner import _build_extend_system_message, GUARDRAIL_PROMPT  # noqa: PLC0415
 
     prompts = [{"id": "generic", "name": "Generic", "content": "USER-CONTENT", "is_seed": True}]
     msg = _build_extend_system_message("generic", prompts)
@@ -297,7 +297,7 @@ def test_guardrail_always_appended():
 
 def test_guardrail_fallback_when_no_active_prompt():
     """PROMPT-07: _build_extend_system_message() falls back to GUARDRAIL_PROMPT when no match."""
-    from agent.runner import _build_extend_system_message, GUARDRAIL_PROMPT  # noqa: PLC0415
+    from local_browser_agent.app.runner import _build_extend_system_message, GUARDRAIL_PROMPT  # noqa: PLC0415
 
     # Empty active_prompt_id
     assert _build_extend_system_message("", []) == GUARDRAIL_PROMPT, (
@@ -330,9 +330,9 @@ async def test_guardrail_not_in_api_response(tmp_path, monkeypatch):
     ]
     settings_file.write_text(json.dumps({"prompts": seed_data, "active_prompt_id": "generic"}))
 
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: settings_file)
-    from agent.main import app  # noqa: PLC0415
-    from agent.runner import GUARDRAIL_PROMPT  # noqa: PLC0415
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: settings_file)
+    from local_browser_agent.app.main import app  # noqa: PLC0415
+    from local_browser_agent.app.runner import GUARDRAIL_PROMPT  # noqa: PLC0415
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get("/api/settings")
@@ -353,7 +353,7 @@ async def test_guardrail_not_in_api_response(tmp_path, monkeypatch):
 
 def test_active_prompt_label_in_html():
     """PROMPT-01/05: index.html contains active-prompt-label span with activePromptName."""
-    html = Path("agent/templates/index.html").read_text(encoding="utf-8")
+    html = Path("local_browser_agent/app/templates/index.html").read_text(encoding="utf-8")
     assert "active-prompt-label" in html, (
         "index.html must contain 'active-prompt-label' CSS class"
     )
@@ -372,7 +372,7 @@ def test_active_prompt_label_in_html():
 
 def test_prompt_section_in_settings_overlay():
     """PROMPT-01/06: index.html settings overlay contains System Prompts section."""
-    html = Path("agent/templates/index.html").read_text(encoding="utf-8")
+    html = Path("local_browser_agent/app/templates/index.html").read_text(encoding="utf-8")
     assert "System Prompts" in html, (
         "index.html must contain 'System Prompts' heading in settings overlay"
     )

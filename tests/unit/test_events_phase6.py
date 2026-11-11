@@ -1,7 +1,7 @@
 """Phase 6 RED gate test suite: ThoughtEvent and ActionDetailEvent contract.
 
-All tests in this file are RED (failing) until Plan 02 wires agent/events.py
-and agent/runner.py. Tests cover every row in 06-RESEARCH.md Phase
+All tests in this file are RED (failing) until Plan 02 wires local_browser_agent/app/events.py
+and local_browser_agent/app/runner.py. Tests cover every row in 06-RESEARCH.md Phase
 Requirements -> Test Map.
 
 Requirements covered: TRANS-01, TRANS-02, TRANS-03
@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.events import ThoughtEvent, ActionDetailEvent, StateEvent
+from local_browser_agent.app.events import ThoughtEvent, ActionDetailEvent, StateEvent
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +255,7 @@ async def test_run_agent_passes_register_new_step_callback_kwarg(training_dir, m
     TRANS-02: _pre_step closure must be wired via register_new_step_callback so
     ThoughtEvent fires before each action.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     captured_kwargs: dict = {}
 
@@ -271,10 +271,10 @@ async def test_run_agent_passes_register_new_step_callback_kwarg(training_dir, m
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", CapturingAgentClass):
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", CapturingAgentClass):
         await run_agent("test task")
 
     assert "register_new_step_callback" in captured_kwargs, (
@@ -293,7 +293,7 @@ async def test_pre_step_emits_thought_event(training_dir, monkeypatch_env):
     TRANS-01: evaluation_previous_goal carried to user.
     TRANS-02: ThoughtEvent fires before action (via register_new_step_callback).
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -311,10 +311,10 @@ async def test_pre_step_emits_thought_event(training_dir, monkeypatch_env):
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", _Fake):
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", _Fake):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -344,7 +344,7 @@ async def test_thought_event_null_when_model_omits_thinking(training_dir, monkey
 
     TRANS-01: null fields still present as null in event payload.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -362,10 +362,10 @@ async def test_thought_event_null_when_model_omits_thinking(training_dir, monkey
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", _Fake):
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", _Fake):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -394,7 +394,7 @@ async def test_thought_event_step_matches_callback_step_num(training_dir, monkey
 
     TRANS-02: step counter flows from callback parameter, not post-action history.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -405,10 +405,10 @@ async def test_thought_event_step_matches_callback_step_num(training_dir, monkey
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", _Fake):
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", _Fake):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -430,7 +430,7 @@ async def test_thought_event_fires_before_action_detail(training_dir, monkeypatc
     This test pins the ordering invariant that register_new_step_callback fires
     before on_step_end in the browser-use step lifecycle.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -441,10 +441,10 @@ async def test_thought_event_fires_before_action_detail(training_dir, monkeypatc
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", _Fake):
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", _Fake):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -479,7 +479,7 @@ async def test_log_step_emits_action_detail_event(training_dir, monkeypatch_env)
     D-05: ActionDetailEvent replaces NarrationEvent in _log_step.
     D-07: action_type, target, value, url, success fields extracted from model_actions().
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_history(
@@ -499,10 +499,10 @@ async def test_log_step_emits_action_detail_event(training_dir, monkeypatch_env)
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", FakeAgentClass):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -534,7 +534,7 @@ async def test_action_type_excludes_interacted_element(training_dir, monkeypatch
     TRANS-03: correct action type extraction.
     D-06: outer key of model_actions()[-1] dict = action type name.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_history(
@@ -554,10 +554,10 @@ async def test_action_type_excludes_interacted_element(training_dir, monkeypatch
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", FakeAgentClass):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -579,7 +579,7 @@ async def test_action_detail_navigate_url(training_dir, monkeypatch_env):
     D-06: url param from inner action params dict.
     D-07: ActionDetailEvent.url field carries the navigation target.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_history(
@@ -599,10 +599,10 @@ async def test_action_detail_navigate_url(training_dir, monkeypatch_env):
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", FakeAgentClass):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -627,7 +627,7 @@ async def test_action_detail_input_text_value(training_dir, monkeypatch_env):
     D-06: index param -> target (str), text param -> value.
     D-07: ActionDetailEvent.value carries user-typed text.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_history(
@@ -647,10 +647,10 @@ async def test_action_detail_input_text_value(training_dir, monkeypatch_env):
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", FakeAgentClass):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -680,7 +680,7 @@ async def test_action_detail_success_is_none_midrun(training_dir, monkeypatch_en
     TRANS-03: success field emits null for non-final steps.
     D-07: success: Optional[bool] = None for mid-run steps.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent = _make_fake_agent_history()  # default click_element action
@@ -698,10 +698,10 @@ async def test_action_detail_success_is_none_midrun(training_dir, monkeypatch_en
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", FakeAgentClass):
         await run_agent("test task", queue=queue)
 
     events = []
@@ -725,7 +725,7 @@ async def test_thought_and_action_share_step_when_both_fire(training_dir, monkey
     TRANS-02: thought and action events correspond to the same browser step.
     TRANS-03: ActionDetailEvent.step matches ThoughtEvent.step for the same action.
     """
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -736,10 +736,10 @@ async def test_thought_and_action_share_step_when_both_fire(training_dir, monkey
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", _Fake):
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", _Fake):
         await run_agent("test task", queue=queue)
 
     events = []

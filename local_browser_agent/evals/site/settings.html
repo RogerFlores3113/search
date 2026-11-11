@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Settings</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><header class="top"><span class="brand">Brightside</span><a href="/">Home</a><a href="/shop.html">Shop</a><a href="/catalog.html">Catalog</a><a href="/docs/">Docs</a><a href="/search.html">Search</a><a href="/contact.html">Contact</a><a href="/settings.html">Settings</a></header>
+<main>
+<h1>Settings</h1>
+<form id="settings-form">
+<fieldset><legend>Notifications</legend>
+<label><input type="checkbox" id="email_notifications" checked> Email notifications</label>
+<label><input type="checkbox" id="dark_mode"> Dark mode</label>
+<label><input type="checkbox" id="show_tips" checked> Show tips</label>
+</fieldset>
+<fieldset><legend>Language</legend>
+<label><input type="radio" name="language" value="en" checked> English</label>
+<label><input type="radio" name="language" value="de"> Deutsch</label>
+<label><input type="radio" name="language" value="fr"> Francais</label>
+</fieldset>
+<fieldset><legend>Digest frequency</legend>
+<label><input type="radio" name="digest" value="daily" checked> Daily</label>
+<label><input type="radio" name="digest" value="weekly"> Weekly</label>
+<label><input type="radio" name="digest" value="never"> Never</label>
+</fieldset>
+<p><button type="submit">Save settings</button></p>
+</form>
+<p id="saved" class="status hidden">Settings saved.</p>
+</main>
+<script src="/static/app.js"></script>
+<script>
+document.getElementById('settings-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const body = {
+    email_notifications: document.getElementById('email_notifications').checked,
+    dark_mode: document.getElementById('dark_mode').checked,
+    show_tips: document.getElementById('show_tips').checked,
+    language: document.querySelector('input[name=language]:checked').value,
+    digest: document.querySelector('input[name=digest]:checked').value,
+  };
+  const r = await postJSON('/api/settings', body);
+  if (r.ok) document.getElementById('saved').classList.remove('hidden');
+});</script>
+</body></html>

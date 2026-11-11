@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.events import ActionDetailEvent
-from agent.runner import run_agent
+from local_browser_agent.app.events import ActionDetailEvent
+from local_browser_agent.app.runner import run_agent
 
 
 # ---------------------------------------------------------------------------
@@ -87,10 +87,10 @@ async def test_log_step_puts_duration_on_action_detail_event(training_dir, monke
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
 
-    with patch("agent.runner.pre_flight_check", AsyncMock()), \
-         patch("agent.runner.BrowserSession", return_value=mock_browser), \
-         patch("agent.runner.ChatOllama", MagicMock()), \
-         patch("agent.runner.Agent", FakeAgentClass):
+    with patch("local_browser_agent.app.runner.pre_flight_check", AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserSession", return_value=mock_browser), \
+         patch("browser_use.ChatOllama", MagicMock()), \
+         patch("local_browser_agent.runner.Agent", FakeAgentClass):
         await run_agent("test task", queue=queue)
 
     events = []

@@ -51,7 +51,7 @@ from httpx import AsyncClient, ASGITransport
 
 def test_config_field_assignment_works(monkeypatch_env):
     """Verify config.provider = value works (direct field assignment, not frozen)."""
-    from agent.config import config
+    from local_browser_agent.app.config import config
     original = config.provider
     try:
         config.provider = "anthropic"
@@ -62,7 +62,7 @@ def test_config_field_assignment_works(monkeypatch_env):
 
 def test_settings_path_uses_user_config_dir():
     """get_settings_path() must return a path ending in .../local-browser-agent/settings.json."""
-    from agent.paths import get_settings_path
+    from local_browser_agent.app.paths import get_settings_path
     p = get_settings_path()
     assert p.name == "settings.json", f"Expected settings.json, got {p.name}"
     assert "local-browser-agent" in str(p), f"Expected local-browser-agent in path, got {p}"
@@ -75,7 +75,7 @@ def test_settings_path_uses_user_config_dir():
 
 def test_fernet_key_stable():
     """_derive_fernet_key() must return the same key on successive calls (machine-stable)."""
-    from agent.settings import _derive_fernet_key, encrypt_api_key, decrypt_api_key
+    from local_browser_agent.app.settings import _derive_fernet_key, encrypt_api_key, decrypt_api_key
     # Encrypt with one derived key, decrypt with another — they must share the same key
     token = _derive_fernet_key().encrypt(b"test-value")
     result = _derive_fernet_key().decrypt(token)
@@ -84,23 +84,23 @@ def test_fernet_key_stable():
 
 def test_encrypt_decrypt_roundtrip():
     """encrypt_api_key / decrypt_api_key round-trip must recover the original string."""
-    from agent.settings import encrypt_api_key, decrypt_api_key
+    from local_browser_agent.app.settings import encrypt_api_key, decrypt_api_key
     assert decrypt_api_key(encrypt_api_key("sk-test-123")) == "sk-test-123"
     assert decrypt_api_key(encrypt_api_key("")) == ""
 
 
 def test_load_settings_json_missing_returns_empty(tmp_path, monkeypatch):
     """load_settings_json() must return {} silently when settings.json does not exist."""
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.settings import load_settings_json
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.settings import load_settings_json
     result = load_settings_json()
     assert result == {}, f"Expected empty dict, got {result!r}"
 
 
 def test_save_settings_json_atomic(tmp_path, monkeypatch):
     """save_settings_json writes data atomically and leaves no .tmp file behind."""
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.settings import save_settings_json, load_settings_json
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.settings import save_settings_json, load_settings_json
     save_settings_json({"a": 1, "b": "hello"})
     loaded = load_settings_json()
     assert loaded == {"a": 1, "b": "hello"}, f"Loaded data mismatch: {loaded!r}"
@@ -129,7 +129,7 @@ def test_cve_2025_47241_urlparse_used():
 
 def test_safety_defaults_banking(monkeypatch_env):
     """SAFE-01: SAFETY_DEFAULTS frozenset must contain banking and payment domains."""
-    from agent.config import SAFETY_DEFAULTS
+    from local_browser_agent.app.config import SAFETY_DEFAULTS
     assert isinstance(SAFETY_DEFAULTS, frozenset), "SAFETY_DEFAULTS must be a frozenset"
     assert {"chase.com", "wellsfargo.com", "paypal.com", "venmo.com"}.issubset(SAFETY_DEFAULTS), (
         f"Banking/payment domains missing from SAFETY_DEFAULTS: {SAFETY_DEFAULTS}"
@@ -138,7 +138,7 @@ def test_safety_defaults_banking(monkeypatch_env):
 
 def test_safety_defaults_gov_medical(monkeypatch_env):
     """SAFE-01: SAFETY_DEFAULTS frozenset must contain government, medical, and credential domains."""
-    from agent.config import SAFETY_DEFAULTS
+    from local_browser_agent.app.config import SAFETY_DEFAULTS
     assert {
         "irs.gov", "ssa.gov", "healthcare.gov",
         "labcorp.com", "mychart.com",
@@ -150,7 +150,7 @@ def test_safety_defaults_gov_medical(monkeypatch_env):
 
 def test_blocked_domains_property_includes_user_domains(monkeypatch_env):
     """SAFE-01: blocked_domains property merges SAFETY_DEFAULTS with user_domains."""
-    from agent.config import Settings
+    from local_browser_agent.app.config import Settings
     s = Settings(user_domains=["myexample.com"])
     assert "myexample.com" in s.blocked_domains, "User domain must appear in blocked_domains"
     assert "chase.com" in s.blocked_domains, "Safety default must still appear in blocked_domains"
@@ -163,12 +163,12 @@ def test_settings_json_overrides_env(tmp_path, monkeypatch):
     settings_file.write_text(json.dumps({"provider": "anthropic", "user_domains": ["foo.com"]}))
 
     # Patch both locations so the classmethod sees the temp file.
-    monkeypatch.setattr("agent.paths.get_settings_path", lambda: settings_file)
-    monkeypatch.setattr("agent.config.get_settings_path", lambda: settings_file, raising=False)
+    monkeypatch.setattr("local_browser_agent.app.paths.get_settings_path", lambda: settings_file)
+    monkeypatch.setattr("local_browser_agent.app.config.get_settings_path", lambda: settings_file, raising=False)
 
     # Re-import Settings fresh (do NOT use the module-level config singleton).
     import importlib
-    import agent.config as cfg_module
+    import local_browser_agent.app.config as cfg_module
     importlib.reload(cfg_module)
     s = cfg_module.Settings()
     assert s.provider == "anthropic", f"Expected anthropic from JSON, got {s.provider!r}"
@@ -180,7 +180,7 @@ def test_settings_json_overrides_env(tmp_path, monkeypatch):
 def test_cve_2025_47241_credential_url_blocked(monkeypatch_env):
     """SAFE-04: credential-embedded URL (user:pass@chase.com) must be blocked via SAFETY_DEFAULTS."""
     from urllib.parse import urlparse
-    from agent.config import SAFETY_DEFAULTS
+    from local_browser_agent.app.config import SAFETY_DEFAULTS
 
     # Simulate what browser-use's _is_url_allowed does: urlparse strips credentials.
     url = "https://creds@chase.com/login"
@@ -197,7 +197,7 @@ def test_cve_2025_47241_credential_url_blocked(monkeypatch_env):
 
 async def test_ollama_models_endpoint(monkeypatch_env, mock_ollama_tags_ok):
     """SET-02: GET /api/settings/ollama-models returns list of model names."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get("/api/settings/ollama-models")
     assert r.status_code == 200
@@ -208,7 +208,7 @@ async def test_ollama_models_endpoint(monkeypatch_env, mock_ollama_tags_ok):
 
 async def test_ollama_models_unreachable(monkeypatch_env, mock_ollama_unreachable):
     """SET-02: GET /api/settings/ollama-models returns error key when Ollama is down."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get("/api/settings/ollama-models")
     assert r.status_code == 200
@@ -217,8 +217,8 @@ async def test_ollama_models_unreachable(monkeypatch_env, mock_ollama_unreachabl
 
 async def test_get_settings_sanitized_shape(tmp_path, monkeypatch, monkeypatch_env):
     """T-11-11: GET /api/settings response never leaks plaintext keys or encrypted blobs."""
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.main import app
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.main import app
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get("/api/settings")
     assert r.status_code == 200
@@ -241,9 +241,9 @@ async def test_get_settings_sanitized_shape(tmp_path, monkeypatch, monkeypatch_e
 async def test_save_api_key_encrypted(tmp_path, monkeypatch, monkeypatch_env):
     """SET-03: POST /api/settings encrypts API key — plaintext must not appear in settings.json."""
     import json as _json
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.main import app
-    from agent.settings import decrypt_api_key
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.main import app
+    from local_browser_agent.app.settings import decrypt_api_key
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post("/api/settings", data={
@@ -267,8 +267,8 @@ async def test_save_api_key_encrypted(tmp_path, monkeypatch, monkeypatch_env):
 
 async def test_get_settings_no_plaintext_key(tmp_path, monkeypatch, monkeypatch_env):
     """SET-03: GET /api/settings returns anthropic_key_set bool, not plaintext or encrypted blob."""
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.main import app
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # POST a key first
@@ -292,9 +292,9 @@ async def test_get_settings_no_plaintext_key(tmp_path, monkeypatch, monkeypatch_
 
 async def test_save_updates_live_config(tmp_path, monkeypatch, monkeypatch_env):
     """SET-04: POST /api/settings patches config.provider live in-process."""
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.main import app
-    import agent.config as cfg_mod
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.main import app
+    import local_browser_agent.app.config as cfg_mod
 
     original_provider = cfg_mod.config.provider
     try:
@@ -314,9 +314,9 @@ async def test_save_updates_live_config(tmp_path, monkeypatch, monkeypatch_env):
 async def test_save_user_domains(tmp_path, monkeypatch, monkeypatch_env):
     """SAFE-02: POST /api/settings persists user_domains list, filters SAFETY_DEFAULTS."""
     import json as _json
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.main import app
-    import agent.config as cfg_mod
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.main import app
+    import local_browser_agent.app.config as cfg_mod
 
     original_domains = list(cfg_mod.config.user_domains)
     try:
@@ -339,9 +339,9 @@ async def test_save_user_domains(tmp_path, monkeypatch, monkeypatch_env):
 async def test_save_key_action_keep_preserves(tmp_path, monkeypatch, monkeypatch_env):
     """Pitfall 4 regression gate: key_action=keep must not overwrite existing encrypted key."""
     import json as _json
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.main import app
-    from agent.settings import decrypt_api_key
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.main import app
+    from local_browser_agent.app.settings import decrypt_api_key
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # First: set a real key
@@ -371,9 +371,9 @@ async def test_save_key_action_keep_preserves(tmp_path, monkeypatch, monkeypatch
 async def test_save_key_action_clear_removes(tmp_path, monkeypatch, monkeypatch_env):
     """key_action=clear must remove the encrypted key from settings.json and config."""
     import json as _json
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.main import app
-    import agent.config as cfg_mod
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.main import app
+    import local_browser_agent.app.config as cfg_mod
 
     original_key = cfg_mod.config.anthropic_api_key
     try:
@@ -408,7 +408,7 @@ async def test_save_key_action_clear_removes(tmp_path, monkeypatch, monkeypatch_
 
 def test_gear_button_present():
     """SET-01: index.html must contain gear button and showSettings Alpine prop."""
-    html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
+    html = (Path(__file__).parent.parent.parent / "local_browser_agent" / "app" / "templates" / "index.html").read_text(encoding="utf-8")
     assert 'aria-label="Open settings"' in html, "Gear button aria-label missing"
     assert 'showSettings = true' in html, "showSettings = true click handler missing"
     assert '⚙' in html or '&#x2699;' in html, "Gear icon (⚙) missing"
@@ -417,7 +417,7 @@ def test_gear_button_present():
 
 def test_settings_overlay_aria():
     """SET-01: settings overlay must have role=dialog and aria-modal=true."""
-    html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
+    html = (Path(__file__).parent.parent.parent / "local_browser_agent" / "app" / "templates" / "index.html").read_text(encoding="utf-8")
     assert 'role="dialog"' in html, "role=dialog missing"
     assert 'aria-modal="true"' in html, "aria-modal=true missing"
     assert 'aria-labelledby="settings-title"' in html, "aria-labelledby=settings-title missing"
@@ -428,7 +428,7 @@ def test_settings_overlay_aria():
 
 def test_domain_list_two_tier_html():
     """SAFE-03: domain list must show user domains with remove (✕) and defaults with lock (🔒)."""
-    html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
+    html = (Path(__file__).parent.parent.parent / "local_browser_agent" / "app" / "templates" / "index.html").read_text(encoding="utf-8")
     assert 'domain-row--locked' in html, "Locked domain row class missing"
     assert 'domain-row--user' in html, "User domain row class missing"
     assert 'safetyDefaults' in html, "safetyDefaults prop reference missing"
@@ -441,7 +441,7 @@ def test_domain_list_two_tier_html():
 
 def test_no_innerhtml_phase11():
     """Defense-in-depth: no innerHTML assignment in index.html (Phase 10 XSS guard re-assertion)."""
-    html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
+    html = (Path(__file__).parent.parent.parent / "local_browser_agent" / "app" / "templates" / "index.html").read_text(encoding="utf-8")
     assert 'innerHTML =' not in html, "innerHTML assignment found in index.html (XSS risk)"
 
 
@@ -451,7 +451,7 @@ def test_no_innerhtml_phase11():
 
 def test_settings_overlay_inside_agentui_scope():
     """CR-01: settings-overlay div must be a descendant of the agentUI() Alpine scope (#sse-container)."""
-    html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
+    html = (Path(__file__).parent.parent.parent / "local_browser_agent" / "app" / "templates" / "index.html").read_text(encoding="utf-8")
     # Find the position of the agentUI() x-data attribute (opening of #sse-container)
     agentui_pos = html.index('x-data="agentUI()"')
     # Find the closing marker of #sse-container
@@ -470,7 +470,7 @@ def test_settings_overlay_inside_agentui_scope():
 
 def test_settings_overlay_not_in_outer_disclaimer_scope():
     """CR-01: settings-overlay must NOT appear before the agentUI() scope (i.e., not in the outer disclaimer scope)."""
-    html = (Path(__file__).parent.parent.parent / "agent" / "templates" / "index.html").read_text(encoding="utf-8")
+    html = (Path(__file__).parent.parent.parent / "local_browser_agent" / "app" / "templates" / "index.html").read_text(encoding="utf-8")
     agentui_pos = html.index('x-data="agentUI()"')
     overlay_pos = html.index('class="settings-overlay"')
     assert overlay_pos > agentui_pos, (
@@ -486,8 +486,8 @@ def test_settings_overlay_not_in_outer_disclaimer_scope():
 async def test_post_settings_rejects_invalid_provider(tmp_path, monkeypatch, monkeypatch_env):
     """CR-02: POST /api/settings must reject unknown provider with HTTP 422 and not modify settings.json."""
     import json as _json
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.main import app
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.main import app
 
     # Write a known-good settings.json so we can verify it is unchanged after rejection
     initial_data = {"provider": "ollama"}
@@ -510,9 +510,9 @@ async def test_post_settings_rejects_invalid_provider(tmp_path, monkeypatch, mon
 
 async def test_post_settings_accepts_each_valid_provider(tmp_path, monkeypatch, monkeypatch_env):
     """CR-02: POST /api/settings must accept each provider in {ollama, anthropic, openai}."""
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.main import app
-    import agent.config as cfg_mod
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.main import app
+    import local_browser_agent.app.config as cfg_mod
 
     original = cfg_mod.config.provider
     try:
@@ -535,9 +535,9 @@ async def test_post_settings_accepts_each_valid_provider(tmp_path, monkeypatch, 
 async def test_post_settings_persists_anthropic_model(tmp_path, monkeypatch, monkeypatch_env):
     """CR-03: POST /api/settings must persist anthropic_model to settings.json AND live-patch config."""
     import json as _json
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.main import app
-    import agent.config as cfg_mod
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.main import app
+    import local_browser_agent.app.config as cfg_mod
 
     original = cfg_mod.config.anthropic_model
     try:
@@ -564,9 +564,9 @@ async def test_post_settings_persists_anthropic_model(tmp_path, monkeypatch, mon
 async def test_post_settings_persists_openai_model(tmp_path, monkeypatch, monkeypatch_env):
     """CR-03: POST /api/settings must persist openai_model to settings.json AND live-patch config."""
     import json as _json
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.main import app
-    import agent.config as cfg_mod
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.main import app
+    import local_browser_agent.app.config as cfg_mod
 
     original = cfg_mod.config.openai_model
     try:
@@ -593,9 +593,9 @@ async def test_post_settings_persists_openai_model(tmp_path, monkeypatch, monkey
 async def test_post_settings_blank_model_preserves_existing(tmp_path, monkeypatch, monkeypatch_env):
     """CR-03: Submitting blank anthropic_model must preserve the existing stored value (fallback pattern)."""
     import json as _json
-    monkeypatch.setattr("agent.settings.get_settings_path", lambda: tmp_path / "settings.json")
-    from agent.main import app
-    import agent.config as cfg_mod
+    monkeypatch.setattr("local_browser_agent.app.settings.get_settings_path", lambda: tmp_path / "settings.json")
+    from local_browser_agent.app.main import app
+    import local_browser_agent.app.config as cfg_mod
 
     original = cfg_mod.config.anthropic_model
     try:

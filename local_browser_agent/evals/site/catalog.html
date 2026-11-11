@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Outdoor catalog</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><header class="top"><span class="brand">Brightside</span><a href="/">Home</a><a href="/shop.html">Shop</a><a href="/catalog.html">Catalog</a><a href="/docs/">Docs</a><a href="/search.html">Search</a><a href="/contact.html">Contact</a><a href="/settings.html">Settings</a></header>
+<main>
+<h1>Outdoor catalog</h1>
+<p id="indicator" class="muted">Loading...</p>
+<table><thead><tr><th>Item</th><th>Price</th></tr></thead><tbody id="items"></tbody></table>
+<p><button id="prev" class="secondary">Previous page</button> <button id="next">Next page</button></p>
+</main>
+<script src="/static/app.js"></script>
+<script>
+let page = 1, pages = 1;
+async function load() {
+  const d = await getJSON('/api/catalog?page=' + page);
+  page = d.page; pages = d.pages;
+  document.getElementById('indicator').textContent = 'Page ' + d.page + ' of ' + d.pages;
+  const tb = document.getElementById('items'); tb.innerHTML = '';
+  d.items.forEach((i) => {
+    const tr = document.createElement('tr');
+    const a = document.createElement('td'); a.textContent = i.name;
+    const b = document.createElement('td'); b.textContent = i.price;
+    tr.appendChild(a); tr.appendChild(b); tb.appendChild(tr);
+  });
+  document.getElementById('prev').disabled = page <= 1;
+  document.getElementById('next').disabled = page >= pages;
+}
+document.getElementById('prev').onclick = () => { page -= 1; load(); };
+document.getElementById('next').onclick = () => { page += 1; load(); };
+load();</script>
+</body></html>

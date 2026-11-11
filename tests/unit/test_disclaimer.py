@@ -15,7 +15,7 @@ from starlette.testclient import TestClient
 
 def test_index_has_disclaimer_modal():
     """GET / renders the modal markup with the new server-driven gate."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     app.state.chrome_missing = False
     client = TestClient(app, raise_server_exceptions=True)
@@ -38,7 +38,7 @@ def test_index_has_disclaimer_modal():
 
 def test_index_disclaimer_explains_scope():
     """Modal copy still names the refusal envelope + the pause/stop reassurance."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     app.state.chrome_missing = False
     client = TestClient(app, raise_server_exceptions=True)
@@ -53,7 +53,7 @@ def test_index_renders_accepted_state_when_cookie_present():
     """GET / with a valid disclaimer cookie renders disclaimerAccepted: true
     so the modal does not flash before Alpine reads localStorage / state.
     """
-    from agent.main import (
+    from local_browser_agent.app.main import (
         DISCLAIMER_COOKIE_NAME,
         _disclaimer_serializer,
         app,
@@ -71,7 +71,7 @@ def test_index_renders_accepted_state_when_cookie_present():
 
 async def test_run_without_disclaimer_returns_403():
     """POST /run with no cookie must return 403 disclaimer_required."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/run", data={"task": "do something"})
@@ -82,7 +82,7 @@ async def test_run_without_disclaimer_returns_403():
 
 async def test_pause_without_disclaimer_returns_403():
     """POST /pause with no cookie must return 403 (NOT 400 no_active_run)."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/pause")
@@ -93,7 +93,7 @@ async def test_pause_without_disclaimer_returns_403():
 
 async def test_stop_without_disclaimer_returns_403():
     """POST /stop with no cookie must return 403."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/stop")
@@ -104,7 +104,7 @@ async def test_stop_without_disclaimer_returns_403():
 
 async def test_accept_disclaimer_sets_signed_cookie():
     """POST /accept-disclaimer issues a signed, httponly, SameSite=strict cookie."""
-    from agent.main import DISCLAIMER_COOKIE_NAME, app
+    from local_browser_agent.app.main import DISCLAIMER_COOKIE_NAME, app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/accept-disclaimer")
@@ -122,7 +122,7 @@ async def test_accepted_cookie_unlocks_run_endpoint(monkeypatch):
     run_agent so we don't actually spawn an agent task; we only assert the
     gate stopped firing.
     """
-    import agent.main as main_mod
+    import local_browser_agent.app.main as main_mod
     from unittest.mock import AsyncMock
     monkeypatch.setattr(main_mod, "run_agent", AsyncMock())
     # Ensure no leftover task from a prior test holds the busy slot.
@@ -144,7 +144,7 @@ async def test_tampered_cookie_rejected():
     a casual unsigned `lba_disclaimer=1` set by another local site does
     NOT pass the gate.
     """
-    from agent.main import DISCLAIMER_COOKIE_NAME, app
+    from local_browser_agent.app.main import DISCLAIMER_COOKIE_NAME, app
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

@@ -7,7 +7,7 @@ from starlette.testclient import TestClient
 
 def test_root_returns_no_chrome_when_flag_set():
     """When app.state.chrome_missing=True, GET / returns the Chrome-required page."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     app.state.chrome_missing = True
     try:
@@ -23,7 +23,7 @@ def test_root_returns_no_chrome_when_flag_set():
 
 def test_root_returns_index_when_chrome_present():
     """When chrome_missing is absent/False, GET / returns the normal index.html."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     app.state.chrome_missing = False
     client = TestClient(app, raise_server_exceptions=True)

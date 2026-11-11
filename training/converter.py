@@ -183,7 +183,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         description="Convert runs.jsonl traces into LoRA-ready conversation JSONL.",
     )
     parser.add_argument("--input", required=True, type=Path,
-                        help="Path to runs.jsonl produced by agent/runner.py")
+                        help="Path to runs.jsonl produced by local_browser_agent/app/training_sink.py")
     parser.add_argument("--output", required=True, type=Path,
                         help="Path to write the conversation JSONL")
     parser.add_argument("--format", choices=["unsloth", "mlx_vlm"], default="unsloth",

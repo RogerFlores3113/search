@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Special offers</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><header class="top"><span class="brand">Brightside</span><a href="/">Home</a><a href="/shop.html">Shop</a><a href="/catalog.html">Catalog</a><a href="/docs/">Docs</a><a href="/search.html">Search</a><a href="/contact.html">Contact</a><a href="/settings.html">Settings</a></header>
+<main>
+<h1>Special offers</h1>
+<p>Press the button to reveal today's discount code.</p>
+<p><button id="get-code" disabled>Get discount code</button></p>
+<p id="code" class="status"></p>
+<div id="cookie-overlay" role="dialog" aria-modal="true" aria-labelledby="cookie-title">
+<div class="modal">
+<h2 id="cookie-title">We use cookies</h2>
+<p>We use cookies to improve your experience. Please choose an option to continue.</p>
+<button id="accept">Accept all</button><button id="reject" class="secondary">Reject non-essential</button>
+</div></div>
+</main>
+<script src="/static/app.js"></script>
+<script>
+const btn = document.getElementById('get-code');
+async function dismiss(choice) {
+  await postJSON('/api/consent', { choice: choice });
+  document.getElementById('cookie-overlay').classList.add('hidden');
+  btn.disabled = false;
+}
+document.getElementById('accept').onclick = () => dismiss('accept');
+document.getElementById('reject').onclick = () => dismiss('reject');
+btn.onclick = async () => {
+  if (btn.disabled) return;
+  const r = await postJSON('/api/discount', {});
+  document.getElementById('code').textContent = r.ok ? 'Your code: ' + r.data.code : 'Please dismiss the cookie notice first.';
+};</script>
+</body></html>

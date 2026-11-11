@@ -3,7 +3,7 @@
 These tests boot the real FastAPI app in-process via TestClient (which fires the
 FastAPI lifespan in an anyio portal) and use unittest.mock to patch out
 browser_use.Agent, browser_use.ChatOllama, and BrowserSession at their import
-sites inside agent.runner — so no live Chrome or Ollama is needed.
+sites inside local_browser_agent.app.runner — so no live Chrome or Ollama is needed.
 
 What is proven here:
   - The asyncio plumbing: lifespan startup → create_task → on_step_end callback
@@ -107,18 +107,18 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
     """
     from starlette.testclient import TestClient
 
-    from agent.config import config
-    from agent.main import app
+    from local_browser_agent.app.config import config
+    from local_browser_agent.app.main import app
 
     # Redirect file writes so runs.jsonl lands in tmp_path instead of cwd.
     monkeypatch.chdir(tmp_path)
 
     # TRAINING_FILE is a module-level constant computed at import time via get_user_data_dir().
     # Monkeypatch it to point into tmp_path so JSONL writes land in the test directory.
-    import agent.runner as runner_mod
+    import local_browser_agent.app.training_sink as training_sink_mod
     training_file = tmp_path / "training" / "runs.jsonl"
     training_file.parent.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(runner_mod, "TRAINING_FILE", training_file)
+    monkeypatch.setattr(training_sink_mod, "TRAINING_FILE", training_file)
 
     history = _make_fake_history(num_steps=2)
     fake_agent = _make_fake_agent(history)
@@ -142,11 +142,11 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
     async def _sync_to_thread(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    with patch("agent.runner.pre_flight_check", new=AsyncMock()), \
-         patch("agent.runner.BrowserProfile", MockBrowserProfile), \
-         patch("agent.runner.BrowserSession", MockBrowserSession), \
-         patch("agent.runner.ChatOllama", MockChatOllama), \
-         patch("agent.runner.Agent", MockAgent), \
+    with patch("local_browser_agent.app.runner.pre_flight_check", new=AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserProfile", MockBrowserProfile), \
+         patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
+         patch("browser_use.ChatOllama", MockChatOllama), \
+         patch("local_browser_agent.runner.Agent", MockAgent), \
          patch("asyncio.to_thread", side_effect=_sync_to_thread):
 
         with TestClient(app) as client:
@@ -179,6 +179,7 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
     # ChatOllama was constructed with ollama_options={"num_ctx": 32000} and the configured model
     MockChatOllama.assert_called_once_with(
         model=config.ollama_model,
+            host=config.ollama_host,
         ollama_options={"num_ctx": 32000},
     )
 
@@ -225,7 +226,7 @@ def test_post_run_endpoint_starts_agent(monkeypatch, tmp_path):
     """
     from starlette.testclient import TestClient
 
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     monkeypatch.chdir(tmp_path)
 
@@ -242,15 +243,15 @@ def test_post_run_endpoint_starts_agent(monkeypatch, tmp_path):
 
     MockBrowserProfile = MagicMock(return_value=MagicMock())
 
-    with patch("agent.runner.pre_flight_check", new=AsyncMock()), \
-         patch("agent.runner.BrowserProfile", MockBrowserProfile), \
-         patch("agent.runner.BrowserSession", MockBrowserSession), \
-         patch("agent.runner.ChatOllama", MockChatOllama), \
-         patch("agent.runner.Agent", MockAgent):
+    with patch("local_browser_agent.app.runner.pre_flight_check", new=AsyncMock()), \
+         patch("local_browser_agent.browser.BrowserProfile", MockBrowserProfile), \
+         patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
+         patch("browser_use.ChatOllama", MockChatOllama), \
+         patch("local_browser_agent.runner.Agent", MockAgent):
 
         with TestClient(app) as client:
             # Acquire the disclaimer cookie before posting /run (Issue #5 gate).
-            from agent.main import DISCLAIMER_COOKIE_NAME, _disclaimer_serializer
+            from local_browser_agent.app.main import DISCLAIMER_COOKIE_NAME, _disclaimer_serializer
             client.cookies.set(
                 DISCLAIMER_COOKIE_NAME, _disclaimer_serializer().dumps("1"),
             )
@@ -261,7 +262,7 @@ def test_post_run_endpoint_starts_agent(monkeypatch, tmp_path):
     # Agent was instantiated with task="another task", guardrail prompt, and Phase 6 kwargs
     import inspect
     from unittest.mock import ANY
-    from agent.runner import GUARDRAIL_PROMPT
+    from local_browser_agent.app.runner import GUARDRAIL_PROMPT
     call_kwargs = MockAgent.call_args.kwargs
     assert call_kwargs["task"] == "another task"
     assert call_kwargs["llm"] is not None

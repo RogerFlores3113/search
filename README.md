@@ -86,7 +86,7 @@ Each folder contains `history.db` (session history), `training/runs.jsonl` (agen
 uv sync
 
 # Run
-uv run python -m agent
+uv run python -m local_browser_agent.app
 
 # Tests
 uv run pytest tests/ -q
@@ -97,3 +97,15 @@ uv run pytest tests/ -q
 ## macOS .app Bundle (planned)
 
 A double-click `.app` bundle for macOS is planned for a future release. For now, macOS users can use `bash launch.sh` (requires uv).
+
+## Use it as a library
+
+The agent loop is also available as an importable package (`local_browser_agent`) with a CLI (`lba run`) and an MCP server (`lba mcp`):
+
+```python
+from local_browser_agent import AgentConfig, run_task_sync
+result = run_task_sync("Open example.com and read the heading", AgentConfig.from_env())
+print(result.status, result.final_result)
+```
+
+See [docs/LIBRARY.md](docs/LIBRARY.md) for install, providers, safety policy, sinks and MCP setup.

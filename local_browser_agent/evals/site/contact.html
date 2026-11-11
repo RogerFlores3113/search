@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Contact us</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><header class="top"><span class="brand">Brightside</span><a href="/">Home</a><a href="/shop.html">Shop</a><a href="/catalog.html">Catalog</a><a href="/docs/">Docs</a><a href="/search.html">Search</a><a href="/contact.html">Contact</a><a href="/settings.html">Settings</a></header>
+<main>
+<h1>Contact us</h1>
+<form id="contact-form" method="post" action="/contact/submit">
+<label for="name">Name</label><input type="text" id="name" name="name">
+<label for="email">Email</label><input type="email" id="email" name="email">
+<label for="topic">Topic</label>
+<select id="topic" name="topic">
+<option value="general">General question</option>
+<option value="billing">Billing</option>
+<option value="support">Technical support</option>
+<option value="press">Press</option>
+</select>
+<label for="message">Message</label><textarea id="message" name="message" rows="5"></textarea>
+<p><button type="submit">Send message</button></p>
+</form>
+</main>
+<script src="/static/app.js"></script>
+
+</body></html>

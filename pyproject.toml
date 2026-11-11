@@ -16,7 +16,11 @@ dependencies = [
 ]
 
 [project.scripts]
-agent = "agent.__main__:main"
+lba-app = "local_browser_agent.app.__main__:main"
+lba = "local_browser_agent.cli:main"
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2"]
 
 [build-system]
 requires = ["hatchling"]
@@ -35,4 +39,4 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["agent"]
+packages = ["local_browser_agent"]

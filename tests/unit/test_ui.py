@@ -26,7 +26,7 @@ def _disclaimer_cookies() -> dict[str, str]:
     that exercise those endpoints set it directly rather than POSTing
     /accept-disclaimer first so each test stays self-contained.
     """
-    from agent.main import DISCLAIMER_COOKIE_NAME, _disclaimer_serializer
+    from local_browser_agent.app.main import DISCLAIMER_COOKIE_NAME, _disclaimer_serializer
     return {DISCLAIMER_COOKIE_NAME: _disclaimer_serializer().dumps("1")}
 
 
@@ -45,6 +45,18 @@ def _make_mock_agent(history=None):
     mock_agent.resume = MagicMock()
     mock_agent.stop = MagicMock()
     return mock_agent
+
+
+def _make_browser_agent(data_q, ctrl_q, *, paused=False):
+    """A real BrowserAgent (QueueSink on the given queues) wrapping a mock browser-use agent,
+    as /pause, /resume and /stop see it while a run is active."""
+    from local_browser_agent import AgentConfig, BrowserAgent, QueueSink
+
+    ba = BrowserAgent(AgentConfig(), sinks=[QueueSink(data_q, ctrl_q)])
+    inner = _make_mock_agent()
+    ba._agent = inner
+    ba._paused = paused
+    return ba, inner
 
 
 def _make_fake_agent_instance():
@@ -73,7 +85,7 @@ def _make_fake_agent_instance():
 
 def test_event_dataclasses_have_type_discriminant():
     """Each event class must carry the correct type literal field."""
-    from agent.events import (
+    from local_browser_agent.app.events import (
         ScreenshotEvent, StateEvent,
         ProgressEvent, SummaryEvent, ErrorEvent, DoneEvent,
     )
@@ -100,8 +112,8 @@ def test_narration_event_removed():
     bringing back a third per-step text event would re-create the dual
     row-builder divergence we deleted.
     """
-    import agent.events
-    assert not hasattr(agent.events, "NarrationEvent"), (
+    import local_browser_agent.app.events
+    assert not hasattr(local_browser_agent.app.events, "NarrationEvent"), (
         "NarrationEvent was removed in Issue #7. Re-introducing it splits "
         "narration-row construction across two code paths — use "
         "ActionDetailEvent (+ optionally extend it) instead."
@@ -114,7 +126,7 @@ def test_narration_event_removed():
 
 async def test_post_run_returns_started(monkeypatch):
     """POST /run with task string must return 200 + {"status": "started"} + HX-Trigger header."""
-    import agent.main as main_mod
+    import local_browser_agent.app.main as main_mod
 
     # Reset global state so there is no active task from a prior test
     monkeypatch.setattr(main_mod, "_active_task", None)
@@ -122,9 +134,9 @@ async def test_post_run_returns_started(monkeypatch):
 
     # Prevent run_agent from actually running (it would try pre_flight_check)
     mock_run_agent = AsyncMock()
-    monkeypatch.setattr("agent.main.run_agent", mock_run_agent)
+    monkeypatch.setattr("local_browser_agent.app.main.run_agent", mock_run_agent)
 
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
                            cookies=_disclaimer_cookies()) as client:
@@ -137,8 +149,8 @@ async def test_post_run_returns_started(monkeypatch):
 
 async def test_post_run_busy(monkeypatch):
     """Second POST /run while a task is active must return 409 with {"status": "busy"}."""
-    import agent.main as main_mod
-    from agent.main import app
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.main import app
 
     # Simulate an active running task
     fake_task = MagicMock()
@@ -167,7 +179,7 @@ async def test_post_run_concurrent_requests_yield_exactly_one_started(monkeypatc
     request to observe it. The stub completes deterministically when the
     test sets an asyncio.Event.
     """
-    import agent.main as main_mod
+    import local_browser_agent.app.main as main_mod
 
     monkeypatch.setattr(main_mod, "_active_task", None)
     monkeypatch.setattr(main_mod, "_active_queue", None)
@@ -178,7 +190,7 @@ async def test_post_run_concurrent_requests_yield_exactly_one_started(monkeypatc
     async def stub_run_agent(task, *, queue=None, control_queue=None, **kwargs):
         await done_event.wait()
 
-    monkeypatch.setattr("agent.main.run_agent", stub_run_agent)
+    monkeypatch.setattr("local_browser_agent.app.main.run_agent", stub_run_agent)
 
     async with AsyncClient(transport=ASGITransport(app=main_mod.app),
                            base_url="http://test",
@@ -212,7 +224,7 @@ async def test_post_run_sequential_after_completion_succeeds(monkeypatch):
     /run posted AFTER the first task finishes must succeed — regression
     guard against accidentally serializing across run lifetimes.
     """
-    import agent.main as main_mod
+    import local_browser_agent.app.main as main_mod
 
     monkeypatch.setattr(main_mod, "_active_task", None)
     monkeypatch.setattr(main_mod, "_active_queue", None)
@@ -221,7 +233,7 @@ async def test_post_run_sequential_after_completion_succeeds(monkeypatch):
     async def quick_run_agent(task, *, queue=None, control_queue=None, **kwargs):
         return  # finishes immediately
 
-    monkeypatch.setattr("agent.main.run_agent", quick_run_agent)
+    monkeypatch.setattr("local_browser_agent.app.main.run_agent", quick_run_agent)
 
     async with AsyncClient(transport=ASGITransport(app=main_mod.app),
                            base_url="http://test",
@@ -247,27 +259,28 @@ async def test_post_run_sequential_after_completion_succeeds(monkeypatch):
 # ---------------------------------------------------------------------------
 
 async def test_post_pause_calls_agent_pause(monkeypatch):
-    """POST /pause must call agent.pause() when agent is active and not paused."""
-    import agent.main as main_mod
-    from agent.main import app
+    """POST /pause must call BrowserAgent.pause() when a run is active and not paused."""
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.main import app
 
-    mock_agent = _make_mock_agent()
-    mock_agent.state.paused = False
     queue: asyncio.Queue = asyncio.Queue()
+    ba, inner = _make_browser_agent(queue, queue)
 
-    monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
+    monkeypatch.setattr(main_mod, "_active_agent", ba)
     monkeypatch.setattr(main_mod, "_active_queue", queue)
     monkeypatch.setattr(main_mod, "_active_control_queue", queue)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
                            cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/pause")
+    await asyncio.sleep(0.05)
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "paused"
-    mock_agent.pause.assert_called_once()
+    inner.pause.assert_called_once()
+    assert ba.is_paused
     # StateEvent("paused") must be on the queue
-    from agent.events import StateEvent
+    from local_browser_agent.app.events import StateEvent
     events = []
     while not queue.empty():
         events.append(queue.get_nowait())
@@ -276,27 +289,29 @@ async def test_post_pause_calls_agent_pause(monkeypatch):
 
 
 async def test_post_pause_toggles_resume(monkeypatch):
-    """POST /pause on a paused agent must call agent.resume() instead."""
-    import agent.main as main_mod
-    from agent.main import app
+    """POST /pause on a paused run must call BrowserAgent.resume() instead (this is the
+    UI's Resume button, also used to continue after a CAPTCHA pause)."""
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.main import app
 
-    mock_agent = _make_mock_agent()
-    mock_agent.state.paused = True
     queue: asyncio.Queue = asyncio.Queue()
+    ba, inner = _make_browser_agent(queue, queue, paused=True)
 
-    monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
+    monkeypatch.setattr(main_mod, "_active_agent", ba)
     monkeypatch.setattr(main_mod, "_active_queue", queue)
     monkeypatch.setattr(main_mod, "_active_control_queue", queue)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
                            cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/pause")
+    await asyncio.sleep(0.05)
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "resumed"
-    mock_agent.resume.assert_called_once()
+    inner.resume.assert_called_once()
+    assert not ba.is_paused
     # StateEvent("running") must be on the queue
-    from agent.events import StateEvent
+    from local_browser_agent.app.events import StateEvent
     events = []
     while not queue.empty():
         events.append(queue.get_nowait())
@@ -306,8 +321,8 @@ async def test_post_pause_toggles_resume(monkeypatch):
 
 async def test_post_pause_no_active_run(monkeypatch):
     """POST /pause must return 400 when no agent is active."""
-    import agent.main as main_mod
-    from agent.main import app
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.main import app
 
     monkeypatch.setattr(main_mod, "_active_agent", None)
 
@@ -325,8 +340,8 @@ async def test_post_pause_no_active_run(monkeypatch):
 
 async def test_post_stop_calls_agent_stop(monkeypatch):
     """POST /stop must call agent.stop() and return {"status": "stopped"}."""
-    import agent.main as main_mod
-    from agent.main import app
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.main import app
 
     mock_agent = _make_mock_agent()
 
@@ -343,8 +358,8 @@ async def test_post_stop_calls_agent_stop(monkeypatch):
 
 async def test_post_stop_no_active_run(monkeypatch):
     """POST /stop must return 400 when no agent is active."""
-    import agent.main as main_mod
-    from agent.main import app
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.main import app
 
     monkeypatch.setattr(main_mod, "_active_agent", None)
 
@@ -367,13 +382,13 @@ async def test_log_step_emits_narration_event(monkeypatch):
     ActionDetailEvent carries structured action metadata (action_type, target, url, value)
     instead of a plain text narration string.
     """
-    from agent.events import ActionDetailEvent, StateEvent
+    from local_browser_agent.app.events import ActionDetailEvent, StateEvent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent_instance = _make_fake_agent_instance()
 
     # Patch log_step (the JSONL writer) to be a no-op so test stays unit-level
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.app.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
     mock_browser = MagicMock()
     mock_browser.kill = AsyncMock()
     mock_browser.llm_screenshot_size = None
@@ -388,13 +403,13 @@ async def test_log_step_emits_narration_event(monkeypatch):
     mock_agent = MagicMock()
     mock_agent.run = fake_run
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
 
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
     await run_agent("test task", queue=queue)
 
     # Drain the queue into a list
@@ -418,8 +433,8 @@ async def test_log_step_emits_narration_event(monkeypatch):
 
 async def test_run_agent_emits_summary_event(monkeypatch):
     """run_agent must put SummaryEvent(text=final_result) on queue on success."""
-    from agent.events import SummaryEvent, StateEvent
-    from agent.runner import run_agent
+    from local_browser_agent.app.events import SummaryEvent, StateEvent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -429,12 +444,12 @@ async def test_run_agent_emits_summary_event(monkeypatch):
     mock_history = _make_mock_history(final_result="Found article")
     mock_agent = _make_mock_agent(history=mock_history)
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.app.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     await run_agent("test task", queue=queue)
 
@@ -457,8 +472,8 @@ async def test_run_agent_emits_summary_event(monkeypatch):
 
 async def test_run_agent_omits_summary_when_no_final_result(monkeypatch):
     """When history.final_result() returns None, NO SummaryEvent is emitted."""
-    from agent.events import SummaryEvent, StateEvent, DoneEvent
-    from agent.runner import run_agent
+    from local_browser_agent.app.events import SummaryEvent, StateEvent, DoneEvent
+    from local_browser_agent.app.runner import run_agent
 
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -468,12 +483,12 @@ async def test_run_agent_omits_summary_when_no_final_result(monkeypatch):
     mock_history = _make_mock_history(final_result=None)
     mock_agent = _make_mock_agent(history=mock_history)
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.app.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     await run_agent("test task", queue=queue)
 
@@ -498,7 +513,7 @@ async def test_run_agent_omits_summary_when_no_final_result(monkeypatch):
 
 async def test_log_step_does_not_emit_screenshot_event(monkeypatch):
     """_log_step must NOT emit ScreenshotEvent — Phase 7 D-05/D-06 moved this to _screenshot_loop."""
-    from agent.events import ScreenshotEvent
+    from local_browser_agent.app.events import ScreenshotEvent
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent_instance = _make_fake_agent_instance()
@@ -514,14 +529,14 @@ async def test_log_step_does_not_emit_screenshot_event(monkeypatch):
     mock_agent = MagicMock()
     mock_agent.run = fake_run
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.app.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
     import inspect
     source = inspect.getsource(run_agent)
     assert "history.screenshots()" not in source, (
@@ -531,7 +546,7 @@ async def test_log_step_does_not_emit_screenshot_event(monkeypatch):
 
 async def test_log_step_does_not_read_history_screenshots(monkeypatch):
     """_log_step must not call history.screenshots() — Phase 7 D-06 removed that code path."""
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
     import inspect
     source = inspect.getsource(run_agent)
     assert "history.screenshots()" not in source, (
@@ -542,8 +557,8 @@ async def test_log_step_does_not_read_history_screenshots(monkeypatch):
 
 async def test_log_step_emits_progress_event(monkeypatch):
     """_log_step closure must emit ProgressEvent with step==step_idx+1 and max_steps==config.max_steps."""
-    from agent.events import ProgressEvent
-    from agent.config import config
+    from local_browser_agent.app.events import ProgressEvent
+    from local_browser_agent.app.config import config
 
     queue: asyncio.Queue = asyncio.Queue()
     fake_agent_instance = _make_fake_agent_instance()  # number_of_steps() returns 1
@@ -558,14 +573,14 @@ async def test_log_step_emits_progress_event(monkeypatch):
     mock_agent = MagicMock()
     mock_agent.run = fake_run
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.app.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
     await run_agent("test task", queue=queue)
 
     events = []
@@ -585,7 +600,7 @@ async def test_log_step_emits_progress_event(monkeypatch):
 
 async def test_run_agent_emits_state_events(monkeypatch):
     """run_agent must emit StateEvent("running") at start and StateEvent("complete") in finally."""
-    from agent.events import StateEvent
+    from local_browser_agent.app.events import StateEvent
 
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -596,14 +611,14 @@ async def test_run_agent_emits_state_events(monkeypatch):
     mock_agent = MagicMock()
     mock_agent.run = AsyncMock(return_value=_make_mock_history())
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.app.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
-    from agent.runner import run_agent
+    from local_browser_agent.app.runner import run_agent
     await run_agent("test task", queue=queue)
 
     events = []
@@ -625,15 +640,15 @@ async def test_run_agent_emits_state_events(monkeypatch):
 
 async def test_run_agent_emits_error_event_on_preflight(monkeypatch):
     """When pre_flight_check raises PreFlightError, queue receives ErrorEvent + StateEvent('error') + DoneEvent."""
-    from agent.runner import PreFlightError, run_agent
-    from agent.events import ErrorEvent, StateEvent, DoneEvent
+    from local_browser_agent.app.runner import PreFlightError, run_agent
+    from local_browser_agent.app.events import ErrorEvent, StateEvent, DoneEvent
 
     queue: asyncio.Queue = asyncio.Queue()
 
     async def fake_preflight(cfg):
         raise PreFlightError("ollama not running")
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", fake_preflight)
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", fake_preflight)
 
     await run_agent("test task", queue=queue)
 
@@ -663,9 +678,9 @@ async def db_dir(tmp_path, monkeypatch):
     """Patch DB_PATH to a tmp location so data/history.db writes stay isolated.
 
     Uses monkeypatch.setattr instead of chdir so the Jinja2 template directory
-    (relative path 'agent/templates') remains resolvable from the project root.
+    (relative path 'local_browser_agent/app/templates') remains resolvable from the project root.
     """
-    import agent.db as _db_mod
+    import local_browser_agent.app.db as _db_mod
     from pathlib import Path
     db_path = tmp_path / "data" / "history.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -675,8 +690,8 @@ async def db_dir(tmp_path, monkeypatch):
 
 async def test_run_agent_inserts_run_to_db(monkeypatch, db_dir):
     """run_agent finally block must insert a row with task, status='complete', summary, and timestamps."""
-    from agent.runner import run_agent
-    from agent import db as history_db
+    from local_browser_agent.app.runner import run_agent
+    from local_browser_agent.app import db as history_db
 
     await history_db.init_db()
 
@@ -688,12 +703,12 @@ async def test_run_agent_inserts_run_to_db(monkeypatch, db_dir):
     mock_agent.state = MagicMock()
     mock_agent.state.stopped = False
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.app.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     await run_agent("test task")
 
@@ -709,15 +724,15 @@ async def test_run_agent_inserts_run_to_db(monkeypatch, db_dir):
 
 async def test_run_agent_inserts_error_status_on_preflight(monkeypatch, db_dir):
     """When PreFlightError occurs, runner inserts a row with status='error'."""
-    from agent.runner import run_agent, PreFlightError
-    from agent import db as history_db
+    from local_browser_agent.app.runner import run_agent, PreFlightError
+    from local_browser_agent.app import db as history_db
 
     await history_db.init_db()
 
     async def fake_preflight(cfg):
         raise PreFlightError("ollama not running")
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", fake_preflight)
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", fake_preflight)
 
     await run_agent("error task")
 
@@ -728,8 +743,8 @@ async def test_run_agent_inserts_error_status_on_preflight(monkeypatch, db_dir):
 
 async def test_run_agent_inserts_stopped_status_when_agent_state_stopped(monkeypatch, db_dir):
     """When agent.state.stopped is True after run(), status is 'stopped'."""
-    from agent.runner import run_agent
-    from agent import db as history_db
+    from local_browser_agent.app.runner import run_agent
+    from local_browser_agent.app import db as history_db
 
     await history_db.init_db()
 
@@ -741,12 +756,12 @@ async def test_run_agent_inserts_stopped_status_when_agent_state_stopped(monkeyp
     mock_agent.state = MagicMock()
     mock_agent.state.stopped = True  # user stopped the agent
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.app.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     await run_agent("stopped task")
 
@@ -756,10 +771,11 @@ async def test_run_agent_inserts_stopped_status_when_agent_state_stopped(monkeyp
 
 
 async def test_run_agent_clears_active_agent_in_finally(monkeypatch, db_dir):
-    """After run_agent returns, _active_agent and _active_queue are both None."""
-    import agent.main as main_mod
-    from agent.runner import run_agent
-    from agent import db as history_db
+    """While a run is in flight the web layer holds its BrowserAgent (so /pause and /stop can
+    reach it); after the run ends _active_agent and the queues are all None."""
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.runner import run_agent  # noqa: F401
+    from local_browser_agent.app import db as history_db
 
     await history_db.init_db()
 
@@ -771,20 +787,35 @@ async def test_run_agent_clears_active_agent_in_finally(monkeypatch, db_dir):
     mock_agent.state = MagicMock()
     mock_agent.state.stopped = False
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.app.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     queue: asyncio.Queue = asyncio.Queue()
+    ctrl: asyncio.Queue = asyncio.Queue()
     monkeypatch.setattr(main_mod, "_active_queue", queue)
+    monkeypatch.setattr(main_mod, "_active_control_queue", ctrl)
 
-    await run_agent("clear task", queue=queue)
+    seen = {}
+    real_set = main_mod._set_active_agent
 
+    def spy(agent):
+        if agent is not None:
+            seen["agent"] = agent
+        real_set(agent)
+
+    monkeypatch.setattr(main_mod, "_set_active_agent", spy)
+
+    await main_mod._run_tracked("clear task", queue, ctrl, "generic")
+
+    from local_browser_agent import BrowserAgent
+    assert isinstance(seen.get("agent"), BrowserAgent), "run must expose its BrowserAgent while active"
     assert main_mod._active_agent is None, f"Expected _active_agent=None; got {main_mod._active_agent}"
     assert main_mod._active_queue is None, f"Expected _active_queue=None; got {main_mod._active_queue}"
+    assert main_mod._active_control_queue is None
 
 
 # ---------------------------------------------------------------------------
@@ -793,8 +824,8 @@ async def test_run_agent_clears_active_agent_in_finally(monkeypatch, db_dir):
 
 async def test_get_runs_returns_history(monkeypatch, db_dir):
     """GET /runs must return HTML with the most recent run records."""
-    from agent.main import app
-    from agent import db as history_db
+    from local_browser_agent.app.main import app
+    from local_browser_agent.app import db as history_db
 
     await history_db.init_db()
 
@@ -831,7 +862,7 @@ async def test_get_runs_returns_history(monkeypatch, db_dir):
 def test_runs_fragment_renders_rows():
     """runs_fragment.html must render each run's task, status, and started_at."""
     from fastapi.templating import Jinja2Templates
-    t = Jinja2Templates(directory="agent/templates")
+    t = Jinja2Templates(directory="local_browser_agent/app/templates")
     runs = [
         {"task": "first task", "status": "complete", "summary": None,
          "started_at": "2026-05-16T10:00:00Z", "completed_at": None, "run_id": "a"},
@@ -853,7 +884,7 @@ def test_runs_fragment_renders_rows():
 def test_runs_fragment_empty_state():
     """runs_fragment.html with empty runs must show 'No runs yet.' empty-state copy."""
     from fastapi.templating import Jinja2Templates
-    t = Jinja2Templates(directory="agent/templates")
+    t = Jinja2Templates(directory="local_browser_agent/app/templates")
     rendered = t.get_template("runs_fragment.html").render(runs=[])
     assert "No runs yet. Enter a task above to start." in rendered
 
@@ -861,7 +892,7 @@ def test_runs_fragment_empty_state():
 def test_runs_fragment_escapes_task():
     """runs_fragment.html must HTML-escape task strings (XSS mitigation T-03-02)."""
     from fastapi.templating import Jinja2Templates
-    t = Jinja2Templates(directory="agent/templates")
+    t = Jinja2Templates(directory="local_browser_agent/app/templates")
     runs = [{"task": "<script>alert(1)</script>", "status": "complete", "summary": None,
              "started_at": "2026-05-16T00:00:00Z", "completed_at": None, "run_id": "abc"}]
     rendered = t.get_template("runs_fragment.html").render(runs=runs)
@@ -871,7 +902,7 @@ def test_runs_fragment_escapes_task():
 
 async def test_index_has_run_history_panel():
     """GET / response body must contain <section id='run-history' and hx-get='/runs' with load trigger."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/")
@@ -884,7 +915,7 @@ async def test_index_has_run_history_panel():
 
 async def test_index_pause_button_enabled_per_state():
     """Pause button must have hx-post='/pause' and Alpine :disabled binding for running/paused states."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/")
@@ -898,7 +929,7 @@ async def test_index_pause_button_enabled_per_state():
 
 async def test_index_stop_button_enabled_per_state():
     """Stop button must have hx-post='/stop' and Alpine :disabled binding for running/paused states."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/")
@@ -911,7 +942,7 @@ async def test_index_stop_button_enabled_per_state():
 
 async def test_index_pause_button_label_resume():
     """Pause button must have Alpine x-text binding for Pause/Resume toggle."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/")
@@ -927,8 +958,8 @@ async def test_index_pause_button_label_resume():
 
 async def test_done_event_always_emitted(monkeypatch):
     """DoneEvent must be the last item on the queue for success, PreFlightError, and TimeoutError."""
-    from agent.runner import PreFlightError, run_agent
-    from agent.events import DoneEvent
+    from local_browser_agent.app.runner import PreFlightError, run_agent
+    from local_browser_agent.app.events import DoneEvent
 
     # --- Path 1: Success ---
     queue1: asyncio.Queue = asyncio.Queue()
@@ -939,12 +970,12 @@ async def test_done_event_always_emitted(monkeypatch):
     mock_agent = MagicMock()
     mock_agent.run = AsyncMock(return_value=_make_mock_history())
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
-    monkeypatch.setattr("agent.runner.log_step", AsyncMock(return_value={"prompt_tokens": None, "completion_tokens": None, "cost_usd": None}))
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.app.training_sink.TrainingSink.__call__", AsyncMock())  # no JSONL IO
 
     await run_agent("success task", queue=queue1)
     events1 = []
@@ -958,7 +989,7 @@ async def test_done_event_always_emitted(monkeypatch):
     async def raise_preflight(cfg):
         raise PreFlightError("ollama not running")
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", raise_preflight)
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", raise_preflight)
     await run_agent("preflight fail", queue=queue2)
     events2 = []
     while not queue2.empty():
@@ -981,11 +1012,11 @@ async def test_done_event_always_emitted(monkeypatch):
         raise asyncio.TimeoutError()
     mock_agent2.run = agent_run_times_out
 
-    monkeypatch.setattr("agent.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("agent.runner.BrowserSession", MagicMock(return_value=mock_browser2))
-    monkeypatch.setattr("agent.runner.BrowserProfile", MagicMock())
-    monkeypatch.setattr("agent.runner.Agent", MagicMock(return_value=mock_agent2))
-    monkeypatch.setattr("agent.runner.build_llm", MagicMock())
+    monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
+    monkeypatch.setattr("local_browser_agent.browser.BrowserSession", MagicMock(return_value=mock_browser2))
+    monkeypatch.setattr("local_browser_agent.browser.BrowserProfile", MagicMock())
+    monkeypatch.setattr("local_browser_agent.runner.Agent", MagicMock(return_value=mock_agent2))
+    monkeypatch.setattr("local_browser_agent.runner.build_llm", MagicMock())
 
     await run_agent("timeout task", queue=queue3)
     events3 = []
@@ -1000,9 +1031,9 @@ async def test_done_event_always_emitted(monkeypatch):
 
 async def test_sse_stream_yields_until_done(monkeypatch):
     """GET /stream must yield state+action_detail events then close on DoneEvent."""
-    import agent.main as main_mod
-    from agent.events import StateEvent, ActionDetailEvent, DoneEvent
-    from agent.main import app
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.events import StateEvent, ActionDetailEvent, DoneEvent
+    from local_browser_agent.app.main import app
 
     # Pre-populate _active_queue with known events
     queue: asyncio.Queue = asyncio.Queue()
@@ -1031,9 +1062,9 @@ async def test_done_event_delivered_when_data_queue_full(monkeypatch):
     reaches the consumer even if the data queue is saturated. Before the
     fix, _put_nowait(DoneEvent) on a full single queue dropped silently.
     """
-    import agent.main as main_mod
-    from agent.events import DoneEvent, ScreenshotEvent, StateEvent
-    from agent.main import app
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.events import DoneEvent, ScreenshotEvent, StateEvent
+    from local_browser_agent.app.main import app
 
     data_q: asyncio.Queue = asyncio.Queue(maxsize=3)
     ctrl_q: asyncio.Queue = asyncio.Queue(maxsize=16)
@@ -1063,11 +1094,11 @@ async def test_stream_drains_data_queue_before_done(monkeypatch):
     screenshot, final token update) BEFORE yielding the done frame, so the
     user sees a complete sequence.
     """
-    import agent.main as main_mod
-    from agent.events import (
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.events import (
         DoneEvent, ScreenshotEvent, TokenEvent, StateEvent,
     )
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     data_q: asyncio.Queue = asyncio.Queue(maxsize=10)
     ctrl_q: asyncio.Queue = asyncio.Queue(maxsize=16)
@@ -1100,22 +1131,22 @@ async def test_pause_routes_state_event_to_control_queue(monkeypatch):
     queue (not the data queue) so the pause indicator can't be dropped by a
     saturated screenshot stream.
     """
-    import agent.main as main_mod
-    from agent.events import StateEvent
-    from agent.main import app
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.events import StateEvent
+    from local_browser_agent.app.main import app
 
-    mock_agent = _make_mock_agent()
-    mock_agent.state.paused = False
     data_q: asyncio.Queue = asyncio.Queue()
     ctrl_q: asyncio.Queue = asyncio.Queue()
+    ba, _inner = _make_browser_agent(data_q, ctrl_q)
 
-    monkeypatch.setattr(main_mod, "_active_agent", mock_agent)
+    monkeypatch.setattr(main_mod, "_active_agent", ba)
     monkeypatch.setattr(main_mod, "_active_queue", data_q)
     monkeypatch.setattr(main_mod, "_active_control_queue", ctrl_q)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
                            cookies=_disclaimer_cookies()) as client:
         resp = await client.post("/pause")
+    await asyncio.sleep(0.05)
 
     assert resp.status_code == 200
     assert data_q.empty(), "StateEvent must not land on the data queue"
@@ -1133,7 +1164,7 @@ async def test_pause_routes_state_event_to_control_queue(monkeypatch):
 
 async def test_get_index_returns_html(monkeypatch):
     """GET / must return 200 HTML with hx-ext='sse', sse-connect='/stream', and textarea[name=task]."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/")
@@ -1152,7 +1183,7 @@ async def test_get_index_returns_html(monkeypatch):
 
 async def test_get_index_contains_alpine_handlers():
     """GET / response body must contain all six Alpine handler names."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/")
@@ -1164,7 +1195,7 @@ async def test_get_index_contains_alpine_handlers():
         assert handler in body, f"Missing Alpine handler: {handler}"
     assert "handleNarration" not in body, (
         "handleNarration was removed in Issue #7 — the row builder is now "
-        "_ensureNarrationRow + handleActionDetail. See agent/templates/index.html."
+        "_ensureNarrationRow + handleActionDetail. See local_browser_agent/app/templates/index.html."
     )
 
 
@@ -1175,7 +1206,7 @@ async def test_sse_bridges_use_data_bridge_not_hx_on():
     methods, producing 'handleState is not defined' ReferenceErrors and breaking
     all SSE-driven UI updates (screenshot, state, pause/stop buttons).
     """
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/")
@@ -1209,7 +1240,7 @@ async def test_sse_bridges_use_data_bridge_not_hx_on():
 
 async def test_get_index_has_result_area():
     """GET / response body must contain #result-area with x-show='summary' and x-show='errorMsg'."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/")
@@ -1222,7 +1253,7 @@ async def test_get_index_has_result_area():
 
 async def test_get_index_links_stylesheet():
     """GET / response body must contain a link to /static/style.css."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/")
@@ -1233,7 +1264,7 @@ async def test_get_index_links_stylesheet():
 
 async def test_static_css_served():
     """GET /static/style.css must return 200 with content-type text/css and contain --bg-dominant."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/static/style.css")
@@ -1246,7 +1277,7 @@ async def test_static_css_served():
 
 async def test_index_no_unsafe_html():
     """GET / response body must NOT contain '| safe' or 'innerHTML =' (XSS hygiene T-03-02)."""
-    from agent.main import app
+    from local_browser_agent.app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/")

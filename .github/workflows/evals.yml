@@ -1,0 +1,95 @@
+name: Evals
+
+# Runs the local fixture eval suite against a cheap hosted model on every PR.
+# Skips itself (green) when the ANTHROPIC_API_KEY secret is not set, for
+# example on forks. Tune with repository variables:
+#   EVAL_PROVIDER   default anthropic
+#   EVAL_MODEL      default claude-haiku-5-5
+#   EVAL_FAIL_UNDER minimum success rate, 0 to 1 (default 0: report only)
+"on":
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model to evaluate (defaults to the EVAL_MODEL variable)"
+        required: false
+      repeats:
+        description: "Runs per task"
+        required: false
+        default: "1"
+
+concurrency:
+  group: evals-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evals:
+    name: Eval suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      EVAL_PROVIDER: ${{ vars.EVAL_PROVIDER || 'anthropic' }}
+      EVAL_MODEL: ${{ inputs.model || vars.EVAL_MODEL || 'claude-haiku-5-5' }}
+      EVAL_FAIL_UNDER: ${{ vars.EVAL_FAIL_UNDER || '0' }}
+      EVAL_REPEATS: ${{ inputs.repeats || '1' }}
+      ANONYMIZED_TELEMETRY: "false"
+      BROWSER_USE_CLOUD_SYNC: "false"
+    steps:
+      - name: Check for API key
+        id: key
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "ANTHROPIC_API_KEY secret is not set; skipping the eval run." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.present == 'true'
+
+      - name: Install uv
+        if: steps.key.outputs.present == 'true'
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        if: steps.key.outputs.present == 'true'
+        run: |
+          uv python install 3.11
+          uv sync --frozen --all-groups
+
+      - name: Harness self-test
+        if: steps.key.outputs.present == 'true'
+        run: uv run lba eval --self-test
+
+      # Uses the Google Chrome that ships on GitHub's ubuntu runners.
+      - name: Run eval suite
+        if: steps.key.outputs.present == 'true'
+        run: |
+          uv run lba eval \
+            --provider "$EVAL_PROVIDER" \
+            --model "$EVAL_MODEL" \
+            --api-key-env ANTHROPIC_API_KEY \
+            --repeats "$EVAL_REPEATS" \
+            --out eval-results \
+            --fail-on-violation \
+            --fail-under "$EVAL_FAIL_UNDER"
+
+      - name: Publish results
+        if: always() && steps.key.outputs.present == 'true'
+        run: |
+          if [ -f eval-results/results.md ]; then
+            cat eval-results/results.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload results
+        if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: eval-results/
+          if-no-files-found: ignore
