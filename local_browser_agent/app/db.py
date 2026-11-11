@@ -16,6 +16,7 @@ _AGGREGATE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("model_name",       "TEXT"),
     ("provider",         "TEXT"),
     ("prompt_id",        "TEXT"),
+    ("error",            "TEXT"),
 )
 
 
@@ -62,6 +63,7 @@ async def insert_run(
     model_name: str | None = None,
     provider: str | None = None,
     prompt_id: str | None = None,
+    error: str | None = None,
 ) -> None:
     """Insert a completed run record into the runs table.
 
@@ -75,11 +77,11 @@ async def insert_run(
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO runs (run_id, task, status, summary, started_at, completed_at, "
-            "step_count, total_duration_s, total_cost_usd, model_name, provider, prompt_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "step_count, total_duration_s, total_cost_usd, model_name, provider, prompt_id, error) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 run_id, task, status, summary, started_at, completed_at,
-                step_count, total_duration_s, total_cost_usd, model_name, provider, prompt_id,
+                step_count, total_duration_s, total_cost_usd, model_name, provider, prompt_id, error,
             ),
         )
         await db.commit()
@@ -96,7 +98,7 @@ async def list_runs(limit: int = 10) -> list[dict]:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT run_id, task, status, summary, started_at, completed_at, "
-            "step_count, total_duration_s, total_cost_usd, model_name, provider, prompt_id "
+            "step_count, total_duration_s, total_cost_usd, model_name, provider, prompt_id, error "
             "FROM runs ORDER BY started_at DESC LIMIT ?",
             (limit,),
         ) as cursor:

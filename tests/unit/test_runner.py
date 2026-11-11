@@ -395,7 +395,7 @@ async def test_preflight_raises_when_anthropic_key_missing(monkeypatch_env):
     from local_browser_agent.app.config import Settings
     from local_browser_agent.app.runner import PreFlightError, pre_flight_check
 
-    with pytest.raises(PreFlightError, match="Missing Anthropic API key"):
+    with pytest.raises(PreFlightError, match="No Anthropic API key is set.*Settings"):
         await pre_flight_check(Settings())
 
 
@@ -414,7 +414,7 @@ async def test_preflight_raises_when_anthropic_key_invalid(monkeypatch_env):
         )
     )
     with patch("anthropic.AsyncAnthropic", return_value=mock_client):
-        with pytest.raises(PreFlightError, match="Invalid Anthropic API key"):
+        with pytest.raises(PreFlightError, match="Anthropic API key was rejected"):
             await pre_flight_check(Settings())
 
 
@@ -428,7 +428,7 @@ async def test_preflight_raises_when_openai_key_missing(monkeypatch_env):
     from local_browser_agent.app.config import Settings
     from local_browser_agent.app.runner import PreFlightError, pre_flight_check
 
-    with pytest.raises(PreFlightError, match="Missing OpenAI API key"):
+    with pytest.raises(PreFlightError, match="No OpenAI API key is set.*Settings"):
         await pre_flight_check(Settings())
 
 
@@ -444,7 +444,7 @@ async def test_preflight_raises_when_openai_key_invalid(monkeypatch_env, httpx_m
     from local_browser_agent.app.config import Settings
     from local_browser_agent.app.runner import PreFlightError, pre_flight_check
 
-    with pytest.raises(PreFlightError, match="Invalid OpenAI API key"):
+    with pytest.raises(PreFlightError, match="OpenAI API key was rejected"):
         await pre_flight_check(Settings())
 
 

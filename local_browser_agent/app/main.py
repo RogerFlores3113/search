@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import secrets
 import sys
+from datetime import datetime
+from urllib.parse import urlsplit
 from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,10 +22,10 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from itsdangerous import BadSignature, URLSafeSerializer
 from pydantic import BaseModel
 
-from local_browser_agent.app.events import DoneEvent
+from local_browser_agent.app.events import DoneEvent, ErrorEvent, StateEvent
 from local_browser_agent.app import db as history_db
 from local_browser_agent.app.paths import get_secret_key
-from local_browser_agent.app.runner import run_agent
+from local_browser_agent.app.runner import run_agent, stop_agent
 
 
 DISCLAIMER_COOKIE_NAME = "lba_disclaimer"
@@ -91,6 +94,65 @@ def _resource_path(relative: str) -> str:
 templates = Jinja2Templates(directory=_resource_path("local_browser_agent/app/templates"))
 
 
+def _humantime(value: object) -> str:
+    """Format an ISO-8601 timestamp (stored in UTC) as local, human-readable time."""
+    if not value:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(value))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        return dt.strftime("%b %d, %Y, %I:%M %p").replace(" 0", " ")
+    except (ValueError, TypeError):
+        return str(value)
+
+
+templates.env.filters["humantime"] = _humantime
+
+
+# --- Request security -------------------------------------------------------
+# The app listens on localhost but controls the user's real browser, so no web
+# page may be able to talk to it (DNS rebinding / CSRF):
+#   1. Host must be 127.0.0.1 / localhost / [::1] (rebinding keeps the attacker's Host).
+#   2. State-changing requests whose Origin/Referer is present must be same-origin.
+#   3. State-changing requests must carry this per-process token, which only the
+#      page served from "/" knows (sent as the X-LBA-Token header).
+SECURITY_TOKEN = secrets.token_urlsafe(32)
+TOKEN_HEADER = "x-lba-token"
+_LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "[::1]"}
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+# Test hooks (tests/conftest.py): extra accepted hostnames, and whether the token is enforced.
+_EXTRA_ALLOWED_HOSTS: set[str] = set()
+_REQUIRE_TOKEN = True
+
+
+def _hostname_of(netloc: str) -> str:
+    """Hostname part of a Host header / URL netloc (port stripped, lower-cased)."""
+    netloc = netloc.strip().lower()
+    if netloc.startswith("["):
+        end = netloc.find("]")
+        return netloc[: end + 1] if end != -1 else netloc
+    return netloc.rsplit(":", 1)[0] if ":" in netloc else netloc
+
+
+def _host_allowed(host_header: str | None) -> bool:
+    if not host_header:
+        return False
+    return _hostname_of(host_header) in (_LOCAL_HOSTNAMES | _EXTRA_ALLOWED_HOSTS)
+
+
+def _origin_ok(request: Request) -> bool:
+    """True unless an Origin/Referer is present and not same-origin with Host."""
+    host = (request.headers.get("host") or "").strip().lower()
+    origin = request.headers.get("origin")
+    if origin is not None:
+        return origin.lower() != "null" and urlsplit(origin).netloc.lower() == host
+    referer = request.headers.get("referer")
+    if referer:
+        return urlsplit(referer).netloc.lower() == host
+    return True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan hook.
@@ -127,6 +189,20 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+@app.middleware("http")
+async def _security_middleware(request: Request, call_next):
+    if not _host_allowed(request.headers.get("host")):
+        return JSONResponse({"status": "forbidden", "detail": "invalid host"}, status_code=403)
+    if request.method not in _SAFE_METHODS:
+        if not _origin_ok(request):
+            return JSONResponse({"status": "forbidden", "detail": "cross-origin request"}, status_code=403)
+        if _REQUIRE_TOKEN:
+            supplied = request.headers.get(TOKEN_HEADER, "")
+            if not secrets.compare_digest(supplied.encode(), SECURITY_TOKEN.encode()):
+                return JSONResponse({"status": "forbidden", "detail": "missing or invalid token"}, status_code=403)
+    return await call_next(request)
+
+
 # Default chrome_missing to False; set to True by __main__.py pre-flight check (DIST-02)
 app.state.chrome_missing = False
 
@@ -144,12 +220,28 @@ _active_control_queue: Optional[asyncio.Queue] = None
 # The live BrowserAgent for pause/resume/stop. Set by the runner through its
 # `on_agent` hook (the library never imports this module); None between runs.
 _active_agent = None
+# Terminal events (latest state / error_msg / summary / human_needed) of the most recent
+# run, kept after its queues are torn down so a client that connects after a fast failure
+# still sees the outcome. Replayed once.
+_last_run: dict[str, object] = {}
+_last_run_delivered = True
+_REPLAY_ORDER = ("human_needed", "error_msg", "summary", "state")
 # Serializes the busy-check + assignment in /run so two concurrent POSTs
 # (double-clicked Run button, HTMX retry, two tabs) cannot both pass the
 # `_active_task is None` check and both start a BrowserSession.
 # Released the moment asyncio.create_task returns — the lock guards
 # scheduling, NOT the duration of the run.
 _start_lock = asyncio.Lock()
+
+
+class _TrackingQueue(asyncio.Queue):
+    """Control queue that remembers the latest lifecycle event of each kind."""
+
+    def put_nowait(self, item) -> None:
+        etype = getattr(item, "type", None)
+        if etype in _REPLAY_ORDER:
+            _last_run[etype] = item
+        super().put_nowait(item)
 
 
 def _set_active_agent(browser_agent) -> None:
@@ -166,6 +258,11 @@ async def _run_tracked(task: str, queue: asyncio.Queue, control_queue: asyncio.Q
             task, queue=queue, control_queue=control_queue,
             active_prompt_id=active_prompt_id, on_agent=_set_active_agent,
         )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # the run died before it could report: surface it anyway
+        _last_run["error_msg"] = ErrorEvent(message=str(e) or type(e).__name__)
+        _last_run["state"] = StateEvent(state="error")
     finally:
         _set_active_agent(None)
         _active_queue = None
@@ -185,7 +282,10 @@ async def index(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={"disclaimer_accepted": _disclaimer_accepted(request)},
+        context={
+            "disclaimer_accepted": _disclaimer_accepted(request),
+            "security_token": SECURITY_TOKEN,
+        },
     )
 
 
@@ -224,14 +324,16 @@ async def run_endpoint(request: Request, task: str = Form(..., max_length=2000),
     run_agent coroutine as an asyncio.Task with the queue wired in, and responds
     with HX-Trigger: streamStarted so the HTMX SSE container activates.
     """
-    global _active_task, _active_queue, _active_control_queue
+    global _active_task, _active_queue, _active_control_queue, _last_run_delivered
     if not _disclaimer_accepted(request):
         return _disclaimer_required_response()
     async with _start_lock:
         if _active_task is not None and not _active_task.done():
             return JSONResponse({"status": "busy"}, status_code=409)
         data_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
-        control_queue: asyncio.Queue = asyncio.Queue(maxsize=16)
+        control_queue: asyncio.Queue = _TrackingQueue(maxsize=16)
+        _last_run.clear()
+        _last_run_delivered = False
         _active_queue = data_queue
         _active_control_queue = control_queue
         _active_task = asyncio.create_task(
@@ -252,8 +354,11 @@ async def pause_endpoint(request: Request):
     if not _disclaimer_accepted(request):
         return _disclaimer_required_response()
     agent = _active_agent
-    if agent is None or not agent.is_active:
+    if agent is None:
         return JSONResponse({"status": "no_active_run"}, status_code=400)
+    if not agent.is_active:
+        # Still in pre-flight: nothing to pause yet (Stop does work).
+        return JSONResponse({"status": "starting"}, status_code=409)
     if agent.is_paused:
         agent.resume()
         return JSONResponse({"status": "resumed"})
@@ -271,9 +376,10 @@ async def stop_endpoint(request: Request):
     if not _disclaimer_accepted(request):
         return _disclaimer_required_response()
     agent = _active_agent
-    if agent is None or not agent.is_active:
+    if agent is None:
         return JSONResponse({"status": "no_active_run"}, status_code=400)
-    agent.stop()
+    # Also cancels a run that is still in pre-flight (no browser-use agent yet).
+    stop_agent(agent)
     return JSONResponse({"status": "stopped"})
 
 
@@ -366,7 +472,7 @@ async def post_settings(
     openai_key_value: str = Form(""),
     user_domains_json: str = Form("[]"),
     active_prompt_id: str = Form("generic"),
-    prompts_json: str = Form("[]"),
+    prompts_json: Optional[str] = Form(None),
 ) -> JSONResponse:
     """Save settings to settings.json and live-patch the config singleton.
 
@@ -434,16 +540,22 @@ async def post_settings(
         user_domains = cleaned
 
         # --- Phase 12: prompts validation (T-12-02 mitigation) ---
-        try:
-            parsed_prompts = _json.loads(prompts_json)
-        except Exception:
-            parsed_prompts = []
-        # Keep only entries that are dicts with required keys (id, name, content)
-        # is_seed is optional; non-conforming entries are dropped silently
-        validated_prompts = [
-            p for p in parsed_prompts
-            if isinstance(p, dict) and "id" in p and "name" in p and "content" in p
-        ]
+        # Only touch the saved prompts when the client actually sent them; a request
+        # without prompts_json must not wipe the library.
+        validated_prompts = None
+        if prompts_json is not None:
+            try:
+                parsed_prompts = _json.loads(prompts_json)
+            except Exception:
+                parsed_prompts = []
+            if not isinstance(parsed_prompts, list):
+                parsed_prompts = []
+            # Keep only entries that are dicts with required keys (id, name, content)
+            # is_seed is optional; non-conforming entries are dropped silently
+            validated_prompts = [
+                p for p in parsed_prompts
+                if isinstance(p, dict) and "id" in p and "name" in p and "content" in p
+            ]
 
         # --- Persist to settings.json ---
         stored["provider"] = provider
@@ -452,7 +564,8 @@ async def post_settings(
         stored["anthropic_model"] = anthropic_model or stored.get("anthropic_model", config.anthropic_model)
         stored["openai_model"] = openai_model or stored.get("openai_model", config.openai_model)
         stored["user_domains"] = user_domains
-        stored["prompts"] = validated_prompts
+        if validated_prompts is not None:
+            stored["prompts"] = validated_prompts
         stored["active_prompt_id"] = active_prompt_id or "generic"
         save_settings_json(stored)
 
@@ -463,7 +576,7 @@ async def post_settings(
         config.anthropic_model = stored["anthropic_model"]
         config.openai_model = stored["openai_model"]
         config.user_domains = user_domains
-        config.prompts = stored["prompts"]
+        config.prompts = stored.get("prompts", config.prompts)
         config.active_prompt_id = stored["active_prompt_id"]
 
         # Anthropic key live-patch
@@ -509,8 +622,16 @@ async def stream_events() -> AsyncIterable[ServerSentEvent]:
     Local queue refs are captured at connection time so a new run starting
     after the SSE connects does not cross-wire events (T-03-06).
     """
-    global _active_queue, _active_control_queue
+    global _active_queue, _active_control_queue, _last_run_delivered
     if _active_queue is None:
+        if _last_run and not _last_run_delivered:
+            # The run ended before this client connected: replay its outcome once.
+            _last_run_delivered = True
+            for key in _REPLAY_ORDER:
+                if key in _last_run:
+                    yield _serialize_event(_last_run[key])
+            yield ServerSentEvent(raw_data="", event="done")
+            return
         yield ServerSentEvent(raw_data='{"state":"idle"}', event="state")
         yield ServerSentEvent(raw_data="", event="done")
         return
@@ -522,6 +643,7 @@ async def stream_events() -> AsyncIterable[ServerSentEvent]:
         while True:
             event = await data_q.get()
             if isinstance(event, DoneEvent):
+                _last_run_delivered = True
                 yield ServerSentEvent(raw_data="", event="done")
                 return
             yield _serialize_event(event)
@@ -563,6 +685,7 @@ async def stream_events() -> AsyncIterable[ServerSentEvent]:
                     except asyncio.QueueEmpty:
                         break
                     yield _serialize_event(tail)
+                _last_run_delivered = True
                 yield ServerSentEvent(raw_data="", event="done")
                 return
     finally:

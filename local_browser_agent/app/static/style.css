@@ -431,6 +431,23 @@ textarea:read-only {
   line-height: 1.5;
 }
 
+.human-banner {
+  border-left: 4px solid #eab308;
+  background: #1c1c1c;
+  color: #fde68a;
+  padding: 12px var(--sp-md);
+  border-radius: 0 4px 4px 0;
+  font-size: 14px;
+  line-height: 1.5;
+  margin-bottom: var(--sp-sm);
+}
+
+.run-history-error {
+  color: #fca5a5;
+  font-size: 13px;
+  margin: 6px 0;
+}
+
 /* ── Run History Panel ─────────────────────────────────────── */
 .run-history-section {
   max-width: 1280px;
