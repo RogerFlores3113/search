@@ -46,6 +46,10 @@ def _isolated_user_config(tmp_path, monkeypatch):
 
     cfg_root = tmp_path / "user-config"
     monkeypatch.setattr(platformdirs, "user_config_dir", lambda appname=None, *a, **k: str(cfg_root / (appname or "")))
+    # settings.json follows LBA_DATA_DIR when set, so give each test its own data dir too.
+    data_dir = tmp_path / "lba-data"
+    data_dir.mkdir()
+    monkeypatch.setenv("LBA_DATA_DIR", str(data_dir))
 
 
 @pytest.fixture

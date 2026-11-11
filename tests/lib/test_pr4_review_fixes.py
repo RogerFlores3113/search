@@ -149,10 +149,11 @@ def test_hedge_golden(answer, needle, expected):
 
 
 # 5 -- conftest ----------------------------------------------------------------------------
-def test_data_dir_is_a_tmp_dir():
+def test_data_dir_is_a_tmp_dir(tmp_path):
     import os
 
-    assert "lba-test-data-" in os.environ["LBA_DATA_DIR"]
+    # conftest points LBA_DATA_DIR at a per-test temp dir, never a developer's real one.
+    assert os.environ["LBA_DATA_DIR"].startswith(str(tmp_path))
 
 
 # 6 -- text focus --------------------------------------------------------------------------
