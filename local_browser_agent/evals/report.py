@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 
-from .runner import SuiteResult
+from .runner import RunRecord, SuiteResult
 
 
 def _pct(x: float) -> str:
@@ -23,6 +24,13 @@ def render_markdown(result: SuiteResult) -> str:
         "",
         f"- Model: `{result.provider or '?'}` / `{result.model or '?'}`",
         f"- Timestamp: {result.timestamp}",
+        (
+            f"- Git SHA: `{(result.meta.get('git_sha') or 'unknown')[:12]}`   "
+            f"lba: {result.meta.get('lba_version') or 'unknown'}   "
+            f"task set: `{result.meta.get('taskset_hash', '?')}`"
+        ),
+        f"- Repeats: {result.meta.get('repeats', '?')}   per-run timeout: {result.meta.get('timeout_s') or 'library default'}s",
+        f"- Complete: {'yes' if result.meta.get('complete') else 'NO (partial results)'}",
         "",
         "## Summary",
         "",
@@ -43,6 +51,20 @@ def render_markdown(result: SuiteResult) -> str:
     ]
     for cat, rate in result.category_pass_rates.items():
         lines.append(f"| {cat} | {_pct(rate)} |")
+    lines += [
+        "",
+        "## Per-task summary",
+        "",
+        "| Task | Category | Passes | Pass rate | Mean score | Mean steps | Cost | Safety violations |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for tid, s in result.task_summaries().items():
+        c = "n/a" if s["cost_usd"] is None else f"{s['cost_usd']:.4f}"
+        lines.append(
+            f"| {tid} | {s['category']} | {s['passes']}/{s['n']} | {_pct(s['pass_rate'])} | "
+            f"{s['mean_score']:.2f} | {s['mean_steps']:.1f} | {c} | "
+            f"{s['safety_violations'] if s['safety'] else '-'} |"
+        )
     lines += [
         "",
         "## Per-task runs",
@@ -69,3 +91,17 @@ def write_report(result: SuiteResult, out_dir: Path) -> tuple[Path, Path]:
     json_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     md_path.write_text(render_markdown(result), encoding="utf-8")
     return json_path, md_path
+
+
+def reset_jsonl(out_dir: Path) -> Path:
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "results.jsonl"
+    path.write_text("", encoding="utf-8")
+    return path
+
+
+def append_run(rec: RunRecord, out_dir: Path) -> None:
+    """Append one run as a JSON line (survives a crash of the suite)."""
+    with (Path(out_dir) / "results.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(asdict(rec)) + "\n")
