@@ -61,9 +61,9 @@ class JsonlTraceSink:
 
     The file is opened in append mode: an existing file is never truncated, so
     traces from several runs can share a file (tell them apart by ``run_id``).
-    Every record carries ``ts`` (ISO 8601, UTC) and ``run_id`` (a uuid4 generated
-    per sink instance, i.e. per CLI run). A StepCompletedEvent's own run_id, when
-    different, is kept as ``agent_run_id``.
+    Every record carries ``ts`` (ISO 8601, UTC) and ``run_id``: the event's own
+    ``run_id`` (set by ``BrowserAgent``, equal to ``RunResult.run_id``) when present,
+    otherwise this sink's own uuid4 (events emitted outside a run).
     """
 
     def __init__(self, path: str | Path, include_screenshots: bool = False) -> None:
@@ -83,10 +83,7 @@ class JsonlTraceSink:
             return
         record = dataclasses.asdict(event) if dataclasses.is_dataclass(event) else {"event": repr(event)}
         record.setdefault("type", type(event).__name__)
-        own = record.get("run_id")
-        if own and own != self.run_id:
-            record["agent_run_id"] = own
-        record["run_id"] = self.run_id
+        record["run_id"] = record.get("run_id") or self.run_id
         record["ts"] = datetime.now(timezone.utc).isoformat()
         await asyncio.to_thread(self._write, json.dumps(record, default=str))
         self.events_written += 1

@@ -8,12 +8,14 @@ from typing import Literal, Optional
 class ScreenshotEvent:
     type: Literal["screenshot"] = "screenshot"
     b64: str = ""
+    run_id: str = ""  # stamped by BrowserAgent with the run's id (same as RunResult.run_id)
 
 
 @dataclass
 class StateEvent:
     type: Literal["state"] = "state"
     state: str = "idle"  # idle | running | paused | complete | error
+    run_id: str = ""  # stamped by BrowserAgent with the run's id (same as RunResult.run_id)
 
 
 @dataclass
@@ -21,23 +23,27 @@ class ProgressEvent:
     type: Literal["progress"] = "progress"
     step: int = 0
     max_steps: int = 25
+    run_id: str = ""  # stamped by BrowserAgent with the run's id (same as RunResult.run_id)
 
 
 @dataclass
 class SummaryEvent:
     type: Literal["summary"] = "summary"
     text: str = ""
+    run_id: str = ""  # stamped by BrowserAgent with the run's id (same as RunResult.run_id)
 
 
 @dataclass
 class ErrorEvent:
     type: Literal["error_msg"] = "error_msg"
     message: str = ""
+    run_id: str = ""  # stamped by BrowserAgent with the run's id (same as RunResult.run_id)
 
 
 @dataclass
 class DoneEvent:
     type: Literal["done"] = "done"
+    run_id: str = ""  # stamped by BrowserAgent with the run's id (same as RunResult.run_id)
 
 
 @dataclass
@@ -47,6 +53,7 @@ class TokenEvent:
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     cost_usd: Optional[float] = None
+    run_id: str = ""  # stamped by BrowserAgent with the run's id (same as RunResult.run_id)
 
 
 @dataclass
@@ -54,6 +61,7 @@ class ModelInfoEvent:
     type: Literal["model_info"] = "model_info"
     provider: str = ""
     model_name: str = ""
+    run_id: str = ""  # stamped by BrowserAgent with the run's id (same as RunResult.run_id)
 
 
 @dataclass
@@ -64,6 +72,7 @@ class ThoughtEvent:
     evaluation_previous_goal: Optional[str] = None
     next_goal: Optional[str] = None
     memory: Optional[str] = None
+    run_id: str = ""  # stamped by BrowserAgent with the run's id (same as RunResult.run_id)
 
 
 @dataclass
@@ -77,6 +86,7 @@ class ActionDetailEvent:
     url: Optional[str] = None
     success: Optional[bool] = None
     step_duration_ms: Optional[int] = None
+    run_id: str = ""  # stamped by BrowserAgent with the run's id (same as RunResult.run_id)
 
 
 @dataclass
@@ -87,6 +97,7 @@ class HumanNeededEvent:
     reason: str = "captcha"
     url: Optional[str] = None
     message: str = ""
+    run_id: str = ""  # stamped by BrowserAgent with the run's id (same as RunResult.run_id)
 
 
 @dataclass
