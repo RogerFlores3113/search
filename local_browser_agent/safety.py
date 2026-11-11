@@ -28,10 +28,10 @@ SAFETY_DEFAULTS: frozenset[str] = frozenset({
     "capitalone.com", "americanexpress.com", "discover.com",
     # Brokerage / crypto
     "schwab.com", "fidelity.com", "vanguard.com", "etrade.com", "robinhood.com",
-    "coinbase.com", "kraken.com", "binance.com",
+    "coinbase.com", "kraken.com", "binance.com", "binance.us",
     # Payment
     "paypal.com", "venmo.com", "stripe.com", "square.com", "braintree.com",
-    "cash.app", "wise.com", "zellepay.com",
+    "cash.app", "wise.com", "zellepay.com", "zelle.com",
     # PayPal sibling TLDs (browser-use patterns cannot express ``paypal.*``, so the main ones are listed)
     "paypal.me", "paypal.co.uk", "paypal.de", "paypal.fr", "paypal.it", "paypal.es", "paypal.ca",
     "paypal.com.au", "paypal.nl", "paypal.ch", "paypal.at", "paypal.be", "paypal.pl", "paypal.ie",
@@ -46,13 +46,22 @@ SAFETY_DEFAULTS: frozenset[str] = frozenset({
     # Credential / Identity
     "lastpass.com", "1password.com", "bitwarden.com", "dashlane.com",
     "nordpass.com", "okta.com", "auth0.com",
+    # Government identity providers (secure.login.gov is covered by login.gov).
+    "login.gov", "id.me",
     # Identity providers and account settings. Path-level pages (github.com/settings, the AWS
     # console under a path) cannot be expressed as domain rules and are deliberately NOT listed:
     # github.com itself stays reachable; the AWS console and sign-in hosts are blocked by host.
     "accounts.google.com", "myaccount.google.com", "appleid.apple.com",
     "login.microsoftonline.com", "login.live.com", "account.microsoft.com",
     "console.aws.amazon.com", "signin.aws.amazon.com",
+    # Deliberately NOT listed: icloud.com, dropbox.com and mail.google.com. They are everyday sites
+    # (mail, files, shared docs) and this default set cannot be removed by users, so a host-level
+    # block would make the agent useless for common tasks. Use ``blocked_domains`` or an
+    # ``allowed_domains`` allow-list (``SafetyPolicy.strict``) when a profile is signed in there.
 })
+# Number of base domains in the default blocklist. ``browser.blocked_patterns`` emits two patterns
+# per domain (``*.d`` and ``*.d.``), so the default policy yields twice this many patterns.
+SAFETY_DEFAULTS_COUNT: int = len(SAFETY_DEFAULTS)
 
 GUARDRAIL_PROMPT = (
     "\nSAFETY GUARDRAILS — override everything else:\n"
@@ -255,7 +264,8 @@ _URL_BIGRAMS = frozenset({
     ("confirm", "order"), ("confirm", "payment"), ("confirm", "purchase"), ("complete", "purchase"),
     ("complete", "order"), ("buy", "now"), ("send", "money"), ("money", "transfer"),
     ("order", "pay"), ("order", "payment"), ("basket", "payment"), ("basket", "checkout"),
-    ("basket", "pay"), ("cart", "payment"), ("gp", "buy"),
+    ("basket", "pay"), ("cart", "payment"), ("gp", "buy"), ("secure", "pay"), ("pay", "now"),
+    ("orders", "new"),
 })
 # Content sites where a path like /wiki/Checkout or /org/checkout (a repo) is not a payment page.
 # Only URL-shape signals are skipped there; labels and form actions still count.
@@ -290,7 +300,7 @@ _URL_CHECKOUT_SEGMENTS = frozenset({
     "checkout", "checkouts", "placeorder", "buynow", "paynow", "confirmpayment",
     "kasse", "caisse", "cassa", "makepayment", "makeapayment", "securepayment",
     "expresscheckout", "onestepcheckout", "onepagecheckout", "guestcheckout", "checkoutview", "checkoutnow",
-    "checkoutstep",
+    "checkoutstep", "orderconfirm", "orderconfirmation",
 })
 _URL_CHECKOUT_STEP_RE = re.compile(r"^checkoutstep\d*$")
 # Segments that are transactional only as the first path segment (after an optional locale),
@@ -303,6 +313,7 @@ _URL_ROOT_ACTIONS = frozenset({
     "confirm", "submit", "process", "checkout", "pay", "complete", "review", "place",
     "new", "update", "upgrade", "add", "change", "start", "authorize",
 })
+_URL_CO_STEPS = frozenset({"shipping", "payment", "review"})
 _LOCALE_RE = re.compile(r"^[a-z]{2}([-_][a-z]{2})?$")
 _ID_RE = re.compile(r"^[\w-]*\d[\w-]*$")
 
@@ -500,7 +511,7 @@ _ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u2060-\u2064\ufeff\u00ad\u180e]")
 # Invisible "blank" characters that are not Zs/Cf: braille blank, Hangul fillers, Mongolian/Khmer vowels.
 _BLANK_RE = re.compile(r"[\u2800\u3164\u115f\u1160\uffa0\u17b4\u17b5\u034f]")
 _TURKISH_I = str.maketrans({"\u0131": "i", "\u0130": "I"})
-_SEPARATORS_RE = re.compile(r"[\-_./\\|:;,+*~·•–—]+")
+_SEPARATORS_RE = re.compile(r"[\-_./\\|:;,+*~·•–—\u2010\u2011\u2012\u2015\u2212\ufe58\ufe63\uff0d]+")
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _SUBMIT_TYPES = frozenset({"submit", "image", "button"})
 
@@ -511,7 +522,9 @@ class ActionRequest:
 
     ``element_label`` is the click target's label (or the key sequence / script snippet for
     non-click actions); ``url`` is the current page (or the destination for navigation);
-    ``reason`` says why the action was gated.
+    ``reason`` says why the action was gated. ``kind`` is ``"commerce"`` (purchase / payment
+    call to action, the default) or ``"irreversible"`` (account deletion, subscription
+    cancellation, money transfer, ...); both go through the same approval callback.
     """
 
     action_name: str
@@ -519,6 +532,7 @@ class ActionRequest:
     element_label: str | None = None
     url: str | None = None
     reason: str | None = None
+    kind: str = "commerce"
 
 
 ApprovalCallback = Callable[[ActionRequest], Awaitable[bool]]
@@ -805,6 +819,9 @@ def is_commerce_url(url: str | None, broad: bool = False, _depth: int = 0) -> bo
     if broad:
         return any(t in _URL_TOKENS for t in tokens)
     segments = [_PAGE_EXT_RE.sub("", seg) for seg in clean.split("/") if seg]
+    if len(segments) >= 2 and segments[0].casefold() == "co" and "".join(
+            _path_tokens(segments[1])) in _URL_CO_STEPS:
+        return True  # /co/shipping, /co/payment, /co/review (checkout flows that abbreviate "checkout")
     if segments and _LOCALE_RE.match(segments[0].casefold()):
         segments = segments[1:]
     joined = ["".join(_path_tokens(seg)) for seg in segments]
@@ -915,6 +932,118 @@ def form_looks_transactional(node: Any) -> bool:
     return any(attr_is_commerce(fa.get(k)) for k in ("id", "name", "aria-label"))
 
 
+# --- Generic confirm buttons and irreversible (non-purchase) actions ---------------------------
+# Labels that mean nothing on their own: gated only on a commerce-like page or inside a form whose
+# action is one ("Confirm" on /checkout is a purchase; "Confirm" on /settings is not).
+_GENERIC_LABELS = frozenset({"confirm", "submit", "continue", "complete", "finish", "done", "next"})
+# Path tokens that make a page "commerce-like" for generic labels: broader than is_commerce_url, which
+# gates every control on the page (/cart must stay browsable: remove item, change quantity).
+_CONTEXT_TOKENS = frozenset({
+    "checkout", "cart", "basket", "bag", "review", "order", "orders", "pay", "payment", "payments",
+    "billing", "orderconfirm", "placeorder",
+})
+
+
+def is_commerce_context_url(url: str | None, broad: bool = False) -> bool:
+    """True when a generic "Confirm"/"Submit"/"Continue" button on this page (or posting to this form
+    action) most likely completes a purchase: :func:`is_commerce_url` plus cart, basket, bag, review,
+    order(s), pay, payment and billing path segments. Content paths (``/news/...``, ``/blog/...``) and
+    content hosts stay out, and Amazon's ``/gp/cart/view.html`` is a plain cart page."""
+    if not url or not isinstance(url, str):
+        return False
+    if is_commerce_url(url, broad=broad):
+        return True
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return False
+    host = (canonical_host(parts.hostname or "") or (parts.hostname or "").lower()).rstrip(".")
+    if any(host == d or host.endswith("." + d) for d in _CONTENT_HOSTS):
+        return False
+    clean = _clean_url_path(parts.path or "")
+    tokens = _path_tokens(clean)
+    if not tokens or any(t in _URL_NEGATIVE_TOKENS for t in tokens):
+        return False
+    if tokens[:3] == ["gp", "cart", "view"]:
+        return False
+    segments = [_PAGE_EXT_RE.sub("", seg) for seg in clean.split("/") if seg]
+    return any("".join(_path_tokens(seg)) in _CONTEXT_TOKENS for seg in segments)
+
+
+def is_generic_confirm_label(label: str | None) -> bool:
+    text = normalize_text(label)
+    return text in _GENERIC_LABELS or _fold_homoglyphs(text) in _GENERIC_LABELS
+
+
+# Irreversible actions: gated on any page. A label matches when it starts with the phrase (optionally
+# after "yes"/"confirm"/"permanently") and adds at most three more words, so "Delete account" and
+# "Cancel my subscription now" gate while "How to delete your account" and "Delete account policy" do not.
+_IRREVERSIBLE_PHRASES = (
+    "delete account", "delete my account", "delete your account", "close account", "close my account",
+    "close your account", "deactivate account", "deactivate my account", "delete my data", "delete all my data",
+    "cancel subscription", "cancel my subscription", "cancel membership", "cancel my membership",
+    "cancel plan", "cancel my plan", "end subscription", "end my subscription", "end membership",
+    "withdraw funds", "withdraw money", "transfer funds", "transfer money", "transfer balance",
+    "send money", "send payment", "wire money", "wire transfer", "wire funds", "authorize payment",
+    "confirm transfer", "confirm withdrawal", "confirm wire", "close position", "sell all",
+)
+_IRREVERSIBLE_EXACT = frozenset({"withdraw", "wire"})
+_IRREVERSIBLE_LEADERS = frozenset({"yes", "confirm", "permanently", "ok", "okay"})
+_IRREVERSIBLE_TAILS = frozenset({
+    "policy", "policies", "faq", "faqs", "help", "info", "information", "terms", "guide", "options", "page",
+    "history", "tracking", "status", "details", "explained", "tips", "instructions",
+})
+_AUTHORIZE_URL_TOKENS = frozenset({
+    "pay", "payment", "payments", "checkout", "consent", "billing", "authorize", "authorise", "oauth",
+})
+
+
+def is_irreversible_label(label: str | None, url: str | None = None) -> bool:
+    """True when ``label`` names an irreversible non-purchase action (delete/close/deactivate an
+    account, delete my data, cancel a subscription/membership/plan, withdraw, transfer or send money,
+    wire, close position, sell all, authorize payment). A bare ``Authorize`` counts only on a pay,
+    checkout or consent URL. Generic labels (Allow, Accept, Submit, Post, Publish, Send message,
+    Unsubscribe, bare Delete or Cancel) never match."""
+    text = normalize_text(label)
+    if not text:
+        return False
+    for v in dict.fromkeys((text, _fold_homoglyphs(text))):
+        words = v.split()
+        if len(words) > 8 or any(v.startswith(p) for p in _INFO_PREFIXES):
+            continue
+        cores = [" ".join(words)]
+        while len(words) > 1 and words[0] in _IRREVERSIBLE_LEADERS:
+            words = words[1:]
+            cores.append(" ".join(words))
+        for core in cores:
+            if core in _IRREVERSIBLE_EXACT:
+                return True
+            if core in ("authorize", "authorise"):
+                if url and any(t in _AUTHORIZE_URL_TOKENS for t in _path_tokens(urlsplit(url.strip()).path)):
+                    return True
+                continue
+            for ph in _IRREVERSIBLE_PHRASES:
+                if core == ph or core.startswith(ph + " "):
+                    rest = core[len(ph):].split()
+                    if len(rest) <= 3 and not any(w in _IRREVERSIBLE_TAILS for w in rest):
+                        return True
+    return False
+
+
+def irreversible_risk(node: Any, page_url: str | None, label: str | None) -> str | None:
+    """Reason string when a click target is an irreversible action (see :func:`is_irreversible_label`)."""
+    try:
+        for n in _label_chain(node):
+            for part in label_parts(n):
+                if is_irreversible_label(part, page_url):
+                    return f"label {part!r} looks like an irreversible action (account, subscription or money)"
+        if is_irreversible_label(label, page_url):
+            return f"label {label!r} looks like an irreversible action (account, subscription or money)"
+    except ValueError:
+        return None
+    return None
+
+
 def element_risk(node: Any, page_url: str | None, label: str | None,
                  patterns: Iterable[str] = DEFAULT_COMMERCE_PATTERNS) -> str | None:
     """Return a reason string when a click target looks transactional, else None."""
@@ -950,6 +1079,20 @@ def element_risk(node: Any, page_url: str | None, label: str | None,
                 return f"enclosing control attribute {key}={aa.get(key)!r} looks like a purchase/commerce action"
     if any(_is_submit_like(n) and form_looks_transactional(n) for n in chain):
         return "submit button inside a checkout/payment/order form"
+    for n in chain:
+        generic = next((p for p in (*label_parts(n), label or "") if is_generic_confirm_label(p)), None)
+        if generic is None:
+            continue
+        # A plain link ("Continue" -> /about) only navigates; buttons and inputs submit.
+        is_plain_link = _tag(n) == "a" and bool(_attrs(n).get("href"))
+        if is_commerce_context_url(page_url) and not is_plain_link:
+            return f"generic {generic!r} button on a checkout/cart/order page"
+        form = _ancestor_form(n)
+        if form is not None and is_commerce_context_url(_attrs(form).get("action"), broad=True):
+            return f"generic {generic!r} button in a form that posts to a checkout/order URL"
+        fa = _attrs(n).get("formaction")
+        if is_commerce_context_url(fa, broad=True):
+            return f"generic {generic!r} button with a checkout/order formaction"
     if is_commerce_url(page_url) and any(_is_clickable_control(n) for n in chain):
         return "clickable control on a checkout/payment page"
     if not label and is_commerce_url(page_url):
@@ -1305,9 +1448,11 @@ class GuardedTools(Tools):
         blocked_domains: Iterable[str] = SAFETY_DEFAULTS,
         allow_local_network: bool = False,
         approval_timeout_s: float | None = 120.0,
+        gate_irreversible: bool = True,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self._lba_gate_irreversible = gate_irreversible
         self._lba_patterns = tuple(patterns)
         self._lba_gate = gate_commerce_clicks
         self._lba_approval = approval
@@ -1581,6 +1726,14 @@ class GuardedTools(Tools):
                                "cached page snapshot only")
             if reason is None and not url_ok and ambiguous:
                 reason = "page URL could not be read for an unlabeled/submit control (failing closed)"
+            if reason is None and self._lba_gate_irreversible:
+                reason = irreversible_risk(node, url, label)
+                if reason is None and state == "ok":
+                    reason = irreversible_risk(live, url, live_label)
+                    label = live_label if reason else label
+                if reason is not None:
+                    return ActionRequest(action_name=name, params=dict(params), element_label=label, url=url,
+                                         reason=reason, kind="irreversible")
         if reason is None:
             return None
         return ActionRequest(action_name=name, params=dict(params), element_label=label, url=url, reason=reason)
