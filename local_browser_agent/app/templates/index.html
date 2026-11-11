@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>local-browser-agent</title>
+  <!-- Per-process anti-CSRF token: sent as X-LBA-Token on every state-changing request. -->
+  <meta name="lba-token" content="{{ security_token }}">
   <!-- Vendored client-side deps (see local_browser_agent/app/static/vendor/README.md). Loading
        from a CDN would (1) break the app offline and (2) expose the agent's
        control surface to any unpkg / DNS compromise. -->
@@ -13,7 +15,7 @@
   <!-- App stylesheet -->
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body hx-headers='{"X-LBA-Token": "{{ security_token }}"}'>
   <!--
     Outer Alpine component gate — disclaimer acceptance is tracked by a signed,
     httpOnly cookie (set via POST /accept-disclaimer). Initial state is rendered
@@ -24,7 +26,7 @@
   <div x-data="{
     disclaimerAccepted: {{ 'true' if disclaimer_accepted else 'false' }},
     async accept() {
-      const r = await fetch('/accept-disclaimer', {method: 'POST'});
+      const r = await fetch('/accept-disclaimer', {method: 'POST', headers: lbaHeaders()});
       if (r.ok) this.disclaimerAccepted = true;
     }
   }">
@@ -65,16 +67,14 @@
          :style="disclaimerAccepted ? '' : 'filter:blur(4px)'">
 
       <!--
-        Outer SSE container — hx-ext="sse" activates HTMX SSE extension.
-        sse-connect="/stream" opens the SSE connection.
-        sse-close="done" tells HTMX to close the connection when event:done arrives.
+        Outer SSE container. The /stream connection is opened by agentUI.connectStream()
+        (a native EventSource): once on page load and again after every successful POST /run
+        (the server answers with HX-Trigger: streamStarted). The server closes each stream
+        with event:done, so it has to be re-opened for every run.
         x-data="agentUI()" binds the Alpine reactive component.
         Header is INSIDE this container so the ticker span shares agentUI state.
       -->
       <div id="sse-container"
-           hx-ext="sse"
-           sse-connect="/stream"
-           sse-close="done"
            x-data="agentUI()">
 
         <header class="app-header">
@@ -149,6 +149,19 @@
               </button>
             </div>
 
+            <!-- Human check (CAPTCHA) banner -->
+            <div class="human-banner"
+                 role="alert"
+                 aria-live="assertive"
+                 x-show="humanNeeded"
+                 style="display:none">
+              <strong>The agent needs you.</strong>
+              <span x-text="humanMessage || 'A website is asking for a human check (CAPTCHA).'"></span>
+              Solve it yourself in the Chrome window the agent opened, then press
+              <strong>Resume</strong> here to continue (or <strong>Stop</strong> to end the run).
+              The agent never solves CAPTCHAs for you.
+            </div>
+
             <!-- Task form -->
             <form hx-post="/run" hx-swap="none">
               <input type="hidden" name="active_prompt_id" :value="activePromptId">
@@ -180,7 +193,11 @@
                    role="alert"
                    aria-live="assertive"
                    x-show="errorMsg"
-                   x-text="errorMsg + ' — check your config and try again.'"></div>
+                   >
+                <span x-text="errorMsg"></span>
+                <a x-show="errorLink" :href="errorLink" target="_blank" rel="noopener"
+                   x-text="errorLinkText" style="color:#93c5fd;margin-left:6px"></a>
+              </div>
             </div>
 
             <!-- Pause / Stop buttons — wired to /pause and /stop endpoints (Plan 03) -->
@@ -213,23 +230,6 @@
                  aria-live="polite"
                  aria-label="Agent narration"></div>
 
-            <!--
-              SSE event bridges — hidden divs inside #sse-container so HTMX SSE extension
-              delivers events (RESEARCH Pitfall 3: sse-swap targets must be descendants).
-              Each div listens to a specific SSE event type and dispatches to Alpine handlers.
-              All SSE events carry JSON payload in event.detail.data (Plan 01 used data= not raw_data).
-            -->
-            <div style="display:none" sse-swap="state"         data-bridge="handleState"></div>
-            <div style="display:none" sse-swap="summary"       data-bridge="handleSummary"></div>
-            <div style="display:none" sse-swap="error_msg"     data-bridge="handleError"></div>
-            <div style="display:none" sse-swap="screenshot"    data-bridge="handleScreenshot"></div>
-            <div style="display:none" sse-swap="progress"      data-bridge="handleProgress"></div>
-            <!-- Phase 9 D-22: four new bridges (token, model_info, thought, action_detail) -->
-            <div style="display:none" sse-swap="token"         data-bridge="handleToken"></div>
-            <div style="display:none" sse-swap="model_info"    data-bridge="handleModelInfo"></div>
-            <div style="display:none" sse-swap="thought"       data-bridge="handleThought"></div>
-            <div style="display:none" sse-swap="action_detail" data-bridge="handleActionDetail"></div>
-
           </div><!-- /right column -->
         </div><!-- /layout -->
 
@@ -238,7 +238,7 @@
           <h2 class="run-history-heading">Recent Runs</h2>
           <div id="run-history-list"
                hx-get="/runs"
-               hx-trigger="load, htmx:sseClose from:#sse-container"
+               hx-trigger="load"
                hx-swap="innerHTML">
           </div>
         </section>
@@ -422,11 +422,21 @@
   </div><!-- /disclaimer gate -->
 
   <script>
+    function lbaHeaders() {
+      const m = document.querySelector('meta[name="lba-token"]');
+      return { 'X-LBA-Token': m ? m.content : '' };
+    }
+
     function agentUI() {
       return {
         state: 'idle',
         summary: '',
         errorMsg: '',
+        errorLink: '',
+        errorLinkText: '',
+        humanNeeded: false,
+        humanMessage: '',
+        _stream: null,
         stepNum: 0,
         maxSteps: 25,
         elapsed: 0,
@@ -465,17 +475,40 @@
         activePromptId: 'generic',
         selectedPromptId: null,
 
-        init() {
-          // Wire SSE bridge elements to component methods. The bridges have
-          // sse-swap so htmx-ext-sse dispatches htmx:sseMessage on each one
-          // when its named event arrives. Using addEventListener (not hx-on)
-          // keeps `this` bound to the Alpine component so method lookup works.
-          this.$el.querySelectorAll('[data-bridge]').forEach((el) => {
-            const method = el.dataset.bridge;
-            if (typeof this[method] === 'function') {
-              el.addEventListener('htmx:sseMessage', (e) => this[method](e));
-            }
+        connectStream() {
+          // (Re)open the /stream EventSource. The server ends every stream with
+          // event:done (and the browser must not auto-reconnect after that), so this is
+          // called on page load and again after each successful POST /run.
+          if (this._stream) { this._stream.close(); this._stream = null; }
+          const source = new EventSource('/stream');
+          this._stream = source;
+          const routes = {
+            state: 'handleState', summary: 'handleSummary', error_msg: 'handleError',
+            screenshot: 'handleScreenshot', progress: 'handleProgress', token: 'handleToken',
+            model_info: 'handleModelInfo', thought: 'handleThought',
+            action_detail: 'handleActionDetail', human_needed: 'handleHumanNeeded',
+          };
+          Object.keys(routes).forEach((type) => {
+            source.addEventListener(type, (e) => this[routes[type]]({ detail: { data: e.data } }));
           });
+          source.addEventListener('done', () => {
+            source.close();
+            if (this._stream === source) this._stream = null;
+            this.refreshRuns();
+          });
+        },
+
+        refreshRuns() {
+          // The run row is written just after the final event, so refresh twice.
+          const load = () => { if (window.htmx) htmx.ajax('GET', '/runs', { target: '#run-history-list', swap: 'innerHTML' }); };
+          load();
+          setTimeout(load, 1500);
+        },
+
+        init() {
+          this.connectStream();
+          // POST /run answers with HX-Trigger: streamStarted -> open a fresh stream.
+          document.body.addEventListener('streamStarted', () => this.connectStream());
           // Load saved settings on page mount so provider/domain state is
           // pre-populated without the user needing to open the settings panel.
           // loadOllamaModels() is intentionally excluded — it is expensive and
@@ -522,6 +555,8 @@
               this._elapsedTimer = null;
             }
           }
+          if (d.state !== 'paused') this.humanNeeded = false;
+          if (d.state === 'running') this.errorLink = '';
           // Phase 9 D-20: idle teardown — revoke the last blob URL so it is
           // not retained after the run ends.
           if (d.state === 'idle') {
@@ -727,8 +762,23 @@
 
         handleError($event) {
           const d = JSON.parse($event.detail.data);
-          // Set errorMsg only; template appends " — check your config..." via x-text binding
-          this.errorMsg = d.message;
+          let msg = d.message || 'The run failed.';
+          this.errorLink = '';
+          // Chrome missing / could not be started: plain message plus an install link.
+          if (/google\.com\/chrome/i.test(msg)) {
+            this.errorLink = 'https://www.google.com/chrome/';
+          } else if (/(chrome|chromium)[^.]*(not found|no such file|executable|could not be (found|started)|failed to launch)|playwright install/i.test(msg)) {
+            msg = 'Google Chrome could not be started. Make sure Google Chrome is installed, then try again.';
+            this.errorLink = 'https://www.google.com/chrome/';
+          }
+          if (this.errorLink) this.errorLinkText = 'Install Google Chrome';
+          this.errorMsg = msg;
+        },
+
+        handleHumanNeeded($event) {
+          const d = JSON.parse($event.detail.data);
+          this.humanMessage = d.message || '';
+          this.humanNeeded = true;
         },
 
         handleScreenshot($event) {
@@ -887,7 +937,7 @@
           fd.append('active_prompt_id', this.activePromptId || 'generic');
           fd.append('prompts_json', JSON.stringify(this.prompts));
           try {
-            const r = await fetch('/api/settings', { method: 'POST', body: fd });
+            const r = await fetch('/api/settings', { method: 'POST', body: fd, headers: lbaHeaders() });
             const d = await r.json();
             if (r.ok && d.status === 'saved') {
               this.savedMsg = 'Saved ✓';

@@ -40,6 +40,8 @@ from jinja2 import Environment, FileSystemLoader
 def _render_runs_fragment(runs: list[dict]) -> str:
     """Render local_browser_agent/app/templates/runs_fragment.html directly via Jinja2."""
     env = Environment(loader=FileSystemLoader("local_browser_agent/app/templates"), autoescape=True)
+    from local_browser_agent.app.main import _humantime
+    env.filters["humantime"] = _humantime
     tmpl = env.get_template("runs_fragment.html")
     return tmpl.render(runs=runs)
 
@@ -290,26 +292,18 @@ def test_action_badge_assets_present():
 
 
 def test_new_sse_bridges_inside_container():
-    """D-22 + Phase 3 D-11: four new `sse-swap` bridges (`token`, `model_info`,
-    `thought`, `action_detail`) are descendants of `#sse-container`.
+    """D-22: token / model_info / thought / action_detail events are routed to their handlers
+    by the native EventSource wiring in `connectStream()` (inside the #sse-container component).
     """
     html = Path("local_browser_agent/app/templates/index.html").read_text()
-
-    # Locate the #sse-container opening tag. Phase 3 D-11 locks bridge
-    # placement: `htmx-ext-sse` only delivers to descendants.
-    container_match = re.search(r'id\s*=\s*"sse-container"', html)
-    assert container_match is not None, (
+    assert re.search(r'id\s*=\s*"sse-container"', html), (
         "index.html must contain an `id=\"sse-container\"` element (Phase 3 D-11)"
     )
-    container_start = container_match.start()
-
-    required_bridges = ("token", "model_info", "thought", "action_detail")
-    for ev in required_bridges:
-        pattern = f'sse-swap="{ev}"'
-        idx = html.find(pattern, container_start)
-        assert idx != -1, (
-            f"sse-swap=\"{ev}\" bridge missing or not after `#sse-container` (D-22)"
-        )
+    for ev, handler in (
+        ("token", "handleToken"), ("model_info", "handleModelInfo"),
+        ("thought", "handleThought"), ("action_detail", "handleActionDetail"),
+    ):
+        assert re.search(rf"{ev}\s*:\s*'{handler}'", html), f"{ev} not routed to {handler} (D-22)"
 
 
 # ===========================================================================

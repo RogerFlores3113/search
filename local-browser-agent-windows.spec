@@ -9,6 +9,8 @@
 
 import sys
 
+from PyInstaller.utils.hooks import collect_data_files
+
 block_cipher = None
 
 a = Analysis(
@@ -20,7 +22,10 @@ a = Analysis(
         ("local_browser_agent/app/templates", "local_browser_agent/app/templates"),
         # Static files (CSS + any other static assets)
         ("local_browser_agent/app/static", "local_browser_agent/app/static"),
-    ],
+    ]
+    # browser_use reads agent/system_prompts/*.md at runtime and PyInstaller does not bundle
+    # non-Python files on its own; `--smoke` verifies they are present.
+    + collect_data_files("browser_use"),
     hiddenimports=[
         # uvicorn internals not auto-discovered by PyInstaller
         "uvicorn.logging",
@@ -41,7 +46,7 @@ a = Analysis(
         "browser_use.browser.session",
         "browser_use.browser.profile",
         "browser_use.agent.service",
-        "browser_use.controller.service",
+        "browser_use.tools.service",
         "browser_use.dom.service",
         "cdp_use",
         "cdp_use.client",

@@ -63,6 +63,9 @@ jobs:
       - name: Build macOS .app
         run: uv run pyinstaller local-browser-agent.spec
 
+      - name: Smoke test frozen app (--smoke)
+        run: dist/local-browser-agent.app/Contents/MacOS/local-browser-agent --smoke
+
       - name: Ad-hoc codesign
         run: codesign --force --deep -s - dist/local-browser-agent.app
 
@@ -99,10 +102,22 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist\local-browser-agent -DestinationPath local-browser-agent-windows.zip
 
-      - name: Smoke test frozen exe
+      - name: Smoke test frozen exe (--smoke)
         shell: pwsh
         run: |
-          $proc = Start-Process -FilePath "dist\local-browser-agent\local-browser-agent.exe" -PassThru
+          # --smoke imports everything and checks bundled templates/static/browser_use prompt
+          # files, then exits without starting a server or a browser.
+          $p = Start-Process -FilePath "dist\local-browser-agent\local-browser-agent.exe" -ArgumentList "--smoke" -Wait -PassThru
+          Get-ChildItem -Path $env:LOCALAPPDATA -Recurse -Filter smoke.log -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName }
+          if ($p.ExitCode -ne 0) {
+            Write-Error "frozen exe --smoke failed with exit code $($p.ExitCode)"
+            exit 1
+          }
+
+      - name: Smoke test frozen exe startup
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath "dist\local-browser-agent\local-browser-agent.exe" -ArgumentList "--no-open" -PassThru
           Start-Sleep -Seconds 5
           if ($proc.HasExited -and $proc.ExitCode -ne 0) {
             Write-Error "exe crashed on startup with exit code $($proc.ExitCode)"

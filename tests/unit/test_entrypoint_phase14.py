@@ -93,7 +93,7 @@ def test_stdout_redirect_in_frozen_guard(monkeypatch, tmp_path):
         monkeypatch.setattr(main_mod, "schedule_browser_open", lambda **kw: None)
         monkeypatch.setattr(main_mod, "chrome_is_installed", lambda: True)
 
-        main_mod.main()
+        main_mod.main([])
 
         # app.log must have been created under tmp_path
         log_file = tmp_path / "app.log"
@@ -122,7 +122,7 @@ def test_uvicorn_use_colors_false(monkeypatch):
     monkeypatch.setattr(main_mod, "schedule_browser_open", lambda **kw: None)
     monkeypatch.setattr(main_mod, "chrome_is_installed", lambda: True)
 
-    main_mod.main()
+    main_mod.main([])
 
     assert calls, "uvicorn.run() was never called"
     assert calls[0].get("use_colors") is False, (
