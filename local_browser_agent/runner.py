@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import dataclasses
-import inspect
 import logging
 import time
 import uuid
@@ -478,9 +477,8 @@ class BrowserAgent:
                         blocked_domains=cfg.safety.blocked_domains,
                         approval=self.approval,
                         blocked_log=blocked,
+                        allow_local_network=cfg.safety.allow_local_network,
                     )
-                    if "allow_local_network" in inspect.signature(GuardedTools.__init__).parameters:
-                        tool_kwargs["allow_local_network"] = cfg.safety.allow_local_network
                     tools = GuardedTools(**tool_kwargs)
                     parts = [p for p in (cfg.system_prompt_extension, cfg.safety.guardrail_prompt) if p]
                     kwargs: dict[str, Any] = dict(

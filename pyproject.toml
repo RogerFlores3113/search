@@ -20,7 +20,7 @@ lba-app = "local_browser_agent.app.__main__:main"
 lba = "local_browser_agent.cli:main"
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.2"]
+mcp = ["mcp>=1.10"]
 
 [build-system]
 requires = ["hatchling"]

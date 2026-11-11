@@ -21,6 +21,19 @@ def _app_test_defaults(monkeypatch):
     monkeypatch.setattr(main_mod, "chrome_is_installed", lambda: True)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_user_config(tmp_path, monkeypatch):
+    """Keep tests off the developer's real settings.json.
+
+    A configured app on the test machine (for example provider "ollama") would otherwise
+    leak into Settings() defaults and break provider and preflight assertions.
+    """
+    import platformdirs
+
+    cfg_root = tmp_path / "user-config"
+    monkeypatch.setattr(platformdirs, "user_config_dir", lambda appname=None, *a, **k: str(cfg_root / (appname or "")))
+
+
 @pytest.fixture
 def monkeypatch_env(monkeypatch):
     """Clear all agent-relevant env vars so Settings() uses defaults."""
