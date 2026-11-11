@@ -12,7 +12,7 @@ import unicodedata
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl, unquote, urlsplit, urlunsplit
 
 from browser_use.agent.views import ActionResult
@@ -524,7 +524,8 @@ class ActionRequest:
     non-click actions); ``url`` is the current page (or the destination for navigation);
     ``reason`` says why the action was gated. ``kind`` is ``"commerce"`` (purchase / payment
     call to action, the default) or ``"irreversible"`` (account deletion, subscription
-    cancellation, money transfer, ...); both go through the same approval callback.
+    cancellation, money transfer, ...) or ``"upload"`` (a local file sent to the website); all go
+    through the same approval callback.
     """
 
     action_name: str
@@ -532,7 +533,7 @@ class ActionRequest:
     element_label: str | None = None
     url: str | None = None
     reason: str | None = None
-    kind: str = "commerce"
+    kind: Literal["commerce", "irreversible", "upload"] = "commerce"
 
 
 ApprovalCallback = Callable[[ActionRequest], Awaitable[bool]]
@@ -996,12 +997,16 @@ def is_generic_confirm_label(label: str | None) -> bool:
 # "Close account menu" do not.
 _IRREVERSIBLE_PHRASES = (
     "withdraw funds", "withdraw money", "transfer funds", "transfer money", "transfer balance",
-    "send money", "send payment", "wire money", "wire transfer", "wire funds", "authorize payment",
+    "send money", "send payment", "send funds", "wire money", "wire transfer", "wire funds", "authorize payment",
     "confirm transfer", "confirm withdrawal", "confirm wire", "close position", "sell all",
 )
-_IRREVERSIBLE_EXACT = frozenset({"withdraw", "wire", "deactivate", "delete forever"})
+_IRREVERSIBLE_EXACT = frozenset({
+    "withdraw", "wire", "deactivate", "delete forever", "permanently delete", "delete permanently",
+    "delete everything", "erase everything", "cash out",
+})
 # Verb x object matching ("Cancel your subscription", "Delete this account and all associated data").
-_IRREV_VERBS = frozenset({"delete", "close", "deactivate", "terminate", "remove", "cancel", "end", "erase", "withdraw"})
+_IRREV_VERBS = frozenset({"delete", "close", "deactivate", "terminate", "remove", "cancel", "end", "erase",
+                          "withdraw", "stop", "disable"})
 _IRREV_DETERMINERS = frozenset({"your", "this", "my", "the", "all", "a", "an", "permanently"})
 _IRREV_OBJECTS = (
     ("account",), ("profile",), ("data",), ("subscription",), ("membership",), ("plan",),
@@ -1020,6 +1025,8 @@ _IRREV_VERB_OBJECT = {  # which objects each verb pairs with ("Close profile" is
     "cancel": {("account",)} | _PLANISH | _RENEWISH,
     "end": _PLANISH,
     "withdraw": {("consent",)},
+    "stop": _PLANISH | _RENEWISH,
+    "disable": _RENEWISH,
 }
 # Words allowed after the object: "Delete account and all associated data", "Delete my data permanently".
 # Anything else ("Remove profile picture", "Cancel plan change", "Remove account from this device")
@@ -1027,7 +1034,15 @@ _IRREV_VERB_OBJECT = {  # which objects each verb pairs with ("Close profile" is
 _IRREV_OBJECT_TAILS = frozenset({
     "and", "all", "associated", "related", "my", "your", "of", "data", "permanently", "forever", "now",
 })
-_TRAILING_PUNCT_RE = re.compile(r"[\s.,;:!?\u2026\u2713\u2714\u2715\u00bb\u203a>)\]\"'*]+$")
+# "Close my Chase account", "Delete my google account": one brand word may sit between determiner and account.
+_IRREV_BRAND_VERBS = frozenset({"close", "delete"})
+# Words that may precede the verb in a sentence-style label ("I want to delete my account permanently").
+_SENTENCE_LEAD = frozenset({
+    "i", "want", "to", "would", "like", "wish", "please", "yes", "and", "unsubscribe", "then", "also", "ok",
+    "okay", "confirm", "permanently", "continue", "proceed", "go", "ahead", "understand", "that", "my", "just",
+    "need", "ready", "sure", "do", "it",
+})
+_TRAILING_PUNCT_RE = re.compile(r"[\s.,;:!?…✓✔✕»›>)\]\"'*]+$")
 _IRREVERSIBLE_LEADERS = frozenset({"yes", "confirm", "permanently", "ok", "okay"})
 _IRREVERSIBLE_TAILS = frozenset({
     "policy", "policies", "faq", "faqs", "help", "info", "information", "terms", "guide", "options", "page",
@@ -1036,6 +1051,70 @@ _IRREVERSIBLE_TAILS = frozenset({
 _AUTHORIZE_URL_TOKENS = frozenset({
     "pay", "payment", "payments", "checkout", "consent", "billing", "authorize", "authorise", "oauth",
 })
+_MONEY_VERBS = frozenset({"send", "transfer", "withdraw", "wire"})
+_CURRENCY_WORDS = frozenset({
+    "usd", "eur", "gbp", "cad", "aud", "jpy", "inr", "chf", "cny", "dollar", "dollars", "euro", "euros",
+    "pound", "pounds", "yen", "bucks", "btc", "eth", "usdc", "usdt", "bitcoin",
+})
+_MONEY_ALL_TAILS = frozenset({"funds", "money", "balance", "cash", "now", "my", "your", "of", "available",
+                              "remaining", "everything", "the"})
+_TRAILING_PAREN_RE = re.compile(r"\s*[(\[{][^()\[\]{}]*[)\]}]\s*$")
+_DIGIT_FOLD = str.maketrans({"0": "o", "3": "e", "5": "s"})
+
+
+def _squeezed_combos() -> tuple[frozenset[str], frozenset[str]]:
+    dets = [""] + sorted(_IRREV_DETERMINERS)
+    verbs = dict(_IRREV_VERB_OBJECT, turnoff=_RENEWISH | _PLANISH)
+    out: set[str] = set()
+    for verb, objs in verbs.items():
+        for det in dets:
+            for obj in objs:
+                out.add(verb + det + "".join(obj))
+    exact = {"".join(x.split()) for x in (*_IRREVERSIBLE_PHRASES, *_IRREVERSIBLE_EXACT)}
+    return frozenset(out | exact), frozenset({"permanently", "forever", "now"})
+
+
+def _irrev_variants(label: Any) -> list[str]:
+    """Normalised spellings of ``label`` for the irreversible matcher: invisible/format characters
+    dropped and, separately, treated as word breaks; combining marks, symbols and emoji (So/Sk/Sm) and a
+    trailing parenthesised suffix removed; plus the homoglyph-folded form of each."""
+    raw = str(label) if label else ""
+    if not raw.strip():
+        return []
+    for _ in range(3):
+        stripped = _TRAILING_PAREN_RE.sub("", raw)
+        if stripped == raw or not stripped.strip():
+            break
+        raw = stripped
+    out: list[str] = []
+    for cf_as_space in (False, True):
+        t = raw
+        if cf_as_space:
+            t = "".join(" " if unicodedata.category(c) == "Cf" else c for c in t)
+        t = _strip_marks(t)
+        t = "".join(" " if unicodedata.category(c) in ("So", "Sk", "Sm") else c for c in t)
+        n = normalize_text(t)
+        if n:
+            out.append(n)
+            out.append(_fold_homoglyphs(n))
+    return list(dict.fromkeys(out))
+
+
+def _obj_variants(word: str) -> list[str]:
+    """Spellings of an object word with digit look-alikes folded ("acc0unt"); only for object words."""
+    if not any(c.isdigit() for c in word) or not any(c.isalpha() for c in word):
+        return [word]
+    base = word.translate(_DIGIT_FOLD)
+    return list(dict.fromkeys([word, base.replace("1", "l"), base.replace("1", "i")]))
+
+
+def _match_object(rest: list[str], allowed: set[tuple[str, ...]]) -> bool:
+    for obj in _IRREV_OBJECTS:
+        if obj not in allowed or len(rest) < len(obj):
+            continue
+        if all(any(v == o for v in _obj_variants(w)) for w, o in zip(rest, obj)):
+            return all(w in _IRREV_OBJECT_TAILS for w in rest[len(obj):])
+    return False
 
 
 def _verb_object_match(core: str) -> bool:
@@ -1043,49 +1122,158 @@ def _verb_object_match(core: str) -> bool:
     # "permanently delete", "yes delete": leaders are stripped by the caller; allow "permanently" here too.
     while words and words[0] in ("permanently", "please"):
         words = words[1:]
+    if words[:2] == ["turn", "off"]:
+        words = ["stop", *words[2:]]
     if len(words) < 2 or words[0] not in _IRREV_VERBS:
         return False
     verb, rest = words[0], words[1:]
+    dets = 0
     while rest and rest[0] in _IRREV_DETERMINERS:
         rest = rest[1:]
-    allowed = _IRREV_VERB_OBJECT.get(verb, set())
-    for obj in _IRREV_OBJECTS:
-        if rest[:len(obj)] == list(obj) and obj in allowed:
-            return all(w in _IRREV_OBJECT_TAILS for w in rest[len(obj):])
+        dets += 1
+    if _match_object(rest, _IRREV_VERB_OBJECT.get(verb, set())):
+        return True
+    if verb in _IRREV_BRAND_VERBS and dets and len(rest) >= 2 and rest[0] not in _IRREV_OBJECT_TAILS:
+        return _match_object(rest[1:], {("account",)})
     return False
+
+
+def _amount_len(rest: list[str]) -> int:
+    """Words used by a money amount at the start of ``rest`` ("$500", "$ 500", "500 usd", "usd 500"), else 0."""
+    if not rest:
+        return 0
+    r0 = rest[0]
+    has_digit = any(c.isdigit() for c in r0)
+    if has_digit and _CURRENCY_RE.search(r0):
+        return 1
+    if (_CURRENCY_RE.fullmatch(r0) or r0 in _CURRENCY_WORDS) and len(rest) > 1 and any(c.isdigit() for c in rest[1]):
+        return 2
+    if has_digit and len(rest) > 1 and rest[1] in _CURRENCY_WORDS:
+        return 2
+    return 0
+
+
+def _money_match(core: str) -> bool:
+    """send/transfer/withdraw/wire + an amount, or + "all" ("Send $500", "Withdraw all", "Transfer 200 usd to
+    savings"). Bare "Send" and bare "Transfer" are not matched."""
+    words = core.split()
+    if len(words) < 2 or words[0] not in _MONEY_VERBS:
+        return False
+    verb, rest = words[0], words[1:]
+    if rest[0] == "all":
+        tail = rest[1:]
+        if verb == "send" and not tail:
+            return False
+        return all(w in _MONEY_ALL_TAILS for w in tail)
+    n = _amount_len(rest)
+    if n == 0 and verb != "send" and len(rest) == 1 and rest[0].isdigit():
+        n = 1
+    if n == 0:
+        return False
+    tail = rest[n:]
+    return len(tail) <= 4 and not any(w in _IRREVERSIBLE_TAILS for w in tail)
+
+
+def _sentence_match(words: list[str]) -> bool:
+    """A verb+object pair after a short lead-in ("I want to delete my account permanently")."""
+    for i in range(1, len(words)):
+        if all(w in _SENTENCE_LEAD for w in words[:i]) and _verb_object_match(" ".join(words[i:])):
+            return True
+    return False
+
+
+_SQUEEZED, _SQUEEZED_TAILS = _squeezed_combos()
+
+
+def _squeezed_match(v: str) -> bool:
+    """Fused spellings ("deleteaccount", "cancelsubscription", "closemyaccount")."""
+    sq = "".join(c for c in v if c.isalnum())
+    if sq in _SQUEEZED:
+        return True
+    return any(sq.endswith(t) and sq[:-len(t)] in _SQUEEZED for t in _SQUEEZED_TAILS)
+
+
+def _irrev_variant_match(v: str, url: str | None) -> bool:
+    v = _TRAILING_PUNCT_RE.sub("", v)
+    words = v.split()
+    if not words or len(words) > 8 or any(v.startswith(p) for p in _INFO_PREFIXES):
+        return False
+    if _squeezed_match(v):
+        return True
+    cores = [" ".join(words)]
+    while len(words) > 1 and words[0] in _IRREVERSIBLE_LEADERS:
+        words = words[1:]
+        cores.append(" ".join(words))
+    for core in cores:
+        if core in _IRREVERSIBLE_EXACT or _verb_object_match(core) or _money_match(core):
+            return True
+        if core in ("authorize", "authorise"):
+            if url and any(t in _AUTHORIZE_URL_TOKENS for t in _path_tokens(urlsplit(url.strip()).path)):
+                return True
+            continue
+        for ph in _IRREVERSIBLE_PHRASES:
+            if core == ph or core.startswith(ph + " "):
+                rest = core[len(ph):].split()
+                if len(rest) <= 3 and not any(w in _IRREVERSIBLE_TAILS for w in rest):
+                    return True
+    return _sentence_match(cores[0].split())
 
 
 def is_irreversible_label(label: str | None, url: str | None = None) -> bool:
     """True when ``label`` names an irreversible non-purchase action (delete/close/deactivate an
-    account, delete my data, cancel a subscription/membership/plan, withdraw, transfer or send money,
-    wire, close position, sell all, authorize payment). A bare ``Authorize`` counts only on a pay,
-    checkout or consent URL. Generic labels (Allow, Accept, Submit, Post, Publish, Send message,
-    Unsubscribe, bare Delete or Cancel) never match."""
-    text = normalize_text(label)
-    if not text:
+    account, delete my data, cancel or stop a subscription/membership/plan/auto-renewal, withdraw,
+    transfer or send money (with an amount or "all"), wire, cash out, close position, sell all,
+    authorize payment). Decoration (emoji, arrows, combining marks, a trailing "(required)"), zero-width
+    characters and fused spellings ("Deleteaccount") do not hide a label. A bare ``Authorize`` counts
+    only on a pay, checkout or consent URL. Generic labels (Allow, Accept, Submit, Post, Publish, Send
+    message, Unsubscribe, bare Delete, Cancel, Send or Transfer) never match."""
+    return any(_irrev_variant_match(v, url) for v in _irrev_variants(label))
+
+
+# URL tokens that mark an account-destroying page or endpoint. Adjacent tokens only, so /comments/123/delete
+# and /cart/cancel-item are not account actions; help/legal/content paths and finished states are exempt.
+_DESTRUCTIVE_URL_NEGATIVE = frozenset({
+    "help", "support", "faq", "faqs", "blog", "article", "articles", "docs", "learn", "news", "wiki", "policy",
+    "policies", "privacy", "terms", "guide", "guides", "kb", "answers", "community", "forum", "success",
+    "done", "confirmed", "complete", "completed", "deleted", "cancelled", "canceled", "closed",
+})
+_DESTRUCTIVE_URL_LONE = frozenset({"deactivate", "terminate"})
+_DESTRUCTIVE_URL_PLANISH = frozenset({"subscription", "membership", "plan"})
+_DESTRUCTIVE_URL_ACCOUNT_VERBS = frozenset({"delete", "close", "terminate", "deactivate"})
+_DESTRUCTIVE_GENERIC = frozenset({*_GENERIC_LABELS, "yes", "ok", "okay", "proceed", "go", "sure", "agree",
+                                  "i agree", "yes i am sure", "yes i'm sure", "i understand"})
+
+
+def is_destructive_url(url: str | None) -> bool:
+    """True for an account/subscription-destroying page or endpoint: delete-account, account + delete or
+    close, close-account, deactivate, terminate, subscription/membership/plan + cancel,
+    cancel-subscription, cancel-membership. A bare /cancel or /delete path does not count."""
+    if not url or not isinstance(url, str):
         return False
-    for v in dict.fromkeys((text, _fold_homoglyphs(text))):
-        v = _TRAILING_PUNCT_RE.sub("", v)
-        words = v.split()
-        if not words or len(words) > 8 or any(v.startswith(p) for p in _INFO_PREFIXES):
-            continue
-        cores = [" ".join(words)]
-        while len(words) > 1 and words[0] in _IRREVERSIBLE_LEADERS:
-            words = words[1:]
-            cores.append(" ".join(words))
-        for core in cores:
-            if core in _IRREVERSIBLE_EXACT or _verb_object_match(core):
-                return True
-            if core in ("authorize", "authorise"):
-                if url and any(t in _AUTHORIZE_URL_TOKENS for t in _path_tokens(urlsplit(url.strip()).path)):
-                    return True
-                continue
-            for ph in _IRREVERSIBLE_PHRASES:
-                if core == ph or core.startswith(ph + " "):
-                    rest = core[len(ph):].split()
-                    if len(rest) <= 3 and not any(w in _IRREVERSIBLE_TAILS for w in rest):
-                        return True
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return False
+    path = _clean_url_path(parts.path or "")
+    frag = unquote(parts.fragment or "")
+    if frag.lstrip("!").startswith("/"):
+        path += "/" + frag.lstrip("!")
+    tokens = [t[:-1] if len(t) > 4 and t.endswith("s") and not t.endswith("ss") else t for t in _path_tokens(path)]
+    if not tokens or any(t in _DESTRUCTIVE_URL_NEGATIVE for t in tokens):
+        return False
+    if any(t in _DESTRUCTIVE_URL_LONE for t in tokens):
+        return True
+    for a, b in zip(tokens, tokens[1:]):
+        if (a in _DESTRUCTIVE_URL_ACCOUNT_VERBS and b == "account") or (
+                a == "account" and b in _DESTRUCTIVE_URL_ACCOUNT_VERBS):
+            return True
+        if (a == "cancel" and b in _DESTRUCTIVE_URL_PLANISH) or (a in _DESTRUCTIVE_URL_PLANISH and b == "cancel"):
+            return True
     return False
+
+
+def _is_destructive_generic(label: str | None) -> bool:
+    return any(_TRAILING_PUNCT_RE.sub("", v) in _DESTRUCTIVE_GENERIC for v in _irrev_variants(label))
 
 
 def irreversible_risk(node: Any, page_url: str | None, label: str | None) -> str | None:
@@ -1097,6 +1285,24 @@ def irreversible_risk(node: Any, page_url: str | None, label: str | None) -> str
                     return f"label {part!r} looks like an irreversible action (account, subscription or money)"
         if is_irreversible_label(label, page_url):
             return f"label {label!r} looks like an irreversible action (account, subscription or money)"
+        for n in _click_chain(node):
+            na = _attrs(n)
+            for key in ("href", "formaction", "data-href", "data-url"):
+                if is_destructive_url(na.get(key)):
+                    return f"{key} {na.get(key)!r} points to an account/subscription deletion or cancellation URL"
+            if _tag(n) == "form" and is_destructive_url(na.get("action")):
+                return f"form action {na.get('action')!r} points to an account/subscription deletion URL"
+        form = _ancestor_form(node)
+        if form is not None and is_destructive_url(_attrs(form).get("action")):
+            return f"form action {_attrs(form).get('action')!r} points to an account/subscription deletion URL"
+        if is_destructive_url(page_url):
+            for n in _label_chain(node):
+                generic = next((p for p in (*label_parts(n), label or "") if _is_destructive_generic(p)), None)
+                if generic is None:
+                    continue
+                if _tag(n) == "a" and _attrs(n).get("href"):
+                    continue  # a plain link only navigates; its own href was checked above
+                return f"generic {generic!r} button on an account/subscription deletion page"
     except ValueError:
         return None
     return None
@@ -1807,20 +2013,22 @@ class GuardedTools(Tools):
             url, _ = await self._lba_url(browser_session)
             shown = os.path.basename(str(path)) if path else None
             return ActionRequest(action_name=name, params=dict(params), element_label=shown, url=url,
-                                 reason="uploads a local file to the website")
+                                 reason="uploads a local file to the website", kind="upload")
         if name in SELECT_ACTIONS:
             self._lba_text_focus = False
-            choice = params.get("text")
-            if isinstance(choice, str) and is_commerce_label(choice, self._lba_patterns):
-                url, _ = await self._lba_url(browser_session)
-                return ActionRequest(action_name=name, params=dict(params), element_label=choice, url=url,
-                                     reason=f"dropdown option {choice!r} looks like a purchase/commerce action")
-            if isinstance(choice, str) and self._lba_gate_irreversible:
-                url, _ = await self._lba_url(browser_session)
-                if is_irreversible_label(choice, url):
+            choices = [c for c in (params.get("text"), params.get("value")) if isinstance(c, str)]
+            for choice in choices:
+                if is_commerce_label(choice, self._lba_patterns):
+                    url, _ = await self._lba_url(browser_session)
                     return ActionRequest(action_name=name, params=dict(params), element_label=choice, url=url,
-                                         reason=f"dropdown option {choice!r} looks like an irreversible action "
-                                                "(account, subscription or money)", kind="irreversible")
+                                         reason=f"dropdown option {choice!r} looks like a purchase/commerce action")
+            if self._lba_gate_irreversible:
+                for choice in choices:
+                    url, _ = await self._lba_url(browser_session)
+                    if is_irreversible_label(choice, url):
+                        return ActionRequest(action_name=name, params=dict(params), element_label=choice, url=url,
+                                             reason=f"dropdown option {choice!r} looks like an irreversible "
+                                                    "action (account, subscription or money)", kind="irreversible")
             return None
         if name in NAVIGATE_ACTIONS:
             dest = params.get("url")
