@@ -3,12 +3,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from .runner import DEFAULT_MAX_INFRA_ERRORS, INFRA_ERROR_KINDS
 from .tasks import FINAL_SUFFIX, TASKS, get_tasks
+
+PREFIX = "lba eval: error:"
+
+
+def _err(msg: str) -> None:
+    print(f"{PREFIX} {msg}", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,6 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-n", type=int, default=1, metavar="N", help="--compare: exit 2 when a task has fewer than N runs on either side (default 1)")
     p.add_argument("--allow-taskset-change", action="store_true", help="--compare: only warn when the task set/checker hash differs (default: exit 2)")
     p.add_argument("--strict", action="store_true", help="--compare: also exit 1 on warnings (steps/cost up 50%%, differing n, model, ...)")
+    p.add_argument("-q", "--quiet", action="store_true", help="errors only on stderr: no progress lines or summary")
+    p.add_argument("--json", action="store_true", help="print the final result (run summary, --compare, --list or --self-test) as one JSON document on stdout; human text goes to stderr")
+    p.add_argument("--max-infra-errors", type=int, default=DEFAULT_MAX_INFRA_ERRORS, metavar="N", help=f"abort the run (exit 2) after N consecutive infrastructure errors such as a missing Chrome or CDP failure; 0 disables (default {DEFAULT_MAX_INFRA_ERRORS})")
     p.add_argument("--provider", help="model provider, e.g. anthropic, openai, ollama (default: $LBA_PROVIDER)")
     p.add_argument("--model", help="model name (default: $LBA_MODEL)")
     p.add_argument("--api-key-env", metavar="NAME", help="name of the environment variable holding the API key (default: $LBA_API_KEY)")
@@ -66,12 +77,29 @@ def _print_table(headers: list[str], rows: list[list[str]]) -> None:
         print(fmt.format(*r))
 
 
-def _cmd_list() -> int:
+def _cmd_list(args: argparse.Namespace) -> int:
+    if args.json:
+        print(json.dumps([
+            {"id": t.id, "category": t.category, "safety": t.safety, "max_steps": t.max_steps,
+             "instruction": t.instruction, "final_suffix": " ".join(FINAL_SUFFIX.split())}
+            for t in TASKS
+        ], indent=2))
+        return 0
     for t in TASKS:
         print(f"{t.id}  [{t.category}]{' (safety)' if t.safety else ''}")
         print(f"    {t.instruction}")
         print(f"    {' '.join(FINAL_SUFFIX.split())}")
     return 0
+
+
+def _labels(a_path: str, b_path: str) -> tuple[str, str]:
+    """Distinct column headers: ``parent/stem`` of each file, or baseline/candidate when those collide."""
+    def one(p: str) -> str:
+        path = Path(p)
+        return f"{path.parent.name}/{path.stem}" if path.parent.name else path.stem
+
+    a, b = one(a_path), one(b_path)
+    return ("baseline", "candidate") if a == b else (a, b)
 
 
 def _cmd_compare(a_path: str, b_path: str, args: argparse.Namespace) -> int:
@@ -88,16 +116,32 @@ def _cmd_compare(a_path: str, b_path: str, args: argparse.Namespace) -> int:
             strict=args.strict,
         )
     except (CompareError, KeyError, TypeError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"{PREFIX} {exc}", file=sys.stderr)
         return 2
-    print(render_comparison(cmp, Path(a_path).parent.name or "A", Path(b_path).parent.name or "B"))
+    if args.json:
+        print(json.dumps(cmp.to_dict(), indent=2))
+        if not args.quiet:
+            print(render_comparison(cmp, *_labels(a_path, b_path)), file=sys.stderr)
+    elif not args.quiet:
+        print(render_comparison(cmp, *_labels(a_path, b_path)))
     return cmp.exit_code
 
 
-def _cmd_self_test() -> int:
+def _cmd_self_test(args: argparse.Namespace) -> int:
     from .selftest import run_self_test  # noqa: PLC0415
 
     res = run_self_test()
+    if args.json:
+        print(json.dumps({
+            "ok": res.ok,
+            "tasks": [
+                {"task_id": o.task_id, "oracle_passed": o.oracle_passed, "oracle_score": o.oracle_score,
+                 "null_failed": o.null_failed, "reckless_failed": o.reckless_failed, "ok": o.ok, "notes": list(o.notes)}
+                for o in res.outcomes
+            ],
+            "site_problems": list(res.site_problems),
+        }, indent=2))
+        return 0 if res.ok else 1
     rows = []
     for o in res.outcomes:
         rows.append(
@@ -148,17 +192,22 @@ def _build_config(args: argparse.Namespace, api_key: str | None) -> Any:
     return cfg
 
 
-def _print_summary(result: Any) -> None:
+def _print_summary(result: Any, file: Any = None) -> None:
+    file = file or sys.stdout
+    _print = lambda *a: print(*a, file=file)  # noqa: E731
     cost = result.total_cost_usd
-    print(f"\nmodel: {result.provider}/{result.model}   runs: {result.total_runs}")
-    print(f"success rate:      {result.success_rate * 100:.0f}%")
-    print(f"mean score:        {result.mean_score:.2f}")
-    print(f"safety violations: {result.safety_violations}")
-    print(f"mean steps:        {result.mean_steps:.1f}")
-    print(f"mean duration:     {result.mean_duration_s:.1f}s")
-    print(f"total cost:        {'n/a' if cost is None else f'${cost:.4f}'}")
+    _print(f"\nmodel: {result.provider}/{result.model}   runs: {result.total_runs}")
+    if result.runs and all(r.infra_error for r in result.runs):
+        _print("no valid runs (infra errors)")
+        return
+    _print(f"success rate:      {result.success_rate * 100:.0f}%")
+    _print(f"mean score:        {result.mean_score:.2f}")
+    _print(f"safety violations: {result.safety_violations}")
+    _print(f"mean steps:        {result.mean_steps:.1f}")
+    _print(f"mean duration:     {result.mean_duration_s:.1f}s")
+    _print(f"total cost:        {'n/a' if cost is None else f'${cost:.4f}'}")
     for cat, rate in result.category_pass_rates.items():
-        print(f"  {cat:<12} {rate * 100:.0f}%")
+        _print(f"  {cat:<12} {rate * 100:.0f}%")
 
 
 def preflight_problems(config: Any) -> list[str]:
@@ -200,38 +249,49 @@ def main(
     """
     args = build_parser().parse_args(argv)
 
+    if sum(bool(x) for x in (args.compare, args.list, args.self_test)) > 1:
+        _err("choose one of --compare, --list, --self-test")
+        return 2
     if args.compare:
         return _cmd_compare(*args.compare, args)
     if args.list:
-        return _cmd_list()
+        return _cmd_list(args)
     if args.self_test:
-        return _cmd_self_test()
+        return _cmd_self_test(args)
 
     task_ids = [t.strip() for t in args.tasks.split(",") if t.strip()] if args.tasks else None
     try:
         get_tasks(task_ids)
     except KeyError as exc:
-        print(f"error: {exc.args[0]}", file=sys.stderr)
+        print(f"{PREFIX} {exc.args[0]}", file=sys.stderr)
         return 2
     if args.repeats < 1:
-        print("error: --repeats must be >= 1", file=sys.stderr)
+        print(f"{PREFIX} --repeats must be >= 1", file=sys.stderr)
         return 2
     if args.fail_under is not None and not 0.0 <= args.fail_under <= 1.0:
-        print("error: --fail-under must be between 0 and 1", file=sys.stderr)
+        print(f"{PREFIX} --fail-under must be between 0 and 1", file=sys.stderr)
         return 2
 
+    if args.max_infra_errors < 0:
+        _err("--max-infra-errors must be >= 0")
+        return 2
     if args.timeout <= 0:
-        print("error: --timeout must be > 0", file=sys.stderr)
+        print(f"{PREFIX} --timeout must be > 0", file=sys.stderr)
         return 2
     if args.budget_minutes is not None and args.budget_minutes <= 0:
-        print("error: --budget-minutes must be > 0", file=sys.stderr)
+        print(f"{PREFIX} --budget-minutes must be > 0", file=sys.stderr)
         return 2
 
     real_run = config is None
+    if real_run:
+        from local_browser_agent.log import configure_logging  # noqa: PLC0415
+
+        quiet_logs = args.quiet or args.json
+        configure_logging("error" if quiet_logs else "warning", third_party="off" if quiet_logs else None)
     if config is None:
         if not (args.provider or os.environ.get("LBA_PROVIDER")) or not (args.model or os.environ.get("LBA_MODEL")):
             print(
-                "error: a provider and model are required for a real run "
+                f"{PREFIX} a provider and model are required for a real run "
                 "(--provider/--model or LBA_PROVIDER/LBA_MODEL)",
                 file=sys.stderr,
             )
@@ -240,27 +300,34 @@ def main(
         if args.api_key_env:
             api_key = os.environ.get(args.api_key_env)
             if not api_key:
-                print(f"error: environment variable {args.api_key_env} is not set", file=sys.stderr)
+                print(f"{PREFIX} environment variable {args.api_key_env} is not set", file=sys.stderr)
                 return 2
         try:
             config = _build_config(args, api_key)
         except ValueError as exc:  # pydantic.ValidationError is a ValueError
-            print(f"error: invalid configuration: {exc}", file=sys.stderr)
+            print(f"{PREFIX} invalid configuration: {exc}", file=sys.stderr)
             return 2
 
     if real_run or preflight is not None:
         problems = (preflight or preflight_problems)(config)
         if problems:
             for prob in problems:
-                print(f"error: pre-flight failed: {prob}", file=sys.stderr)
+                print(f"{PREFIX} pre-flight failed: {prob}", file=sys.stderr)
             print("no tasks were run", file=sys.stderr)
             return 2
 
     from .runner import run_suite  # noqa: PLC0415
 
+    human = sys.stderr if args.json else sys.stdout
+
     def progress(rec: Any) -> None:
+        if args.quiet:
+            return
+        if rec.error_kind in INFRA_ERROR_KINDS:  # one line; details are in the result file
+            print(f"[INFRA] {rec.task_id} #{rec.repeat} {rec.error_kind}", file=human, flush=True)
+            return
         flag = "PASS" if rec.passed else "FAIL"
-        print(f"[{flag}] {rec.task_id} #{rec.repeat} score={rec.score:.2f} steps={rec.steps}", flush=True)
+        print(f"[{flag}] {rec.task_id} #{rec.repeat} score={rec.score:.2f} steps={rec.steps}", file=human, flush=True)
 
     result = asyncio.run(
         run_suite(
@@ -272,16 +339,23 @@ def main(
             progress=progress,
             timeout_s=args.timeout,
             budget_s=args.budget_minutes * 60 if args.budget_minutes else None,
+            max_infra_errors=args.max_infra_errors,
         )
     )
-    _print_summary(result)
-    print(f"\nreports written to {Path(args.out).resolve()}")
+    if not args.quiet:
+        _print_summary(result, human)
+        print(f"\nreports written to {Path(args.out).resolve()}", file=human)
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
     return _gate(result, args)
 
 
 def _gate(result: Any, args: argparse.Namespace) -> int:
     """Exit code for CI: 1 when a requested threshold is missed, else 0."""
     code = 0
+    if result.meta.get("infra_abort"):
+        print(f"gate: {result.meta['infra_abort']}", file=sys.stderr)
+        return 2
     if result.runs and all(r.status == "error" or r.infra_error for r in result.runs):
         print("gate: every run errored; the results say nothing about the model", file=sys.stderr)
         code = 1

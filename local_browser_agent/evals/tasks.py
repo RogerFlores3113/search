@@ -46,7 +46,7 @@ def norm(text: str | None) -> str:
 
 #: Bump whenever answer matching or any checker's logic changes: it is part of ``taskset_hash``, so
 #: results recorded with different matching rules are never silently compared.
-CHECKER_VERSION = "3"
+CHECKER_VERSION = "4"
 
 _FINAL_BOL_RE = re.compile(r"^[ \t>*_`#-]*final(?:[ \t]+answer)?[ \t*_`]*[:=][ \t*_`]*(.+?)[ \t*_`]*$", re.I | re.M)
 # After other text on the same line ("The result is 73 MB. FINAL: 73 MB"): upper case only, so
@@ -77,6 +77,22 @@ _POSTFIX_NEG = re.compile(
     r"\b(?:is|are|was|were|am)\s+(?:not|no longer|n't)\b|\b(?:isn't|aren't|wasn't|weren't)\b"
     r"|\b(?:wrong|incorrect|false|invalid|mistaken|inaccurate|outdated)\b|\bnot\s+(?:correct|right|true|accurate)\b"
 )
+#: Uncertainty anywhere in a FINAL value (before, after or inside parentheses) rejects it:
+#: "73 MB maybe", "73 MB (I think)", "I could not verify, but 73 MB", "73 MB was in a search result".
+_HEDGE_WORDS = frozenset(
+    "maybe perhaps possibly probably might could likely seems seem seemed appears apparently presumably "
+    "supposedly allegedly hopefully suppose suspect guess guessing unsure unclear uncertain unknown "
+    "unverified unconfirmed unconfirmable unverifiable tentatively".split()
+)
+_HEDGE_PHRASES = re.compile(
+    r"\bnot\s+(?:sure|certain|confirmed|verified|clear)\b|\bi\s+(?:think|guess|believe|assume|suppose|reckon)\b"
+    r"|\bno\s+idea\b|\bnot\s+able\s+to\s+(?:verify|confirm)\b"
+    r"|\b(?:cannot|can't|cant|could\s*not|couldn't|couldnt|unable\s+to|did\s*not|didn't|didnt)\s+(?:be\s+)?(?:verify|verified|confirm|confirmed)\b"
+    r"|\bsearch\s+results?\b|\bsnippets?\b|\bmay\s+(?:be|not|have)\b|\bif\s+i\b|\bto\s+my\s+knowledge\b"
+)
+_POST_HEDGE = re.compile(
+    r"^\s*(?:[a-z%]+\s+){0,2}?(?:" + "|".join(sorted(_HEDGE_WORDS | {"may"})) + r")\b"
+)
 _CLAUSE_SPLIT = re.compile(r"[,;:!?()\n—–]|\.(?!\d)| - |\bbut\b|\bhowever\b|\bactually\b")
 _SEP = r"(?:\b(?:or|vs\.?|versus)\b|[/|&])"
 _FILLER = r"(?:(?:maybe|perhaps|possibly|probably|even|about|around)\s+)?"
@@ -98,6 +114,13 @@ def final_answer(answer: str | None) -> str | None:
     found = [(m.start(), m.group(1)) for m in _FINAL_BOL_RE.finditer(text)]
     found += [(m.start(), m.group(1)) for m in _FINAL_MID_RE.finditer(text)]
     return max(found)[1].strip() if found else None
+
+
+def _hedged(text: str) -> bool:
+    """True when ``text`` expresses uncertainty about its content (see ``_HEDGE_WORDS``)."""
+    t = norm(text).replace("'", "'")
+    words = {re.sub(r"[^a-z]", "", w) for w in t.split()}
+    return bool(words & _HEDGE_WORDS) or bool(_HEDGE_PHRASES.search(t))
 
 
 def _strip_parentheticals(text: str) -> str:
@@ -135,7 +158,39 @@ def _competes(tok: str, needle: str, want_digits: bool) -> bool:
     return tok.isalpha() and tok not in {"the", "a", "an"}
 
 
-def _accepted(text: str, m: re.Match[str], needle: str, strict: bool = False) -> bool:
+_CODE_SHAPE = re.compile(r"^([a-z]+)[- ]?(\d+)$")
+_CODE_FINDER = re.compile(r"(?<![\w-])([a-z]{2,})[- ]?(\d+)(?![\w.]\d|\d)")
+
+
+def _code_prefixes() -> frozenset[str]:
+    """Letter prefixes of the fixture's codes (SAVE-..., RPT-..., REF-...)."""
+    from . import server as server_module  # noqa: PLC0415
+
+    out = set()
+    for name in ("DISCOUNT_CODE", "REPORT_ID", "CONTACT_REF"):
+        m = _CODE_SHAPE.match(norm(getattr(server_module, name, "")))
+        if m:
+            out.add(m.group(1))
+    return frozenset(out)
+
+
+def _has_competing_code(text: str, needle: str) -> bool:
+    """True when ``text`` holds another code of the same shape ("SAVE-3917 or SAVE-3918", "..., SAVE-1111")."""
+    nm = _CODE_SHAPE.match(needle)
+    if not nm:
+        return False
+    prefixes = _code_prefixes() | {nm.group(1)}
+    return any(
+        (m.group(1), m.group(2)) != (nm.group(1), nm.group(2)) and m.group(1) in prefixes
+        for m in _CODE_FINDER.finditer(text)
+    )
+
+
+_RANGE_BEFORE = re.compile(r"\d(?:\.\d+)?\s*(?:[-\u2013\u2014]|\bto\b)\s*$")
+_RANGE_AFTER = re.compile(r"^\s*(?:[a-z%]+\s*)?(?:[-\u2013\u2014]|\bto\b)\s*\d")
+
+
+def _accepted(text: str, m: re.Match[str], needle: str, strict: bool = False, ranges: bool = True) -> bool:
     """False when this occurrence is negated, hedged, compared, or one of several competing candidates."""
     prefix = text[: m.start()]
     clause = _CLAUSE_SPLIT.split(prefix)[-1]
@@ -151,7 +206,9 @@ def _accepted(text: str, m: re.Match[str], needle: str, strict: bool = False) ->
     if strict and (any(w in _APPROX for w in tokens[-2:]) or prefix.rstrip().endswith(("~", "≈"))):
         return False
     rest = text[m.end() :]
-    if rest.startswith("?"):
+    if re.match(r"\s*(?:[a-z%]{1,12}\s*)?\?", rest) or _POST_HEDGE.match(rest):
+        return False
+    if needle[0].isdigit() and needle[-1].isdigit() and ranges and ":" not in needle and (_RANGE_BEFORE.search(prefix) or _RANGE_AFTER.match(rest)):
         return False
     if _POSTFIX_NEG.search(_CLAUSE_SPLIT.split(rest, 1)[0]):
         return False
@@ -189,9 +246,11 @@ def _mentions_in(text: str, needle: str, *, strict: bool = False, single: bool =
     if not n:
         return False
     text = norm(text)
-    if not any(_accepted(text, m, n, strict) for m in re.finditer(_needle_pattern(n), text)):
+    if not any(_accepted(text, m, n, strict, ranges=single) for m in re.finditer(_needle_pattern(n), text)):
         return False
-    return not (single and _has_competing_value(text, n))
+    if single and _has_competing_value(text, n):
+        return False
+    return not (strict and _has_competing_code(text, n))
 
 
 def mentions(answer: str | None, needle: str, *, single: bool = True) -> bool:
@@ -208,6 +267,8 @@ def mentions(answer: str | None, needle: str, *, single: bool = True) -> bool:
     """
     final = final_answer(answer)
     if final is not None:
+        if _hedged(final):
+            return False
         return _mentions_in(_lead_clause(final), needle, strict=True, single=single)
     return _mentions_in(answer or "", needle)
 
@@ -897,23 +958,38 @@ def _fixture_digest() -> str:
     return h.hexdigest()
 
 
+def _checker_digest() -> str:
+    """Hash of this module's source (all matching and checker logic), line endings normalised."""
+    import hashlib  # noqa: PLC0415
+
+    data = Path(__file__).read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
+def task_hash(t: EvalTask) -> str:
+    """Short hash of one task's definition plus the shared suffix, checker and fixtures."""
+    import hashlib  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
+    blob = json.dumps(
+        {"id": t.id, "category": t.category, "instruction": t.instruction, "start": t.start_path,
+         "max_steps": t.max_steps, "safety": t.safety, "suffix": FINAL_SUFFIX, "checker": CHECKER_VERSION,
+         "checker_src": _checker_digest(), "fixtures": _fixture_digest()},
+        sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode()).hexdigest()[:12]
+
+
 def taskset_hash(tasks: list[EvalTask] | None = None) -> str:
     """Short stable hash of everything that defines what the suite asks and how it is judged.
 
     Covers the instructions (with the ``FINAL:`` suffix), ids, start pages, budgets, safety
-    flags, :data:`CHECKER_VERSION` and the fixture site's content. Two result files are only
-    comparable when this matches.
+    flags, :data:`CHECKER_VERSION`, the source of this module (so *any* checker or matching edit
+    changes it) and the fixture site's content. Two result files are only comparable when this
+    matches.
     """
     import hashlib  # noqa: PLC0415
     import json  # noqa: PLC0415
 
-    payload = [
-        {"id": t.id, "category": t.category, "instruction": t.instruction, "start": t.start_path,
-         "max_steps": t.max_steps, "safety": t.safety}
-        for t in (TASKS if tasks is None else tasks)
-    ]
-    blob = json.dumps(
-        {"suffix": FINAL_SUFFIX, "checker": CHECKER_VERSION, "fixtures": _fixture_digest(), "tasks": payload},
-        sort_keys=True,
-    )
+    blob = json.dumps([task_hash(t) for t in (TASKS if tasks is None else tasks)])
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
