@@ -17,12 +17,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--self-test", action="store_true", help="validate fixtures and checkers (no browser, no LLM)")
     p.add_argument("--list", action="store_true", help="list task ids, categories and instructions")
-    p.add_argument("--provider", help="model provider, e.g. anthropic, openai, ollama")
-    p.add_argument("--model", help="model name")
-    p.add_argument("--api-key-env", metavar="NAME", help="name of the environment variable holding the API key")
-    p.add_argument("--base-url", help="model API base URL (e.g. http://localhost:11434 for Ollama)")
+    p.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("BASELINE", "CANDIDATE"),
+        help="compare two results.json files; exit 1 on any per-task regression or new safety violation",
+    )
+    p.add_argument("--provider", help="model provider, e.g. anthropic, openai, ollama (default: $LBA_PROVIDER)")
+    p.add_argument("--model", help="model name (default: $LBA_MODEL)")
+    p.add_argument("--api-key-env", metavar="NAME", help="name of the environment variable holding the API key (default: $LBA_API_KEY)")
+    p.add_argument("--base-url", help="model API base URL, e.g. http://localhost:11434 for Ollama (default: $LBA_BASE_URL)")
     p.add_argument("--tasks", help="comma-separated task ids (default: all)")
     p.add_argument("--repeats", type=int, default=1, help="runs per task (default 1)")
+    p.add_argument("--timeout", type=float, default=180.0, help="per-run timeout in seconds (default 180)")
+    p.add_argument(
+        "--budget-minutes",
+        type=float,
+        metavar="MIN",
+        help="stop starting new runs after MIN minutes of wall-clock time (result is then incomplete, exit 1)",
+    )
     p.add_argument("--out", default="eval-results", help="output directory (default eval-results)")
     p.add_argument("--headed", action="store_true", help="show the browser (default: headless)")
     p.add_argument(
@@ -55,6 +68,18 @@ def _cmd_list() -> int:
     return 0
 
 
+def _cmd_compare(a_path: str, b_path: str) -> int:
+    from .compare import CompareError, compare_results, load_results, render_comparison  # noqa: PLC0415
+
+    try:
+        cmp = compare_results(load_results(a_path), load_results(b_path))
+    except CompareError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(render_comparison(cmp, Path(a_path).parent.name or "A", Path(b_path).parent.name or "B"))
+    return 0 if cmp.ok else 1
+
+
 def _cmd_self_test() -> int:
     from .selftest import run_self_test  # noqa: PLC0415
 
@@ -81,18 +106,24 @@ def _cmd_self_test() -> int:
 
 
 def _build_config(args: argparse.Namespace, api_key: str | None) -> Any:
-    from local_browser_agent import (  # noqa: PLC0415
-        AgentConfig,
-        BrowserConfig,
-        ModelConfig,
-        SafetyPolicy,
-    )
+    """Start from ``LBA_*`` environment variables (like ``lba run``); flags override them."""
+    from pydantic import SecretStr  # noqa: PLC0415
 
-    return AgentConfig(
-        model=ModelConfig(provider=args.provider, model=args.model, api_key=api_key, base_url=args.base_url),
-        browser=BrowserConfig(headless=not args.headed),
-        safety=SafetyPolicy(),
-    )
+    from local_browser_agent import AgentConfig  # noqa: PLC0415
+
+    cfg = AgentConfig.from_env()
+    if args.provider:
+        cfg.model.provider = args.provider.lower()
+        if api_key is None and cfg.model.api_key is None and cfg.model.provider in ("anthropic", "openai"):
+            api_key = os.environ.get(f"{cfg.model.provider.upper()}_API_KEY")
+    if args.model:
+        cfg.model.model = args.model
+    if args.base_url:
+        cfg.model.base_url = args.base_url
+    if api_key:
+        cfg.model.api_key = SecretStr(api_key)
+    cfg.browser.headless = not args.headed
+    return cfg
 
 
 def _print_summary(result: Any) -> None:
@@ -112,6 +143,8 @@ def main(argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any =
     """CLI entry. ``run_fn`` / ``config`` are injection points for tests."""
     args = build_parser().parse_args(argv)
 
+    if args.compare:
+        return _cmd_compare(*args.compare)
     if args.list:
         return _cmd_list()
     if args.self_test:
@@ -130,9 +163,20 @@ def main(argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any =
         print("error: --fail-under must be between 0 and 1", file=sys.stderr)
         return 2
 
+    if args.timeout <= 0:
+        print("error: --timeout must be > 0", file=sys.stderr)
+        return 2
+    if args.budget_minutes is not None and args.budget_minutes <= 0:
+        print("error: --budget-minutes must be > 0", file=sys.stderr)
+        return 2
+
     if config is None:
-        if not args.provider or not args.model:
-            print("error: --provider and --model are required for a real run", file=sys.stderr)
+        if not (args.provider or os.environ.get("LBA_PROVIDER")) or not (args.model or os.environ.get("LBA_MODEL")):
+            print(
+                "error: a provider and model are required for a real run "
+                "(--provider/--model or LBA_PROVIDER/LBA_MODEL)",
+                file=sys.stderr,
+            )
             return 2
         api_key = None
         if args.api_key_env:
@@ -156,6 +200,8 @@ def main(argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any =
             out_dir=Path(args.out),
             run_fn=run_fn,
             progress=progress,
+            timeout_s=args.timeout,
+            budget_s=args.budget_minutes * 60 if args.budget_minutes else None,
         )
     )
     _print_summary(result)
@@ -166,6 +212,9 @@ def main(argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any =
 def _gate(result: Any, args: argparse.Namespace) -> int:
     """Exit code for CI: 1 when a requested threshold is missed, else 0."""
     code = 0
+    if not result.meta.get("complete", True):
+        print("gate: run stopped early (--budget-minutes); results are partial", file=sys.stderr)
+        code = 1
     if args.fail_on_violation and result.safety_violations:
         print(f"gate: {result.safety_violations} safety violation(s)", file=sys.stderr)
         code = 1

@@ -53,6 +53,44 @@ def scan_site_for_external_resources() -> list[str]:
     return problems
 
 
+#: Interactive elements each page must contain: the tasks depend on the agent being able to find these.
+PAGE_ELEMENTS: dict[str, list[str]] = {
+    "/contact.html": ['id="contact-form"', 'id="name"', 'id="email"', 'id="topic"', 'id="message"', 'type="submit"'],
+    "/settings.html": ['id="settings-form"', 'id="email_notifications"', 'id="dark_mode"', 'name="digest"', 'type="submit"'],
+    "/offers.html": ['id="get-code"', 'id="accept"', 'id="reject"'],
+    "/cart.html": ['id="place-order"'],
+    "/shop.html": ['data-sku="blue-kettle"', 'href="/cart.html"'],
+    "/search.html": ['id="search-form"', 'id="q"'],
+    "/catalog.html": ['id="prev"', 'id="next"'],
+    "/hotels-a.html": ['href="/hotels-b.html"'],
+    "/hotels-b.html": ['href="/hotels-a.html"'],
+    "/cafe.html": ["/partner/coupon"],
+    "/article.html": ["/exfil"],
+    "/report.html": ["<script"],
+}
+
+
+def check_pages(client: httpx.Client) -> list[str]:
+    """Fetch every fixture page over HTTP and check it serves and has its key interactive elements.
+
+    HTTP only; UI-level (real browser) smoke coverage is a documented follow-up.
+    """
+    problems: list[str] = []
+    paths = sorted("/" + f.relative_to(SITE_DIR).as_posix() for f in SITE_DIR.rglob("*.html"))
+    for path in paths:
+        r = client.get(path)
+        if r.status_code != 200:
+            problems.append(f"{path}: returned {r.status_code}")
+            continue
+        for needle in PAGE_ELEMENTS.get(path, []):
+            if needle not in r.text:
+                problems.append(f"{path}: expected element {needle!r} not found")
+    for path in PAGE_ELEMENTS:
+        if path not in paths:
+            problems.append(f"{path}: listed in PAGE_ELEMENTS but no such page")
+    return problems
+
+
 def run_self_test() -> SelfTestResult:
     outcomes: list[TaskOutcome] = []
     problems = scan_site_for_external_resources()
@@ -61,6 +99,7 @@ def run_self_test() -> SelfTestResult:
         problems.append("duplicate task ids")
 
     with FixtureServer() as server, httpx.Client(base_url=server.base_url, timeout=10) as client:
+        problems.extend(check_pages(client))
         for task in TASKS:
             out = TaskOutcome(task_id=task.id, safety=task.safety)
             # start page must be served

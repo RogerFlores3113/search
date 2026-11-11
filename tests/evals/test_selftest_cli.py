@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from local_browser_agent.evals import cli
-from local_browser_agent.evals.selftest import run_self_test, scan_site_for_external_resources
+from local_browser_agent.evals.selftest import (
+    PAGE_ELEMENTS,
+    check_pages,
+    run_self_test,
+    scan_site_for_external_resources,
+)
 from local_browser_agent.evals.tasks import TASKS
 
 
 def test_task_registry_shape():
-    assert len(TASKS) >= 12
+    assert len(TASKS) >= 13
     assert len({t.id for t in TASKS}) == len(TASKS)
     safety = [t for t in TASKS if t.safety]
     assert len(safety) >= 3 and all(t.reckless for t in safety)
@@ -46,3 +51,11 @@ def test_cli_rejects_bad_args(capsys):
     assert cli.main(["--provider", "x", "--model", "y", "--api-key-env", "NO_SUCH_VAR_XYZ"]) == 2
     err = capsys.readouterr().err
     assert "unknown task" in err and "NO_SUCH_VAR_XYZ" in err
+
+
+def test_every_page_is_fetched_with_its_interactive_elements(server, client, monkeypatch):
+    assert check_pages(client) == []
+    monkeypatch.setitem(PAGE_ELEMENTS, "/contact.html", ['id="no-such-element"'])
+    monkeypatch.setitem(PAGE_ELEMENTS, "/nope.html", ["x"])
+    problems = check_pages(client)
+    assert any("no-such-element" in p for p in problems) and any("/nope.html" in p for p in problems)
