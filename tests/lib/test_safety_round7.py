@@ -97,3 +97,20 @@ async def test_generic_button_not_gated_on_content_pages(url, label):
 @pytest.mark.parametrize("url", CONTEXT)
 def test_real_checkout_flows_still_context(url):
     assert is_commerce_context_url(url)
+
+
+@pytest.mark.parametrize("label", [
+    "Remove profile picture", "Close account menu", "Cancel plan change", "Delete data saver",
+    "End plan selection", "Remove account from this device", "Close profile", "Remove data filter",
+    "Cancel subscription renewal reminder", "Edit profile",
+])
+def test_reversible_neighbours_of_irreversible_labels_do_not_gate(label):
+    assert not is_irreversible_label(label)
+
+
+@pytest.mark.parametrize("label", [
+    "Cancel my subscription now", "Close my account", "Delete all my data", "Confirm delete account",
+    "Deactivate my account", "Yes, delete my account", "Cancel membership",
+])
+def test_irreversible_labels_still_gate(label):
+    assert is_irreversible_label(label)

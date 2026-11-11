@@ -989,14 +989,12 @@ def is_generic_confirm_label(label: str | None) -> bool:
     return text in _GENERIC_LABELS or _fold_homoglyphs(text) in _GENERIC_LABELS
 
 
-# Irreversible actions: gated on any page. A label matches when it starts with the phrase (optionally
-# after "yes"/"confirm"/"permanently") and adds at most three more words, so "Delete account" and
-# "Cancel my subscription now" gate while "How to delete your account" and "Delete account policy" do not.
+# Irreversible actions: gated on any page. Money phrases match when the label starts with the phrase
+# (optionally after "yes"/"confirm"/"permanently") and adds at most three more words. Account,
+# data and subscription actions match by verb x object below, so "Delete account" and "Cancel my
+# subscription now" gate while "How to delete your account", "Delete account policy" and
+# "Close account menu" do not.
 _IRREVERSIBLE_PHRASES = (
-    "delete account", "delete my account", "delete your account", "close account", "close my account",
-    "close your account", "deactivate account", "deactivate my account", "delete my data", "delete all my data",
-    "cancel subscription", "cancel my subscription", "cancel membership", "cancel my membership",
-    "cancel plan", "cancel my plan", "end subscription", "end my subscription", "end membership",
     "withdraw funds", "withdraw money", "transfer funds", "transfer money", "transfer balance",
     "send money", "send payment", "wire money", "wire transfer", "wire funds", "authorize payment",
     "confirm transfer", "confirm withdrawal", "confirm wire", "close position", "sell all",
@@ -1009,9 +1007,26 @@ _IRREV_OBJECTS = (
     ("account",), ("profile",), ("data",), ("subscription",), ("membership",), ("plan",),
     ("auto", "renew"), ("auto", "renewal"), ("autorenew",), ("autorenewal",), ("consent",),
 )
-_IRREV_VERB_OBJECT = {  # a few verbs only pair with some objects
+_ACCOUNTISH = {("account",), ("profile",)}
+_PLANISH = {("subscription",), ("membership",), ("plan",)}
+_RENEWISH = {("auto", "renew"), ("auto", "renewal"), ("autorenew",), ("autorenewal",)}
+_IRREV_VERB_OBJECT = {  # which objects each verb pairs with ("Close profile" is a dialog, not an account)
+    "delete": _ACCOUNTISH | {("data",)},
+    "erase": _ACCOUNTISH | {("data",)},
+    "close": {("account",)},
+    "remove": {("account",)},
+    "deactivate": _ACCOUNTISH | _PLANISH,
+    "terminate": {("account",)} | _PLANISH,
+    "cancel": {("account",)} | _PLANISH | _RENEWISH,
+    "end": _PLANISH,
     "withdraw": {("consent",)},
 }
+# Words allowed after the object: "Delete account and all associated data", "Delete my data permanently".
+# Anything else ("Remove profile picture", "Cancel plan change", "Remove account from this device")
+# names a different, reversible action.
+_IRREV_OBJECT_TAILS = frozenset({
+    "and", "all", "associated", "related", "my", "your", "of", "data", "permanently", "forever", "now",
+})
 _TRAILING_PUNCT_RE = re.compile(r"[\s.,;:!?\u2026\u2713\u2714\u2715\u00bb\u203a>)\]\"'*]+$")
 _IRREVERSIBLE_LEADERS = frozenset({"yes", "confirm", "permanently", "ok", "okay"})
 _IRREVERSIBLE_TAILS = frozenset({
@@ -1033,11 +1048,10 @@ def _verb_object_match(core: str) -> bool:
     verb, rest = words[0], words[1:]
     while rest and rest[0] in _IRREV_DETERMINERS:
         rest = rest[1:]
-    allowed = _IRREV_VERB_OBJECT.get(verb)
+    allowed = _IRREV_VERB_OBJECT.get(verb, set())
     for obj in _IRREV_OBJECTS:
-        if rest[:len(obj)] == list(obj) and (allowed is None or obj in allowed):
-            tail = rest[len(obj):]
-            return not any(w in _IRREVERSIBLE_TAILS for w in tail)
+        if rest[:len(obj)] == list(obj) and obj in allowed:
+            return all(w in _IRREV_OBJECT_TAILS for w in rest[len(obj):])
     return False
 
 
