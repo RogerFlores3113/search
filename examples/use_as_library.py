@@ -27,6 +27,8 @@ async def main() -> int:
     )
     result = await agent.run(task, start_url="https://example.com")
     print(result.status, "-", result.final_result)
+    for err in result.errors:
+        print("error:", err)
     print(f"{result.step_count} steps, {result.duration_s:.1f}s, cost={result.cost_usd}")
     return 0 if result.success else 1
 

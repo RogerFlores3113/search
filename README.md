@@ -105,7 +105,7 @@ The agent loop is also available as an importable package (`local_browser_agent`
 ```python
 from local_browser_agent import AgentConfig, run_task_sync
 result = run_task_sync("Open example.com and read the heading", AgentConfig.from_env())
-print(result.status, result.final_result)
+print(result.status, result.final_result, result.errors)
 ```
 
-See [docs/LIBRARY.md](docs/LIBRARY.md) for install, providers, safety policy, sinks and MCP setup.
+See [docs/LIBRARY.md](docs/LIBRARY.md) for install, providers, safety policy, sinks, CLI exit codes and MCP setup, and [docs/EVALS.md](docs/EVALS.md) for the evaluation suite.

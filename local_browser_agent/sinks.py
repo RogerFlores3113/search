@@ -10,6 +10,8 @@ import dataclasses
 import inspect
 import json
 import logging
+import uuid
+from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -55,10 +57,19 @@ class QueueSink:
 
 
 class JsonlTraceSink:
-    """Appends one JSON object per event to ``path`` (screenshots dropped by default)."""
+    """Appends one JSON object per event to ``path`` (screenshots dropped by default).
+
+    The file is opened in append mode: an existing file is never truncated, so
+    traces from several runs can share a file (tell them apart by ``run_id``).
+    Every record carries ``ts`` (ISO 8601, UTC) and ``run_id`` (a uuid4 generated
+    per sink instance, i.e. per CLI run). A StepCompletedEvent's own run_id, when
+    different, is kept as ``agent_run_id``.
+    """
 
     def __init__(self, path: str | Path, include_screenshots: bool = False) -> None:
         self.path = Path(path)
+        self.run_id = str(uuid.uuid4())
+        self.events_written = 0
         self.include_screenshots = include_screenshots
         self.wants_screenshots = include_screenshots
 
@@ -72,7 +83,13 @@ class JsonlTraceSink:
             return
         record = dataclasses.asdict(event) if dataclasses.is_dataclass(event) else {"event": repr(event)}
         record.setdefault("type", type(event).__name__)
+        own = record.get("run_id")
+        if own and own != self.run_id:
+            record["agent_run_id"] = own
+        record["run_id"] = self.run_id
+        record["ts"] = datetime.now(timezone.utc).isoformat()
         await asyncio.to_thread(self._write, json.dumps(record, default=str))
+        self.events_written += 1
 
 
 class CallbackSink:
