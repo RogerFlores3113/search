@@ -348,7 +348,8 @@ async def index(request: Request):
     # Cheap filesystem check on every page load, so installing Chrome while the app is
     # running (then pressing "Check again") works without a restart.
     request.app.state.chrome_missing = not chrome_is_installed()
-    if request.app.state.chrome_missing:
+    open_settings = request.query_params.get("settings") == "1"
+    if request.app.state.chrome_missing and not open_settings:
         return templates.TemplateResponse(request=request, name="no_chrome.html", context={})
     accepted = _disclaimer_accepted(request)
     # Boot task (`lba-app "task"`): consumed by the first page load. Without an accepted
@@ -357,7 +358,11 @@ async def index(request: Request):
     # 409 and the page's /stream shows it.
     boot_task = getattr(request.app.state, "pending_task", None)
     prefill_task = ""
-    if boot_task:
+    if request.app.state.chrome_missing:
+        # Settings-only view while Chrome is missing: the run would fail pre-flight, so leave the
+        # boot task pending for the first load after Chrome is installed (pre-filled only).
+        prefill_task = boot_task or ""
+    elif boot_task:
         # Only a typed URL or the app's own launch may start the task: a cross-site page
         # that embeds or links to http://127.0.0.1:8080/ sends Sec-Fetch-Site cross-site /
         # same-site (or a foreign Origin) and must not consume it. Then the task is only
@@ -380,6 +385,9 @@ async def index(request: Request):
             "disclaimer_accepted": accepted,
             "security_token": SECURITY_TOKEN,
             "prefill_task": prefill_task,
+            # From the Chrome-missing page's "Open Settings" link: show the Settings panel
+            # right away so setup can continue before Chrome is installed.
+            "open_settings": open_settings,
         },
     )
 
@@ -594,12 +602,21 @@ async def post_settings(
             save_settings_json,
             encrypt_api_key,
             decrypt_api_key,
+            valid_http_url,
         )
         from pydantic import SecretStr
 
         # CR-02: Validate provider before any disk I/O
         if provider not in ALLOWED_PROVIDERS:
             return JSONResponse({"status": "error", "detail": "invalid provider"}, status_code=422)
+
+        ollama_host = ollama_host.strip()
+        if ollama_host and not valid_http_url(ollama_host):
+            return JSONResponse(
+                {"status": "error",
+                 "detail": "The Ollama address must be a web address like http://localhost:11434."},
+                status_code=422,
+            )
 
         stored = load_settings_json()
 

@@ -8,8 +8,9 @@
   either file marked incomplete, or (with ``--strict``) any warning
 * 2 - the comparison is not meaningful or the input is unusable: unreadable/malformed file, a
   different ``taskset_hash`` (unless ``--allow-taskset-change``), tasks whose runs were mostly
-  infrastructure errors or that have infra errors and no passes with infra errors >= real
-  failures (INVALID), a task present with zero runs, NaN/inf scores or rates, or fewer candidate runs than the baseline had (default) or than
+  infrastructure errors (an error_kind of chrome_missing, preflight, cdp_connect or config, or status "error" with no error_kind in old files;
+  a `timeout` is a real failure, not infrastructure) or that have infra errors and no passes with
+  infra errors >= real failures (INVALID), a task present with zero runs, NaN/inf scores or rates, or fewer candidate runs than the baseline had (default) or than
   ``--min-n`` on a task. A candidate that ran only a subset of the baseline's tasks is
   compared on the overlapping tasks when their per-task hashes match, else it is exit 2
 """
@@ -25,7 +26,9 @@ SUPPORTED_SCHEMA = 1
 #: Relative rise in mean steps / cost that is flagged as a warning.
 RISE_WARN = 0.5
 
-_INFRA_STATUSES = ("error", "timeout")
+#: A "timeout" is a real failure (a model that hangs regressed), not infrastructure; keep in step with
+#: ``runner.is_infra_error`` / ``INFRA_ERROR_KINDS``.
+_INFRA_STATUSES = ("error",)
 _INFRA_KINDS = frozenset({"chrome_missing", "preflight", "cdp_connect", "config"})
 
 
@@ -88,17 +91,29 @@ def load_results(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def _infra_counts(data: dict[str, Any]) -> dict[str, int]:
-    """Infrastructure-error runs per task (from ``runs`` when present, else the task summary)."""
+def _infra_counts(data: dict[str, Any], label: str = "", warnings: list[str] | None = None) -> dict[str, int]:
+    """Infrastructure-error runs per task (from ``runs`` when present, else the task summary).
+
+    ``runs`` wins over a task's ``infra_errors`` field; when they disagree a warning is appended.
+    """
     counts = {tid: int(t.get("infra_errors") or 0) for tid, t in data["tasks"].items()}
     runs = data.get("runs")
     if isinstance(runs, list) and runs:
+        declared = counts
         counts = {tid: 0 for tid in data["tasks"]}
         for r in runs:
             if not isinstance(r, dict) or r.get("task_id") not in counts:
                 continue
-            if r.get("status") in _INFRA_STATUSES or r.get("error_kind") in _INFRA_KINDS:
+            kind = r.get("error_kind")
+            if kind in _INFRA_KINDS or (kind is None and r.get("status") in _INFRA_STATUSES):
                 counts[r["task_id"]] += 1
+        if warnings is not None:
+            for tid, n in counts.items():
+                if n != declared.get(tid, 0):
+                    warnings.append(
+                        f"{label} {tid}: infra_errors says {declared.get(tid, 0)} but runs[] has {n}; "
+                        "using runs[] (the file may be from an older checker or hand-edited)"
+                    )
     return counts
 
 
@@ -305,7 +320,7 @@ def compare_results(
     for side, m in (("baseline", ma), ("candidate", mb)):
         if not m.get("complete", True):
             problems.append(f"{side} run is incomplete (partial results)")
-    ia, ib = _infra_counts(a), _infra_counts(b)
+    ia, ib = _infra_counts(a, "baseline", warnings), _infra_counts(b, "candidate", warnings)
     deltas = []
     for tid in list(ta) + [t for t in tb if t not in ta]:
         x, y = ta.get(tid), tb.get(tid)

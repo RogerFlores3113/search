@@ -84,3 +84,15 @@ def test_release_workflow_mac_polls_healthz():
     for job in ("build-mac", "build-windows"):
         runs = " ".join(s.get("run", "") for s in wf["jobs"][job]["steps"])
         assert "/healthz" in runs, job
+
+
+@pytest.mark.parametrize("headers", [{}, {"Sec-Fetch-Site": "none"}])
+async def test_chrome_missing_settings_view_keeps_boot_task(monkeypatch, calls, headers):
+    monkeypatch.setattr(main_mod, "chrome_is_installed", lambda: False)
+    monkeypatch.setattr(main_mod.app.state, "pending_task", "boot", raising=False)
+    async with AsyncClient(transport=ASGITransport(app=main_mod.app), base_url="http://test",
+                           cookies=_cookies()) as c:
+        r = await c.get("/?settings=1", headers=headers)
+    assert r.status_code == 200
+    assert calls == []
+    assert main_mod.app.state.pending_task == "boot"

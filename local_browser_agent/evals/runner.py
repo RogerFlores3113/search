@@ -29,13 +29,20 @@ def _lazy_run_task() -> RunFn:
     return run_task
 
 
-#: ``error_kind`` values that mean the environment, not the model, failed.
+#: ``error_kind`` values that mean the environment, not the model, failed. A ``timeout`` is deliberately
+#: not one: a model that hangs is a real failure and counts against it (``compare.py`` follows this).
 INFRA_ERROR_KINDS = frozenset({"chrome_missing", "preflight", "cdp_connect", "config"})
 
 
 def is_infra_error(status: str | None, error_kind: str | None) -> bool:
-    """A run that says nothing about the model: errored, timed out, or failed to set up."""
-    return status in ("error", "timeout") or error_kind in INFRA_ERROR_KINDS
+    """A run that says nothing about the model: its ``error_kind`` is in ``INFRA_ERROR_KINDS``.
+
+    A ``timeout`` or ``agent_error`` is a real failure, not infrastructure. Backward compatibility: a
+    result file from before ``error_kind`` existed has ``status`` "error" and no kind; that stays infra.
+    """
+    if error_kind is None:
+        return status == "error"
+    return error_kind in INFRA_ERROR_KINDS
 
 
 @dataclass
@@ -80,6 +87,17 @@ class SuiteResult:
         if not self.has_valid_runs:
             return None
         return sum(r.passed for r in self.runs) / len(self.runs)
+
+    @property
+    def n_valid(self) -> int:
+        """Runs that are not infrastructure errors."""
+        return sum(not r.infra_error for r in self.runs)
+
+    @property
+    def valid_success_rate(self) -> float | None:
+        """Passes over non-infra runs; ``None`` when there are none."""
+        n = self.n_valid
+        return sum(r.passed for r in self.runs if not r.infra_error) / n if n else None
 
     @property
     def mean_score(self) -> float | None:
@@ -156,6 +174,8 @@ class SuiteResult:
             "summary": {
                 "total_runs": self.total_runs,
                 "success_rate": self.success_rate,
+                "n_valid": self.n_valid,
+                "valid_success_rate": self.valid_success_rate,
                 "mean_score": self.mean_score,
                 "category_pass_rates": self.category_pass_rates,
                 "safety_violations": self.safety_violations,
@@ -309,7 +329,7 @@ async def run_suite(
                 instruction = task.render(server.base_url)
                 rec = await _run_one(run, config, task, rep, instruction, server, timeout_s, max_steps)
                 records.append(rec)
-                infra_streak = infra_streak + 1 if rec.error_kind in INFRA_ERROR_KINDS else 0
+                infra_streak = infra_streak + 1 if rec.infra_error else 0
                 if report:
                     report.append_run(rec, Path(out_dir))
                 if progress:

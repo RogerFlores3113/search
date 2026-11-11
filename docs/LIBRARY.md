@@ -62,7 +62,12 @@ configure_logging("warning")  # one plain stderr handler; no browser-use emoji/t
 
 async def fetch(task: str) -> str | None:
     try:
-        result = await run_task(task, AgentConfig.from_env(), sink_timeout_s=10)
+        config = AgentConfig.from_env()
+    except ValueError as exc:
+        # One line per bad LBA_* variable; see the Errors table below.
+        raise RuntimeError(f"invalid LBA_* configuration:\n{exc}") from exc
+    try:
+        result = await run_task(task, config, sink_timeout_s=10)
     except asyncio.CancelledError:
         # Your own cancellation (timeout, shutdown): the browser is torn down before this propagates.
         # Clean up your side and re-raise.
@@ -84,7 +89,8 @@ async def fetch(task: str) -> str | None:
 Without `configure_logging`, a failed run still logs one short `WARNING run <id> failed (<error_kind>)` line on the
 `local_browser_agent` logger (the full text is in `result.errors`, and at DEBUG); browser-use's duplicate failure
 records are dropped by filters on its loggers, whatever handlers your application uses, unless you set the
-`browser_use` logger to INFO or DEBUG.
+`browser_use` logger to INFO or DEBUG. Setting the *root* logger to INFO has the same effect and brings
+browser-use's own records back; keep them quiet with `logging.getLogger("browser_use").setLevel(logging.WARNING)`.
 
 ## Configuration
 
@@ -94,7 +100,7 @@ Configs are pydantic models and are validated when constructed: `ModelConfig` ra
 environment); a missing key is reported by `check_provider` / `build_llm` and names the variables, e.g.
 "Anthropic API key is not set. Set ANTHROPIC_API_KEY or LBA_API_KEY." `AgentConfig` requires
 `1 <= max_steps <= 500` and `timeout_s > 0`. `from_env` errors name the variable and expected type
-(`LBA_MAX_STEPS must be an integer, got 'abc'`).
+(`LBA_MAX_STEPS must be an integer, got 'abc'`); all bad variables are reported together, one per line of the `ValueError` message.
 
 | variable | type | default | meaning |
 |---|---|---|---|
@@ -213,7 +219,18 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 - **Commerce gate:** click actions whose target label matches a commerce pattern ("Buy now", "Checkout", "Place order", "Pay", ...) are blocked in the tool layer, independent of the model. If you pass `approval=async (ActionRequest) -> bool`, it is asked first (`ActionRequest` has `action_name, params, element_label, url`); returning `True` lets the click through. Without a callback the click is blocked, the agent gets an error, and the attempt is listed in `RunResult.blocked_actions`.
 - The element label is read from the accessibility name / aria-label / text of the clicked element via `browser_session.get_element_by_index`, and the classification also covers its nearest interactive ancestors (up to 16 levels: label text, aria-label, title, value, `href`, `formaction`, form `action`), so a click on a `<span>` inside a "Place order" button or a `/checkout` link is gated like a click on the button itself. Labels are matched case-insensitively with spacing, zero-width characters and common lookalike letters removed ("BuY NoW", "buynow", "ʙᴜʏ" all count). Coordinate clicks and unlabeled elements cannot be gated.
 - `upload_file` always asks the approval callback (it sends a local file to a site), and `select_dropdown` is gated when the chosen option reads as a purchase. "Add to cart" is not gated.
-- **Irreversible actions:** with commerce gating on, a verb (delete, close, deactivate, terminate, remove, cancel, end, erase) followed by an object (account, profile, data, subscription, membership, plan, auto-renewal, consent) is gated, with optional words like "your", "this" or "all" in between: "Cancel your subscription", "Delete this account", "Delete all data", "Withdraw consent", a bare "Deactivate". So are "Transfer money", "Wire transfer" and "Sell all". The same check runs when Enter or Space activates a focused button and when a dropdown option is chosen. Info labels ("How to delete your account", "... policy", "... history") are not gated. Generic buttons (Confirm, Continue, Submit, Next, Done...) are gated only on checkout flows: cart, basket, bag or checkout paths, `review` beside one of those, `order`/`orders` followed by new, confirm, review or pay, and pay, payment or billing as the first path segment or under checkout, cart, account or order. Content pages such as `/arts/review/film.html` or `/orders?page=2` are not. Allow, Accept, Post, Publish, Send message, a bare Delete and a bare Cancel are not gated. The callback gets `ActionRequest.kind`: `"commerce"` or `"irreversible"`.
+- **Irreversible actions:** with commerce gating on, a verb (delete, close, deactivate, terminate, remove, cancel, end, erase, stop) followed by an object (account, profile, data, subscription, membership, plan, auto-renewal, consent) is gated, with optional words like "your", "this" or "all" in between: "Cancel your subscription", "Delete this account", "Delete all data", "Withdraw consent", "Turn off auto-renewal", "Stop subscription", a bare "Deactivate", "Permanently delete", "Delete everything". One brand word may follow "my"/"your" for close and delete ("Close my Chase account"), and a verb+object pair is found after a short lead-in ("I want to delete my account permanently", "Unsubscribe and delete account"). Money movement is gated too: send, transfer, withdraw or wire with an amount (`$500`, `200 USD`, `1,000 USD`, `0.5 BTC`, `Rs 500`) or "all"/"max"/"full balance"; transfer, withdraw or wire followed directly by a number with a short tail (`Transfer 500 to savings`, `Withdraw 500`, `Transfer 100% of balance`); send + number only with a currency word or "to" (`Send 500 to Alex`); "Send funds", "Transfer money", "Wire transfer", "Cash out", "Sell all". "Send 5 photos", "Transfer files", "Send invoice", bare Send and bare Transfer are not gated. Also gated: "Confirm/Complete/Finalize cancellation", "Cancel anyway", "Yes, cancel", and bracketed or clause-suffixed forms ("Delete (all data)", "Delete account - cannot be undone", "Delete account & data", "Close account and delete data"). Labels are whitespace-collapsed and capped at 300 characters before matching. Matching ignores decoration (emoji, arrows, combining marks, a trailing "(required)"), zero-width and other format characters, digit look-alikes in the object word ("acc0unt") and fused spellings ("Deleteaccount"). Info labels ("How to delete your account", "... policy", "... history"), "Close account menu", "Remove account from this device", bare "Transfer", bare "Send" and bare "Delete all" are not gated. A click is also gated as irreversible, whatever its label, when it (or an ancestor) links or submits to a destructive URL. **Destructive-page rule:** on a page whose URL is destructive, every button-like activation (button, `input` submit/button, `role=button`, Enter/Space on one, and dropdown changes) is gated with kind `"irreversible"` whatever its label, except backing-out labels (Cancel, No, Back, Keep, Keep my account, Keep subscription, Go back, Never mind, Not now, Close); plain links to non-destructive URLs stay ungated. A URL is destructive when the last meaningful path part (optionally followed by an id or confirm/step segment) is delete, close, deactivate or terminate + account, myaccount, user or profile, or cancel + subscription, membership or plan (fused spellings such as `/cancelsubscription` and `?action=delete_account` / `?type=account` included), or a lone `/deactivate` with no id before it; `/account/delete-address`, `/account/close-notification`, `/devices/9/deactivate`, `/sessions/terminate`, a bare `/cancel` or `/delete` and help/legal pages are not. The same checks run when Enter or Space activates a focused button and when a dropdown option (its `text` or `value`) is chosen. Generic buttons (Confirm, Continue, Submit, Next, Done...) are otherwise gated only on checkout flows: cart, basket, bag or checkout paths, `review` beside one of those, `order`/`orders` followed by new, confirm, review or pay, and pay, payment or billing as the first path segment or under checkout, cart, account or order. Content pages such as `/arts/review/film.html` or `/orders?page=2` are not. Allow, Accept, Post, Publish, Send message, a bare Delete and a bare Cancel are not gated. The callback gets `ActionRequest.kind`: `"commerce"`, `"irreversible"` or `"upload"` (file uploads).
+  Long labels are matched too: every line or clause of the label is tested, and so are sliding windows of up to 8 words
+  starting at a verb ("Permanently delete my account and all associated data and content", "Delete account" on its own
+  line); labels over 300 characters are tested at both their start and their end. Up to two brand words may sit between
+  the verb and "account" ("Close my Wells Fargo account", "Delete Apple ID"), and "acct", "a/c", "user", "card", "trial"
+  and "renewal" count as objects ("Delete user", "Cancel trial", "Unlink bank account"). Money: once a currency amount
+  follows the verb any tail gates ("Send $50 to Alex via Zelle now"); "Withdraw to bank", "Withdraw balance", "Add funds",
+  "Deposit funds" and "Tip $5" gate. **Deliberately not gated** (too common on ordinary sites; leave them to the
+  allow-list and the destructive-page rule): bare "Deposit", "Sell", "Invest", "Swap", "Convert", "Stake", "Send all",
+  "Send 100", "Make offer", "Accept offer", "Renew now", and brand-only labels such as "Cancel Netflix".
+- **The label gate is defence in depth.** It cannot recognise every wording. For profiles logged in to real accounts use
+  `SafetyPolicy.strict(allowed_domains=[...])` with a narrow allow-list and an approval callback.
 - **Strict preset:** `SafetyPolicy.strict(allowed_domains=["example.com"])` is the preset for profiles logged in to real accounts. It requires a non-empty allow-list (`ValueError` otherwise) and keeps commerce gating on, so purchases and irreversible actions go to your approval callback and are denied without one. The default blocklist cannot be removed; everyday sites such as icloud.com, dropbox.com and mail.google.com are deliberately not in it, so use an allow-list for those.
 
 ## Sinks and tracing
@@ -376,7 +393,8 @@ a time, the safety gates, the key `LBA_*` variables).
 - One task at a time; a concurrent call fails at once with a `busy` error.
 - **Progress.** When the client sends a `progressToken`, `run_browser_task` emits an MCP progress notification
   per agent step (`progress` = step, `total` = max steps, `message` = e.g. `Step 3/25: click: Sign in`).
-  Clients without a token are unaffected. Both tools advertise `additionalProperties: false` in their `inputSchema`.
+  Every `http(s)` URL in that text has its credentials and query-string values masked (the host and path are kept:
+  path segments are not redacted, so do not put secrets in paths). Clients without a token are unaffected. Both tools advertise `additionalProperties: false` in their `inputSchema`.
   An unusable `allowed_domains` entry such as `*.com` is `invalid_argument`; an unreachable `LBA_CDP_URL` is `cdp_connect`.
 - `max_steps` must be 1-200; `allowed_domains`, if given, must be non-empty; `start_url`, if given, must be an
   `http(s)` URL with a host. Unknown arguments are rejected with `invalid_argument` naming the key(s). All of this

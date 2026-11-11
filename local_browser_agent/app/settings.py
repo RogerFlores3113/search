@@ -263,3 +263,18 @@ def decrypt_api_key(blob: str) -> str | None:
         return _derive_fernet_key().decrypt(blob.encode()).decode()
     except Exception:
         return None
+
+
+def valid_http_url(value: str) -> bool:
+    """True for an http(s) URL with a host (e.g. ``http://localhost:11434``)."""
+    from urllib.parse import urlsplit
+
+    v = value.strip()
+    if not v or any(c.isspace() for c in v):
+        return False
+    try:
+        parts = urlsplit(v)
+        parts.port  # noqa: B018 - raises ValueError for a malformed port
+        return parts.scheme in ("http", "https") and bool(parts.hostname)
+    except ValueError:
+        return False

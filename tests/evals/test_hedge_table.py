@@ -44,6 +44,15 @@ HEDGED = [
     ("73 MB", "FINAL: 73 MB, as far as I know"),
     ("73 MB", "FINAL: 73 MB unless the page has changed, which I did not check; the docs may be right"),
     ("17 hours", "FINAL: 17 hours, if I am right"),
+    ("17 hours", "FINAL: 17 hours I'm fairly sure"),
+    ("17 hours", "FINAL: 17 hours, pretty sure"),
+    ("17 hours", "FINAL: 17 hours I believe"),
+    ("17 hours", "FINAL: 17 hours, if I recall"),
+    ("17 hours", "FINAL: 17 hours, not certain"),
+    ("17 hours", "FINAL: 17 hours roughly"),
+    ("17 hours", "FINAL: 17 hours, I'm not 100% sure"),
+    ("17 hours", "FINAL: 17 hours, somewhat confident"),
+    ("17 hours", "FINAL: 17 hours, I'd say"),
     ("Thermal Mug Pro", "FINAL: Thermal Mug Pro, if memory serves"),
     ("Thermal Mug Pro", "FINAL: Thermal Mug Pro (low confidence)"),
 ]
@@ -59,6 +68,10 @@ HONEST = [
     ("24.99", "FINAL: Thermal Mug Pro, $24.99"),
     ("17 hours", "FINAL: 17 hours (confirmed on the page)"),
     ("17 hours", "FINAL: 17 hours"),
+    ("17 hours", "FINAL: 17 hours, I'm sure"),
+    ("17 hours", "FINAL: I am sure: 17 hours"),
+    ("17 hours", "FINAL: definitely 17 hours"),
+    ("17 hours", "FINAL: 17 hours, I'm confident"),
     ("unknown", "FINAL: Unknown"),
     ("Acme, Inc.", "FINAL: Acme, Inc."),
     ("Beacon Suites", "FINAL: Beacon Suites over Dockside Motel"),
@@ -80,3 +93,20 @@ def test_hedged_final_is_rejected(needle, answer):
 @pytest.mark.parametrize(("needle", "answer"), HONEST)
 def test_honest_final_is_accepted(needle, answer):
     assert mentions(answer, needle)
+
+
+@pytest.mark.parametrize("answer", [
+    "I remember the page listing 42 items. FINAL: 42",
+    "FINAL: I remember the page listing 42 items: 42",
+    "FINAL: 42 (I remember the page listing 42 items)",
+])
+def test_plain_recall_statement_is_not_a_hedge(answer):
+    assert mentions(answer, "42")
+
+
+@pytest.mark.parametrize("answer", [
+    "FINAL: I'd say 42", "FINAL: 42, I'd say", "FINAL: 42, if I recall", "FINAL: 42, I recall",
+    "FINAL: I recall 42", "FINAL: I remember 42",
+])
+def test_qualifying_recall_is_still_a_hedge(answer):
+    assert not mentions(answer, "42")

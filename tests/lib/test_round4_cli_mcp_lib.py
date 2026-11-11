@@ -185,7 +185,7 @@ def test_cli_json_config_errors_one_entry_per_problem(capsys):
     rc = cli.main(["run", "x", "--json", "--max-steps", "0", "--timeout", "-1"])
     cap = capsys.readouterr()
     out = json.loads(cap.out)
-    assert rc == 2 and out["error_kind"] == "config"
+    assert rc == 2 and out["error_kind"] == "usage"
     assert len(out["errors"]) == 2
     assert any(e.startswith("max_steps:") for e in out["errors"])
     assert any(e.startswith("timeout_s:") for e in out["errors"])

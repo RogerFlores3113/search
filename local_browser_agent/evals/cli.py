@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
-from .runner import DEFAULT_MAX_INFRA_ERRORS, INFRA_ERROR_KINDS
+from .runner import DEFAULT_MAX_INFRA_ERRORS
 from .tasks import FINAL_SUFFIX, TASKS, get_tasks
 
 PREFIX = "lba eval: error:"
@@ -34,7 +34,8 @@ def _fail(args: argparse.Namespace, code: int, error_kind: str, errors: list[str
           error_kinds: list[str] | None = None) -> int:
     """Report a failure: one ``lba eval: error:`` line per problem on stderr and, with --json, one JSON
     document on stdout (``{"status": "error", "error_kind": ..., "error_kinds": [...], "errors": [...]}``).
-    ``error_kind`` is the first kind; ``error_kinds`` (all kinds, in order) is given when there are several."""
+    ``error_kind`` is the first kind; ``error_kinds`` (all kinds, in order, a list even for one kind) is given
+    for pre-flight and all-infra failures."""
     for e in errors:
         _err(f"{prefix}{e}")
     if getattr(args, "json", False):
@@ -243,6 +244,8 @@ def _print_summary(result: Any, file: Any = None) -> None:
         _print("no valid runs (infra errors)")
         return
     _print(f"success rate:      {'n/a' if result.success_rate is None else f'{result.success_rate * 100:.0f}%'}")
+    _print(f"valid runs:        {result.n_valid} of {result.total_runs}"
+           f" (success rate on those: {'n/a' if result.valid_success_rate is None else f'{result.valid_success_rate * 100:.0f}%'})")
     _print(f"mean score:        {'n/a' if result.mean_score is None else f'{result.mean_score:.2f}'}")
     _print(f"safety violations: {result.safety_violations}")
     _print(f"mean steps:        {result.mean_steps:.1f}")
@@ -337,7 +340,7 @@ def _main(
     try:
         get_tasks(task_ids)
     except KeyError as exc:
-        return usage(str(exc.args[0]))
+        return usage(f"{exc.args[0]}; valid ids: {', '.join(t.id for t in TASKS)}")
     if args.repeats < 1:
         return usage("--repeats must be >= 1")
     if args.fail_under is not None and not 0.0 <= args.fail_under <= 1.0:
@@ -363,6 +366,20 @@ def _main(
         quiet_logs = args.quiet or args.json
         configure_logging("error" if quiet_logs else "warning", third_party="off" if quiet_logs else None)
     if config is None:
+        from local_browser_agent.cli import _config_problems, warn_unknown_env  # noqa: PLC0415
+
+        warn_unknown_env()
+        # Validate every LBA_* variable first so all environment problems are reported, not just a missing model.
+        # An invalid environment value is an error even when the matching flag is also given.
+        from local_browser_agent import AgentConfig  # noqa: PLC0415
+
+        env_problems: list[str] = []
+        try:
+            AgentConfig.from_env()
+        except ValueError as exc:
+            env_problems = _config_problems(exc)
+        if env_problems:
+            return _fail(args, EXIT_USAGE, "config", env_problems, prefix="invalid configuration: ")
         if not (args.provider or os.environ.get("LBA_PROVIDER")) or not (args.model or os.environ.get("LBA_MODEL")):
             return _fail(args, EXIT_USAGE, "config", [
                 "a provider and model are required for a real run "
@@ -377,7 +394,15 @@ def _main(
         except ValueError as exc:  # pydantic.ValidationError is a ValueError
             from local_browser_agent.cli import _config_problems  # noqa: PLC0415
 
-            return _fail(args, EXIT_USAGE, "config", _config_problems(exc), prefix="invalid configuration: ")
+            # Same rule as ``lba run``: a bad flag value is "usage"; an invalid LBA_* environment value is "config".
+            try:
+                from local_browser_agent.cli import _env_only_args  # noqa: PLC0415
+
+                _build_config(_env_only_args(args), None)
+                kind, code = "usage", EXIT_USAGE
+            except ValueError:
+                kind, code = "config", EXIT_USAGE
+            return _fail(args, code, kind, _config_problems(exc), prefix="invalid configuration: ")
 
     if real_run or preflight is not None:
         problems = (preflight or preflight_problems)(config)
@@ -388,7 +413,6 @@ def _main(
             kinds = list(dict.fromkeys(kinds))
             # the first problem's kind leads (chrome is checked before the provider)
             _fail(args, EXIT_ENV, kinds[0], problems, prefix="pre-flight failed: ", error_kinds=kinds)
-            print("no tasks were run", file=sys.stderr)
             return EXIT_ENV
 
     from .runner import run_suite  # noqa: PLC0415
@@ -398,8 +422,8 @@ def _main(
     def progress(rec: Any) -> None:
         if args.quiet:
             return
-        if rec.error_kind in INFRA_ERROR_KINDS:  # one line; details are in the result file
-            print(f"[INFRA] {rec.task_id} #{rec.repeat} {rec.error_kind}", file=human, flush=True)
+        if rec.infra_error:  # one line; details are in the result file
+            print(f"[INFRA] {rec.task_id} #{rec.repeat} {rec.error_kind or 'error'}", file=human, flush=True)
             return
         flag = "PASS" if rec.passed else "FAIL"
         print(f"[{flag}] {rec.task_id} #{rec.repeat} score={rec.score:.2f} steps={rec.steps}", file=human, flush=True)
@@ -429,16 +453,17 @@ def _main(
         # Every run failed for environment reasons: nothing worth keeping, and no results dir left behind
         # (a pre-existing one keeps its old files).
         shutil.rmtree(run_dir, ignore_errors=True)
-        errors = [result.meta["infra_abort"]] if result.meta.get("infra_abort") else []
-        errors += list(dict.fromkeys(e for r in result.runs for e in r.errors if e))[:5]
+        # root cause first, the "aborting: N consecutive infrastructure errors" wrapper after it
+        errors = list(dict.fromkeys(e for r in result.runs for e in r.errors if e))[:5]
+        if result.meta.get("infra_abort"):
+            errors.append(result.meta["infra_abort"])
         if not errors:
             errors = [f"every run failed with {', '.join(infra_kinds)}; no valid results"]
         if not args.quiet:
             _print_summary(result, human)
         # Only bad configuration: a usage problem (exit 2), as in ``lba run``; anything else is the environment (3).
         code = EXIT_USAGE if infra_kinds == ["config"] else EXIT_ENV
-        return _fail(args, code, infra_kinds[0], errors,
-                     error_kinds=infra_kinds if len(infra_kinds) > 1 else None)
+        return _fail(args, code, infra_kinds[0], errors, error_kinds=infra_kinds)
     if run_dir != out_dir:
         for item in run_dir.iterdir():
             dest = out_dir / item.name
@@ -459,9 +484,9 @@ def _main(
 
 def _all_infra_kinds(result: Any) -> list[str]:
     """Distinct ``error_kind`` values (in order) when every run failed for an environment reason, else ``[]``."""
-    if not result.runs or not all(r.error_kind in INFRA_ERROR_KINDS for r in result.runs):
+    if not result.runs or not all(r.infra_error for r in result.runs):
         return []
-    return list(dict.fromkeys(r.error_kind for r in result.runs))
+    return list(dict.fromkeys(r.error_kind or "error" for r in result.runs))
 
 
 def _gate(result: Any, args: argparse.Namespace) -> int:
@@ -470,7 +495,7 @@ def _gate(result: Any, args: argparse.Namespace) -> int:
     if result.meta.get("infra_abort"):
         print(f"gate: {result.meta['infra_abort']}", file=sys.stderr)
         return EXIT_ENV
-    if result.runs and all(r.status == "error" or r.infra_error for r in result.runs):
+    if result.runs and all(r.status == "error" for r in result.runs):
         print("gate: every run errored; the results say nothing about the model", file=sys.stderr)
         code = 1
     if not result.meta.get("complete", True):

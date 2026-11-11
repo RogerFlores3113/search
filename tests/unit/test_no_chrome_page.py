@@ -50,3 +50,18 @@ def test_chrome_is_rechecked_on_every_request(monkeypatch):
     assert 'name="task"' in client.get("/").text
     installed["v"] = False
     assert "Google Chrome is required" in client.get("/").text
+
+
+def test_no_chrome_page_links_to_settings(monkeypatch):
+    """The Chrome-missing page lets the user reach Settings (with the security token)."""
+    import local_browser_agent.app.main as main_mod
+    from local_browser_agent.app.main import app
+
+    monkeypatch.setattr(main_mod, "chrome_is_installed", lambda: False)
+    client = TestClient(app)
+    page = client.get("/")
+    assert "/?settings=1" in page.text
+    settings_page = client.get("/?settings=1")
+    assert settings_page.status_code == 200
+    assert main_mod.SECURITY_TOKEN in settings_page.text
+    assert "this.openSettings();" in settings_page.text
