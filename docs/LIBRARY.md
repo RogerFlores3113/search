@@ -164,7 +164,7 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 - **`start_url`** must be `http(s)`, not blocked, inside `allowed_domains` (when set) and not local (unless allowed);
   otherwise the run returns `status="error"`, `error_kind="start_url_blocked"` before anything is launched.
 
-- `blocked_domains` always includes `SAFETY_DEFAULTS` (banks, payments, government, medical, password managers); extra entries are added, none can be removed (also via `model_copy(update=...)`). Entries are lowercased with trailing dots stripped.
+- `blocked_domains` always includes `SAFETY_DEFAULTS`: about 90 domains covering banks, brokerages, crypto exchanges, payment apps (PayPal and its country sites, Venmo, Cash App, Wise, Zelle), identity providers and account settings (`accounts.google.com`, `myaccount.google.com`, `appleid.apple.com`, `login.microsoftonline.com`, `login.live.com`, `account.microsoft.com`), the AWS console and sign-in, tax sites, government, medical and password managers. Extra entries are added, none can be removed (also via `model_copy(update=...)`). Entries are normalised: scheme, userinfo, port, path and a leading `*.` are stripped and the host is canonicalised (so `https://evil.com:8080/x` and `*.evil.com` both mean `evil.com`, and `bücher.de` means `xn--bcher-kva.de`); an entry with no usable host raises `ValueError`. `github.com` stays reachable; its settings pages are path-level and not blocked. For a logged-in everyday Chrome profile, prefer an `allowed_domains` list for the sites the task needs.
 - **Host canonicalisation:** before any domain, IP or local-network check a host is canonicalised like Chrome does
   (percent-decoding, NFKC, zero-width/format characters removed, `。` `．` `｡` read as dots, lowercase, trailing dot
   removed, IDNA/punycode). A host that cannot be canonicalised is denied.
@@ -174,10 +174,11 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 - **Enter / Space** on a focused control are checked against the live focused element; when it cannot be read they
   are gated unless the last known focus was a text field.
 - `allowed_domains` restricts navigation to those domains. Public suffixes such as `*.co.uk` or `com.au` are rejected;
-  name a specific site (`*.example.co.uk`). Blocked domains win: an allowed domain equal to or under a blocked one is dropped, and a list that is left empty raises `ValueError`.
+  name a specific site (`*.example.co.uk`). Shared-hosting suffixes such as `github.io`, `herokuapp.com`, `vercel.app` or `pages.dev` are rejected the same way. Blocked domains win: an allowed entry that is equal to, under, or a wildcard covering a blocked domain is dropped with a warning naming it (for example `*.google.com` covers `accounts.google.com`, so allow `google.com` and `www.google.com` instead), and a list that is left empty raises `ValueError`.
 - The guardrail prompt is appended to the system prompt.
 - **Commerce gate:** click actions whose target label matches a commerce pattern ("Buy now", "Checkout", "Place order", "Pay", ...) are blocked in the tool layer, independent of the model. If you pass `approval=async (ActionRequest) -> bool`, it is asked first (`ActionRequest` has `action_name, params, element_label, url`); returning `True` lets the click through. Without a callback the click is blocked, the agent gets an error, and the attempt is listed in `RunResult.blocked_actions`.
-- The element label is read from the accessibility name / aria-label / text of the clicked element via `browser_session.get_element_by_index`; coordinate clicks and unlabeled elements cannot be gated.
+- The element label is read from the accessibility name / aria-label / text of the clicked element via `browser_session.get_element_by_index`, and the classification also covers its nearest interactive ancestors (up to 16 levels: label text, aria-label, title, value, `href`, `formaction`, form `action`), so a click on a `<span>` inside a "Place order" button or a `/checkout` link is gated like a click on the button itself. Labels are matched case-insensitively with spacing, zero-width characters and common lookalike letters removed ("BuY NoW", "buynow", "ʙᴜʏ" all count). Coordinate clicks and unlabeled elements cannot be gated.
+- `upload_file` always asks the approval callback (it sends a local file to a site), and `select_dropdown` is gated when the chosen option reads as a purchase. "Add to cart" is not gated.
 
 ## Sinks and tracing
 
