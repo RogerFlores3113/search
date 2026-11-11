@@ -25,7 +25,7 @@ def test_cli_json_preflight_failure(monkeypatch, capsys, tmp_path):
     trace = tmp_path / "t.jsonl"
     rc = cli.main(["run", "x", "--json", "--trace", str(trace)])
     cap = capsys.readouterr()
-    assert rc == 1
+    assert rc == 3
     out = json.loads(cap.out)
     assert out["status"] == "error" and out["success"] is None and out["errors"] == ["Ollama is not running"]
     assert out["steps"] == [] and out["step_count"] == 0 and out["task"] == "x"
@@ -37,9 +37,9 @@ def test_cli_json_preflight_failure(monkeypatch, capsys, tmp_path):
 
 def test_cli_human_preflight_failure_stdout_empty(monkeypatch, capsys):
     _preflight_fail(monkeypatch)
-    assert cli.main(["run", "x"]) == 1
+    assert cli.main(["run", "x"]) == 3
     cap = capsys.readouterr()
-    assert cap.out == "" and "lba: Ollama" in cap.err
+    assert cap.out == "" and "lba run: error: Ollama" in cap.err
 
 
 def test_cli_config_error_exit_2_json(monkeypatch, capsys):

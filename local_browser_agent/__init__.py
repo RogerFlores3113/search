@@ -66,6 +66,7 @@ from local_browser_agent.safety import (  # noqa: E402
     GuardedTools,
     is_commerce_label,
 )
+from local_browser_agent.log import configure_logging  # noqa: E402
 from local_browser_agent.sinks import CallbackSink, JsonlTraceSink, QueueSink  # noqa: E402
 
 __all__ = [
@@ -74,7 +75,7 @@ __all__ = [
     "BrowserAgent", "RunResult", "StepRecord", "run_task", "run_task_sync",
     "register_provider", "build_llm", "default_model", "check_provider", "PreFlightError", "ChromeNotFoundError",
     "SAFETY_DEFAULTS", "GUARDRAIL_PROMPT", "ActionRequest", "GuardedTools", "is_commerce_label",
-    "QueueSink", "JsonlTraceSink", "CallbackSink",
+    "QueueSink", "JsonlTraceSink", "CallbackSink", "configure_logging",
     "ScreenshotEvent", "StateEvent", "ProgressEvent", "SummaryEvent", "ErrorEvent", "DoneEvent",
     "TokenEvent", "ModelInfoEvent", "ThoughtEvent", "ActionDetailEvent",
     "HumanNeededEvent", "StepCompletedEvent",

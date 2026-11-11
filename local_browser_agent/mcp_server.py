@@ -137,14 +137,55 @@ class RunResultModel(BaseModel):
         default=None, description="machine-readable failure class (config, busy, invalid_argument, ...) or null")
 
 
+class _ModelSection(BaseModel):
+    """``model`` section of :class:`AgentConfigModel`; extra keys are tolerated so new settings never break it."""
+
+    model_config = ConfigDict(extra="allow")
+
+    provider: str | None = None
+    model: str | None = None
+    api_key: str | None = Field(default=None, description="'set' when a key is configured, never the key itself")
+    base_url: str | None = Field(default=None, description="credentials and query values redacted")
+    temperature: float | None = None
+    extra: dict[str, Any] = Field(default_factory=dict, description="provider options; values redacted")
+
+
+class _BrowserSection(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    headless: bool | None = None
+    channel: str | None = None
+    executable_path: str | None = None
+    cdp_url: str | None = Field(default=None, description="credentials and query values redacted")
+    user_data_dir: str | None = None
+    window_width: int | None = None
+    window_height: int | None = None
+    llm_screenshot_width: int | None = None
+    llm_screenshot_height: int | None = None
+    keep_alive: bool | None = None
+
+
+class _SafetySection(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    blocked_domains: list[str] | None = None
+    allowed_domains: list[str] | None = None
+    guardrail_prompt: str | None = None
+    gate_commerce_clicks: bool | None = None
+    commerce_patterns: list[str] | None = None
+    allow_evaluate: bool | None = None
+    allow_local_network: bool | None = None
+    approval_timeout_s: float | None = None
+
+
 class AgentConfigModel(BaseModel):
     """Output schema of ``get_agent_config`` (secrets removed). On failure ``error`` / ``error_kind`` are set."""
 
     model_config = ConfigDict(extra="allow")
 
-    model: dict[str, Any] | None = None
-    browser: dict[str, Any] | None = None
-    safety: dict[str, Any] | None = None
+    model: _ModelSection | None = None
+    browser: _BrowserSection | None = None
+    safety: _SafetySection | None = None
     max_steps: int | None = None
     timeout_s: float | None = None
     use_vision: bool | None = None
@@ -194,22 +235,24 @@ async def _run(task: str, start_url: str | None, max_steps: int | None,
         return err("allowed_domains must not be empty; omit it to use the server's policy", "invalid_argument")
     if start_url is not None and (msg := _check_start_url(start_url)):
         return err(msg, "invalid_argument")
+    # All pure validation happens before the busy check, so a bad call is reported as such
+    # (invalid_argument / config) even while another run is active.
+    try:
+        cfg = AgentConfig.from_env()
+        if max_steps is not None:
+            cfg.max_steps = max_steps
+        if allowed_domains is not None:
+            effective = restrict_domains(cfg.safety.allowed_domains, allowed_domains)
+            if not effective:
+                return err("none of the requested allowed_domains are permitted by this server's "
+                           "LBA_ALLOWED_DOMAINS policy; nothing was run", "invalid_argument")
+            cfg.safety = SafetyPolicy(**{**cfg.safety.model_dump(), "allowed_domains": effective})
+    except Exception as e:  # ValueError / pydantic ValidationError
+        return err(f"invalid configuration: {format_validation_error(e)}", "config")
     lock = _lock()
     if lock.locked():
         return err("busy: another browser task is already running", "busy")
     async with lock:
-        try:
-            cfg = AgentConfig.from_env()
-            if max_steps is not None:
-                cfg.max_steps = max_steps
-            if allowed_domains is not None:
-                effective = restrict_domains(cfg.safety.allowed_domains, allowed_domains)
-                if not effective:
-                    return err("none of the requested allowed_domains are permitted by this server's "
-                               "LBA_ALLOWED_DOMAINS policy; nothing was run", "invalid_argument")
-                cfg.safety = SafetyPolicy(**{**cfg.safety.model_dump(), "allowed_domains": effective})
-        except Exception as e:  # ValueError / pydantic ValidationError
-            return err(f"invalid configuration: {format_validation_error(e)}", "config")
         try:
             # stdout carries the MCP JSON-RPC stream; send any stray print() from
             # browser-use (e.g. its pause banner) to stderr instead of corrupting it.
@@ -221,6 +264,8 @@ async def _run(task: str, start_url: str | None, max_steps: int | None,
         d.setdefault("error_kind", getattr(result, "error_kind", None))
         return d
 
+
+_RUN_ARGS = frozenset({"task", "start_url", "max_steps", "allowed_domains"})
 
 RUN_DESCRIPTION = (
     "Run ONE natural-language task in a real local Chrome browser (the user's own browser, visible by default) "
@@ -285,6 +330,20 @@ def build_server() -> Any:
 
     class _Server(FastMCP):
         async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[override]
+            if name == "run_browser_task" and isinstance(arguments, dict):
+                unknown = sorted(set(arguments) - _RUN_ARGS)
+                if unknown:
+                    task = arguments.get("task")
+                    return _as_result(_error(
+                        f"unknown argument(s): {', '.join(map(str, unknown))}; "
+                        f"accepted: {', '.join(sorted(_RUN_ARGS))}", "invalid_argument",
+                        task if isinstance(task, str) else ""))
+            elif name == "get_agent_config" and arguments:
+                d = {"status": "error", "error_kind": "invalid_argument",
+                     "error": f"unknown argument(s): {', '.join(sorted(map(str, arguments)))}; "
+                              "get_agent_config takes no arguments"}
+                return CallToolResult(content=[TextContent(type="text", text=json.dumps(d, indent=2))],
+                                      structuredContent=d, isError=True)
             try:
                 return await super().call_tool(name, arguments)
             except ToolError as e:
@@ -320,12 +379,12 @@ def serve(log_level: str = "warning", *, third_party: str | None = None) -> int:
     try:
         AgentConfig.from_env()
     except Exception as e:
-        print(f"lba mcp: invalid configuration:\n{format_validation_error(e)}", file=sys.stderr)
+        print(f"lba mcp: error: invalid configuration:\n{format_validation_error(e)}", file=sys.stderr)
         return 2
     try:
         server = build_server()
     except ImportError as e:
-        print(f"lba mcp: the MCP server needs the 'mcp' extra ({e}). "
+        print(f"lba mcp: error: the MCP server needs the 'mcp' extra ({e}). "
               "Install with: pip install 'local-browser-agent[mcp]'", file=sys.stderr)
         return 2
     server.run(transport="stdio")

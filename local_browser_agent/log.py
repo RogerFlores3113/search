@@ -16,6 +16,7 @@ _EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]+\\s?")
 _OWN_LOGGER = "local_browser_agent"
 _THIRD_PARTY_LOGGERS = ("browser_use", "bubus")
 _LOGGER_NAMES = (*_THIRD_PARTY_LOGGERS, _OWN_LOGGER)
+_DOMAIN_LIST_LOGGER = "browser_use.utils"
 _OFF = logging.CRITICAL + 10
 _TAG = "_lba_handler"
 
@@ -41,6 +42,17 @@ class _StripEmoji(logging.Filter):
         if cleaned != msg:
             record.msg, record.args = cleaned, None
         return True
+
+
+class _DomainListWarning(logging.Filter):
+    """Drops browser-use's "Optimizing domain list ... pattern matching is not supported for lists >= 100"
+    warning: wildcard entries are handled by this project itself, so the hint is misleading."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return "Optimizing domain list" not in record.getMessage()
+        except Exception:
+            return True
 
 
 class _StderrHandler(logging.Handler):
@@ -128,6 +140,13 @@ def configure_logging(level: str = "warning", *, color: bool | None = None,
         return h
 
     plain = "%(levelname)s: %(message)s"
+    # browser-use emits it from the `browser_use.utils` logger (BrowserProfile's validator). A filter
+    # on a logger only sees records logged directly on it, so attach to that exact logger.
+    src = logging.getLogger(_DOMAIN_LIST_LOGGER)
+    for f in [f for f in src.filters if isinstance(f, _DomainListWarning)]:
+        src.removeFilter(f)
+    if tp_numeric > logging.DEBUG:
+        src.addFilter(_DomainListWarning())
     for lname in _THIRD_PARTY_LOGGERS:
         lg = logging.getLogger(lname)
         for h in list(lg.handlers):  # replace browser-use's console handler with ours
