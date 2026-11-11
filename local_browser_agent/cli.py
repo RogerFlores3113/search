@@ -77,6 +77,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     m = sub.add_parser("mcp", prog="lba mcp", help="start the stdio MCP server (config from LBA_* env vars)")
     _add_log_args(m)
+    m.add_argument("--strict", action="store_true",
+                   help="exit 2 on an invalid LBA_* configuration instead of serving and reporting it per tool call "
+                        "(same as LBA_MCP_STRICT=1)")
     ev = sub.add_parser("eval", help="run the evaluation suite (remaining args are forwarded)", add_help=False)
     ev.add_argument("rest", nargs=argparse.REMAINDER)
     return p
@@ -328,12 +331,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_eval(argv[1:])
     args = _build_parser().parse_args(argv)
     if args.command == "run":
-        return _cmd_run(args)
+        from local_browser_agent.log import quiet_filters
+
+        with quiet_filters():  # the CLI owns the process: browser-use failure noise dropped for the whole run
+            return _cmd_run(args)
     if args.command == "mcp":
         from local_browser_agent.mcp_server import serve
 
         level, third_party = _log_settings(args, "warning")
-        return serve(level, third_party=third_party)
+        return serve(level, third_party=third_party, strict=True if args.strict else None)
     if args.command == "eval":
         return _cmd_eval(args.rest or [])
     return 2

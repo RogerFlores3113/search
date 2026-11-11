@@ -63,6 +63,9 @@ class _Collect(logging.Handler):
 
 @pytest.fixture
 def root_handler():
+    from local_browser_agent.log import install_quiet_filters, uninstall_quiet_filters
+
+    install_quiet_filters()  # no longer installed on import: a run (or the CLI / MCP entry point) holds it
     h = _Collect()
     root = logging.getLogger()
     root.addHandler(h)
@@ -78,6 +81,7 @@ def root_handler():
     root.removeHandler(h)
     bu.setLevel(old[0])
     bu.propagate = old[1]
+    uninstall_quiet_filters()
 
 
 def _emit_noise():

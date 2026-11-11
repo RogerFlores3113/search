@@ -455,7 +455,7 @@ def serve(log_level: str = "warning", *, third_party: str | None = None, strict:
     from ``run_browser_task`` / ``get_agent_config`` instead of an opaque "Connection closed". With
     ``strict=True`` (or ``LBA_MCP_STRICT=1``) it exits with code 2 before the handshake instead.
     """
-    from local_browser_agent.log import configure_logging
+    from local_browser_agent.log import configure_logging, quiet_filters
 
     configure_logging(log_level, third_party=third_party)
     if strict is None:
@@ -468,12 +468,13 @@ def serve(log_level: str = "warning", *, third_party: str | None = None, strict:
         if strict:
             return 2
         print("lba mcp: serving anyway; every tool call will return the configuration errors "
-              "(set LBA_MCP_STRICT=1 to exit instead)", file=sys.stderr)
+              "(use --strict or LBA_MCP_STRICT=1 to exit instead)", file=sys.stderr)
     try:
         server = build_server()
     except ImportError as e:
         print(f"lba mcp: error: the MCP server needs the 'mcp' extra ({e}). "
               "Install with: pip install 'local-browser-agent[mcp]'", file=sys.stderr)
         return 2
-    server.run(transport="stdio")
+    with quiet_filters():  # the server owns the process: held while it serves
+        server.run(transport="stdio")
     return 0

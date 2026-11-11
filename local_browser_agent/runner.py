@@ -316,8 +316,11 @@ class BrowserAgent:
         self._sink_timeouts = {}
         self._sink_failures = {}
         self._sinks_dropped = set()
+        from local_browser_agent.log import quiet_filters  # noqa: PLC0415
+
         try:
-            return await self._run(task, start_url)
+            with quiet_filters():  # browser-use failure noise is dropped only while this run is in flight
+                return await self._run(task, start_url)
         finally:
             self._running = False
             self._paused = False

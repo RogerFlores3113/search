@@ -9,7 +9,7 @@ Three subcommands: `lba run` (one task), `lba eval` (the eval suite, see [EVALS.
 | --- | --- | --- | --- | --- |
 | 0 | success | run status `success` | all gates passed; `--compare` OK; `--list` / `--self-test` OK | server exited normally |
 | 1 | the work failed | status `failed`, `timeout`, `stopped` or `error` with any other `error_kind` (`agent_error`, `timeout`, `captcha`, `stopped`, `start_url_blocked`) | a gate failed (`--fail-under`, `--fail-on-violation`), the run was cut short by `--budget-minutes`, or every run errored for a non-infrastructure reason; `--compare` found a regression, new safety violation or missing task (or a warning with `--strict`); `--self-test` failed | not used |
-| 2 | usage or configuration error | bad flags, empty task, malformed `--cdp-url` / `--start-url`, unwritable `--trace`, invalid `LBA_*` values or a `config` error raised once the run started (`error_kind` `config`) | bad flags or config (`usage`, `config`); **every run** failed with `config` and nothing else; `--compare` with unreadable or invalid files (`invalid_input`) or an invalid comparison (different task set, too few runs, mostly infra errors) | invalid `LBA_*` configuration, or the `mcp` extra is missing |
+| 2 | usage or configuration error | bad flags, empty task, malformed `--cdp-url` / `--start-url`, unwritable `--trace`, invalid `LBA_*` values or a `config` error raised once the run started (`error_kind` `config`) | bad flags or config (`usage`, `config`); **every run** failed with `config` and nothing else; `--compare` with unreadable or invalid files (`invalid_input`) or an invalid comparison (different task set, too few runs, mostly infra errors) | invalid `LBA_*` configuration with `--strict` / `LBA_MCP_STRICT=1` (otherwise the server keeps serving, see below), or the `mcp` extra is missing |
 | 3 | environment not ready | `chrome_missing`, `preflight`, `cdp_connect` | pre-flight failed (`chrome_missing`, `preflight`); **every run** failed with an infra kind (`chrome_missing`, `preflight`, `cdp_connect`, or `config` mixed with one of those), even with fewer runs than `--max-infra-errors`; or the run was aborted after `--max-infra-errors` consecutive infra errors | not used |
 | 130 | interrupted (Ctrl-C) | yes | not used | not used |
 
@@ -68,5 +68,8 @@ Other modes: `--list` prints an array of tasks, `--self-test` an object with `ok
 
 ### `lba mcp`
 
-No JSON document: the server speaks MCP over stdio. A startup failure prints
-`lba mcp: error: ...` on stderr and exits 2.
+No JSON document: the server speaks MCP over stdio. With an invalid `LBA_*` configuration it prints one
+`lba mcp: error: invalid configuration: ...` line per problem on stderr and keeps serving (degraded mode), so a client
+such as Claude Desktop can show the problem: every tool call returns an error with `error_kind` `config`. Pass
+`--strict` (or set `LBA_MCP_STRICT=1`) to exit 2 instead, before the handshake. A missing `mcp` extra always prints
+`lba mcp: error: ...` and exits 2.

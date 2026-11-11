@@ -29,10 +29,6 @@ import logging as _logging  # noqa: E402
 # Library etiquette: never trigger logging.lastResort for an application that configured nothing.
 _logging.getLogger("local_browser_agent").addHandler(_logging.NullHandler())
 
-from local_browser_agent.log import install_quiet_filters as _install_quiet_filters  # noqa: E402
-
-_install_quiet_filters()  # drop browser-use's duplicate failure noise whatever handlers the host uses
-
 try:
     __version__ = _metadata.version("local-browser-agent")
 except _metadata.PackageNotFoundError:  # pragma: no cover - running from a bare checkout

@@ -8,6 +8,7 @@ import math
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -282,6 +283,18 @@ def preflight_problems(config: Any) -> list[str]:
 def main(
     argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any = None, preflight: Any = None
 ) -> int:
+    """CLI entry (see :func:`_main`); holds the quiet-log filters for a real run."""
+    if config is not None:
+        return _main(argv, run_fn=run_fn, config=config, preflight=preflight)
+    from local_browser_agent.log import quiet_filters  # noqa: PLC0415
+
+    with quiet_filters():
+        return _main(argv, run_fn=run_fn, config=config, preflight=preflight)
+
+
+def _main(
+    argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any = None, preflight: Any = None
+) -> int:
     """CLI entry. ``run_fn`` / ``config`` / ``preflight`` are injection points for tests.
 
     Exit codes: 0 ok; 1 a gate failed (``--fail-under``, ``--fail-on-violation``), the run was
@@ -393,12 +406,16 @@ def main(
 
     out_dir = Path(args.out)
     out_existed = out_dir.exists()
+    # A pre-existing --out is never touched unless the result is kept: run into a staging directory beside
+    # it and move the files over afterwards.
+    run_dir = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}.staging-", dir=out_dir.resolve().parent)) \
+        if out_existed else out_dir
     result = asyncio.run(
         run_suite(
             config,
             task_ids=task_ids,
             repeats=args.repeats,
-            out_dir=out_dir,
+            out_dir=run_dir,
             run_fn=run_fn,
             progress=progress,
             timeout_s=args.timeout,
@@ -409,9 +426,9 @@ def main(
     )
     infra_kinds = _all_infra_kinds(result)
     if infra_kinds:
-        # Every run failed for environment reasons: nothing worth keeping, and no results dir left behind.
-        if not out_existed:
-            shutil.rmtree(out_dir, ignore_errors=True)
+        # Every run failed for environment reasons: nothing worth keeping, and no results dir left behind
+        # (a pre-existing one keeps its old files).
+        shutil.rmtree(run_dir, ignore_errors=True)
         errors = [result.meta["infra_abort"]] if result.meta.get("infra_abort") else []
         errors += list(dict.fromkeys(e for r in result.runs for e in r.errors if e))[:5]
         if not errors:
@@ -422,6 +439,13 @@ def main(
         code = EXIT_USAGE if infra_kinds == ["config"] else EXIT_ENV
         return _fail(args, code, infra_kinds[0], errors,
                      error_kinds=infra_kinds if len(infra_kinds) > 1 else None)
+    if run_dir != out_dir:
+        for item in run_dir.iterdir():
+            dest = out_dir / item.name
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            shutil.move(str(item), str(dest))
+        shutil.rmtree(run_dir, ignore_errors=True)
     out_path = str(out_dir.resolve())
     if not args.quiet:
         _print_summary(result, human)
