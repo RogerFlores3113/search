@@ -96,11 +96,13 @@ def _norm_domain(d: str) -> str:
 def blocked_patterns(blocked_domains) -> list[str]:
     """browser-use patterns blocking each domain, its subdomains and its trailing-dot host form.
 
-    ``*.d`` already matches ``d``, ``www.d`` and every subdomain, and ``*.d.`` matches the
-    trailing-dot spellings, so a plain ``d`` entry would be redundant. Two patterns per domain
-    put the default policy (about 166 entries) over browser-use's 100-entry list-to-set conversion, which
-    drops every ``*.`` pattern; :func:`_restore_domain_lists` puts the lists back, and the log filter hides
-    browser-use's "Optimizing domain list" message.
+    The result is a pattern count, not a domain count: two patterns per domain (``*.d`` and
+    ``*.d.``); internal schemes and local hosts are added later by :func:`build_browser_profile`.
+    ``*.d`` already matches ``d``, ``www.d`` and every subdomain, so a plain ``d`` entry would be
+    redundant. Two patterns per domain put the default policy (``2 * SAFETY_DEFAULTS_COUNT``) over
+    browser-use's 100-entry list-to-set conversion, which drops every ``*.`` pattern;
+    :func:`_restore_domain_lists` puts the lists back, and the log filter hides browser-use's
+    "Optimizing domain list" message.
     """
     out: list[str] = []
     for d in sorted({_norm_domain(x) for x in blocked_domains if _norm_domain(x)}):

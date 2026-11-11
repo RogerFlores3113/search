@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
 from urllib.parse import urlparse
@@ -223,6 +223,26 @@ class SafetyPolicy(BaseModel):
     allow_evaluate: bool = False
     allow_local_network: bool = False
     approval_timeout_s: float | None = 120.0
+
+    @classmethod
+    def strict(cls, allowed_domains: Iterable[str] | str, **kw: Any) -> SafetyPolicy:
+        """Preset for profiles that are logged in to real accounts.
+
+        Requires a non-empty ``allowed_domains`` allow-list (navigation is restricted to it; blocked
+        domains still win) and forces ``gate_commerce_clicks=True`` so purchases and irreversible
+        actions (account deletion, subscription cancellation, money transfers; these are gated
+        whenever ``gate_commerce_clicks`` is on, as ``ActionRequest(kind="irreversible")``) need
+        approval. Other fields (``allow_evaluate``, ``allow_local_network``, ...) keep their safe
+        defaults unless passed via ``**kw``; ``gate_commerce_clicks`` cannot be switched off here.
+        Without an approval callback every gated action is denied.
+        """
+        if isinstance(allowed_domains, str):
+            allowed_domains = [allowed_domains]
+        domains = [d for d in (allowed_domains or []) if str(d).strip()]
+        if not domains:
+            raise ValueError("SafetyPolicy.strict requires a non-empty allowed_domains list")
+        kw.pop("gate_commerce_clicks", None)
+        return cls(allowed_domains=domains, gate_commerce_clicks=True, **kw)
 
     @field_validator("approval_timeout_s")
     @classmethod
