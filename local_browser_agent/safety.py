@@ -573,6 +573,34 @@ def _fold_homoglyphs(text: str) -> str:
     return text.translate(_HOMOGLYPHS)
 
 
+_NOISE_WORDS = frozenset({"item", "items", "product", "products", "article", "articles", "x", "qty"})
+# Strong phrases that stay gated whenever the label starts with them, even with a topic-like last word.
+_GATED_STARTS = ("pay now", "buy now", "place order", "place your order", "complete purchase", "complete order",
+                 "confirm purchase", "proceed to checkout")
+# Of those, the purchase/order-style ones that "history/tracking/status" turns into a topic.
+_TOPIC_EXEMPT_STARTS = frozenset({"place order", "complete purchase", "complete order", "confirm purchase"})
+_TOPIC_TAILS = frozenset({"history", "tracking", "status"})
+
+
+def _is_noise(word: str) -> bool:
+    """Counts, prices and quantities that may trail a CTA: "(3", "items)", "$45.00", "x2", "qty"."""
+    w = word.strip("()[]{}.,:;!·•")
+    return (not w or any(c.isdigit() for c in w) or bool(_CURRENCY_RE.search(w)) or w in _NOISE_WORDS)
+
+
+def _starts_with_cta_topic(text: str, words: list[str]) -> bool:
+    """A label that starts with a strong CTA and ends in a topic noun, but is still the CTA."""
+    for ph in _GATED_STARTS:
+        if text == ph or text.startswith(ph + " "):
+            tail = text[len(ph):].split()
+            if len(tail) >= 3:
+                return False  # a longer heading: "Pay now pay later policy"
+            if len(tail) == 1 and tail[0] in _TOPIC_TAILS and ph in _TOPIC_EXEMPT_STARTS:
+                return False  # "Place order tracking"
+            return True
+    return False
+
+
 _CHECKOUT_FOLLOWERS = ("now", "with", "securely", "and", "via", "online", "as", "here")
 
 
@@ -587,6 +615,8 @@ def _bare_verb_cta(text: str) -> bool:
         if re.match(rf"^{v}(?: (?:{'|'.join(_CHECKOUT_FOLLOWERS)}))\b", text) or (
                 not checkout and text.startswith(v + " ") and _AMOUNT_RE.search(text)):
             return True
+        if checkout and text.startswith(v + " ") and all(_is_noise(w) for w in text[len(v):].split()):
+            return True  # "Checkout - 3 items"
         if checkout and _core(text) == v:
             return True  # the whole label is "Checkout" / "Check out"
         for pre in _BARE_PREFIXES:
@@ -595,6 +625,8 @@ def _bare_verb_cta(text: str) -> bool:
             tail = text[len(pre + v):]
             if tail == "" or (not checkout and tail.startswith(" ")):
                 return True
+            if checkout and tail.startswith(" ") and all(_is_noise(w) for w in tail.split()):
+                return True  # "Checkout - 3 items", "Proceed to checkout ($45.00)"
             if checkout and tail.startswith(" ") and tail.split()[0] in _CHECKOUT_FOLLOWERS:
                 return True
     return False
@@ -646,6 +678,8 @@ def _label_hit(text: str, patterns: tuple[str, ...], ctas: frozenset[str] = froz
         return False
     core = _core(text)
     topic = len(words) >= 2 and words[-1] in _NOUN_MODIFIERS
+    if topic and _starts_with_cta_topic(text, words):
+        return True
     if not topic and (core in _STRONG_PHRASES or any(_phrase_in(p, text) for p in _STRONG_PHRASES)):
         return True
     run = _cta_run(words, ctas, max_len) if ctas else None
@@ -657,7 +691,7 @@ def _label_hit(text: str, patterns: tuple[str, ...], ctas: frozenset[str] = froz
         if topic:
             return False  # "Place order tracking"
         rest = words[count:]
-        if sum(w not in _INFO_SUFFIXES for w in rest) < 2:
+        if sum(w not in _INFO_SUFFIXES and not _is_noise(w) for w in rest) < 2:
             return True  # "Buy now details", "Buy now FAQ": a short info tail cannot hide a CTA
     if informational:
         return False

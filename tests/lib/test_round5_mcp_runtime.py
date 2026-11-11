@@ -164,3 +164,40 @@ def test_log_filter_hides_start_failure_noise_unless_verbose(capsys):
     lg.error("CDP connected ... due to AssertionError: Root CDP client not initialized")
     assert "Root CDP client" in capsys.readouterr().err
     configure_logging("warning")
+
+
+async def test_second_cancel_during_cleanup_is_not_swallowed():
+    started = asyncio.Event()
+
+    class SlowCancelAgent:
+        history = None
+
+        def __init__(self, *a, **k):
+            pass
+
+        def stop(self):
+            pass
+
+        async def run(self, *a, **k):
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.3)  # slow cleanup; a second cancel lands here
+                raise
+
+    browser = mock.MagicMock()
+    browser.kill = mock.AsyncMock()
+    browser.stop = mock.AsyncMock()
+    a = BrowserAgent(AgentConfig(browser=BrowserConfig(cdp_url="http://127.0.0.1:39222")))
+    with mock.patch.object(runner_mod, "build_llm", return_value=object()), \
+            mock.patch.object(runner_mod, "build_browser_session", return_value=browser), \
+            mock.patch.object(runner_mod, "Agent", SlowCancelAgent):
+        t = asyncio.create_task(a.run("x"))
+        await asyncio.wait_for(started.wait(), 5)
+        t.cancel()
+        await asyncio.sleep(0.05)
+        t.cancel()  # second cancellation while the bounded cleanup wait is running
+        with pytest.raises(asyncio.CancelledError):
+            await t
+    assert t.cancelled()

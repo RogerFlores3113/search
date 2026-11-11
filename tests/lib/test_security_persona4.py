@@ -133,6 +133,9 @@ MUST_GATE = [
     "Withdraw funds", "Transfer funds", "Rent now", "Αγορά", "αγορά", "اشتري", "Satın al", "Comprar",
     "Jetzt kaufen", "Acheter", "Buy", "Buy 2 for $20", "Donate $50", "Pay $20.00", "Complete purchase",
     "Place order guide", "Buy ticket", "Book now", "Pay now", "Purchase",
+    "Proceed to checkout (3 items)", "Proceed to checkout ($45.00)", "Proceed to checkout 3 items",
+    "Checkout - 3 items", "Secure checkout (4 items)", "Pay now policy", "Place your order status",
+    "Pay now tracking",
 ]
 MUST_NOT_GATE = [
     "Pay attention", "Purchase history", "Add to cart", "Add to bag", "Book 3", "Book a demo", "Buy-in",
@@ -285,3 +288,15 @@ async def test_upload_denied_without_approval_callback():
 async def test_select_dropdown_commerce_option_gated():
     assert await classify(node("select"), name="select_dropdown", params={"index": 1, "text": "Buy now"}) is not None
     assert await classify(node("select"), name="select_dropdown", params={"index": 1, "text": "Medium"}) is None
+
+
+def test_mcp_progress_describe_redacts_navigate_url():
+    from types import SimpleNamespace
+
+    from local_browser_agent.mcp_server import _ProgressSink
+
+    ev = SimpleNamespace(action_type="navigate", target_label=None, value=None,
+                         url="https://u:pw@x.com/cb?access_token=SECRET123&code=abc")
+    out = _ProgressSink._describe(ev)
+    assert "SECRET123" not in out and "pw" not in out.replace("path", "") and "abc" not in out
+    assert out.startswith("navigate: https://") and "x.com/cb" in out

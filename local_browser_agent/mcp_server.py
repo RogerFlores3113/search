@@ -239,8 +239,11 @@ class _ProgressSink:
     def _describe(ev: Any) -> str:
         what = getattr(ev, "action_type", None) or "step"
         target = getattr(ev, "target_label", None) or getattr(ev, "value", None) or getattr(ev, "url", None)
+        target = str(target) if target else ""
+        if target.startswith(("http://", "https://")):
+            target = _redact_url(target) or ""
         text = f"{what}: {target}" if target else str(what)
-        return _redact_url(text) if text.startswith(("http://", "https://")) else text[:120]
+        return text[:120]
 
     async def __call__(self, event: Any) -> None:
         kind = getattr(event, "type", "")

@@ -60,6 +60,9 @@ GOLDEN = [
     ("read-product-fact", "FINAL: 17 hours (could not find any other value)", True),
     ("read-product-fact", "FINAL: 17 hours (this is what the page says, I could not find a different value)", True),
     ("read-product-fact", "FINAL: 17+ hours", False),
+    ("read-product-fact", "FINAL: 17 hours (no doubt about it)", True),
+    ("read-product-fact", "FINAL: 17 hours, without a doubt", True),
+    ("read-product-fact", "FINAL: 17 hours (Nothing else could be clearer)", True),
     # table-max-row (SAVE-3917)
     ("cookie-banner", "FINAL: SAVE-3917", True),
     ("cookie-banner", "FINAL: SAVE 3917", True),
@@ -307,3 +310,13 @@ def test_json_and_quiet_run(tmp_path, capsys):
     cli.main(["--tasks", "table-max-row", "-q", "--out", str(tmp_path)], run_fn=fake, config=make_config())
     cap = capsys.readouterr()
     assert cap.out == "" and "[FAIL]" not in cap.err
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("$12 + $5", False), ("12 + 5", False), ("17+ hours", True), ("17 + hours", True), ("73+ MB", True),
+    ("no doubt", False), ("without a doubt", False), ("Nothing else could be clearer", False),
+    ("I doubt it", True),
+])
+def test_hedged_round6(text, expected):
+    from local_browser_agent.evals.tasks import _hedged
+    assert _hedged(text) is expected

@@ -230,3 +230,10 @@ def test_failed_run_message_printed_once(monkeypatch):
         lib.removeHandler(handler)
     assert rc == 1
     assert not [r for r in seen if r.msg == "run %s failed: %s"]
+
+
+@pytest.mark.parametrize("flag", ["--jso", "--js", "--json"])
+def test_argparse_error_under_json_abbreviation(capsys, flag):
+    with pytest.raises(SystemExit):
+        cli.main([flag, "--repeats", "x"])
+    assert json.loads(capsys.readouterr().out)["error_kind"] == "usage"

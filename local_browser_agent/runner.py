@@ -593,8 +593,17 @@ class BrowserAgent:
                         # We may be unwinding because run() itself was cancelled. Wait (bounded,
                         # shielded) for the inner task so its outcome is retrieved here instead of
                         # being logged later as "Task exception was never retrieved".
-                        with contextlib.suppress(BaseException):
+                        recancelled = False
+                        try:
                             await asyncio.shield(asyncio.wait({main_task}, timeout=TEARDOWN_TIMEOUT_S))
+                        except asyncio.CancelledError:
+                            recancelled = True  # a second cancellation arrived during the wait
+                        except Exception:
+                            pass
+                        _retrieve_exception(main_task)
+                        cur = asyncio.current_task()
+                        if recancelled or (cur is not None and cur.cancelling() > 0):
+                            raise asyncio.CancelledError
                     _retrieve_exception(main_task)
             except Exception as e:
                 error_msg = self._redact(f"{type(e).__name__}: {e}" if str(e) == "" else str(e))

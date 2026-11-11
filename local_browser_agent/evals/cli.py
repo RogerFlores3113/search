@@ -42,7 +42,10 @@ class _Parser(argparse.ArgumentParser):
     """argparse usage errors also produce the one JSON document under ``--json``."""
 
     def error(self, message: str) -> Any:  # type: ignore[override]
-        if "--json" in (getattr(self, "_argv", None) or []):
+        argv = getattr(self, "_argv", None) or []
+        # argparse accepts unique prefixes, so "--jso" counts as --json here too.
+        if any(len(a) >= 4 and "--json".startswith(a.split("=", 1)[0]) and len(a.split("=", 1)[0]) >= 4
+               for a in argv if a.startswith("--")):
             print(json.dumps({"status": "error", "error_kind": "usage", "errors": [message]}, indent=2))
         super().error(message)
 
