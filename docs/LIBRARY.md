@@ -292,7 +292,7 @@ approval callback), so a stopped run ends within a few seconds with `status="sto
 
 ## Logging
 
-Importing `local_browser_agent` (and browser-use through it) installs **no handlers on the root logger** (the package logger only gets a `NullHandler`, per stdlib etiquette): the
+Importing `local_browser_agent` (and browser-use through it) installs **no handlers on the root logger** and does not touch the logger class (`logging.Logger.manager.loggerClass`); the quiet-log filters for browser-use's failure noise are installed only while a run is in flight (reference counted, fully restored afterwards) or, for the `lba` CLI and MCP server, for the process lifetime (the package logger only gets a `NullHandler`, per stdlib etiquette): the
 package sets `BROWSER_USE_SETUP_LOGGING=false` before importing browser-use unless you already set it. Library
 logs go to the `local_browser_agent` logger (and `browser_use`), so configure them with the standard `logging`
 module; unconfigured, Python shows only warnings and errors on stderr. Set `BROWSER_USE_SETUP_LOGGING=true`
@@ -369,8 +369,8 @@ a time, the safety gates, the key `LBA_*` variables).
   client lists both tools instead of showing only "Connection closed". `run_browser_task` then returns a
   `RunResult`-shaped error (`error_kind: "config"`, one `errors` entry per problem, each
   `invalid configuration: <field>: <message>`) and `get_agent_config` returns `{status: "error", error_kind: "config",
-  error, errors}`. The same lines are printed to stderr at startup. Set `LBA_MCP_STRICT=1` (or call
-  `serve(strict=True)`) to get the old behaviour: print the problems and exit with code 2 before the handshake.
+  error, errors}`. The same lines are printed to stderr at startup. Pass `lba mcp --strict`, set `LBA_MCP_STRICT=1` or call
+  `serve(strict=True)` to get the old behaviour: print the problems and exit with code 2 before the handshake.
   Claude Desktop shows an MCP server's stderr in Claude Desktop's MCP log (the per-server log file for
   `local-browser-agent`, reachable from its Developer settings / log folder), which is where those startup lines appear.
 - One task at a time; a concurrent call fails at once with a `busy` error.

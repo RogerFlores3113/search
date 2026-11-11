@@ -4,10 +4,13 @@ Importing this module configures nothing; call :func:`configure_logging` from an
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
 import sys
+import threading
+from collections.abc import Iterator
 from typing import Any
 
 LEVELS = ("debug", "info", "warning", "error")
@@ -79,7 +82,7 @@ class _StartFailureNoise(logging.Filter):
 class _QuietUnlessVerbose(logging.Filter):
     """Wraps a noise filter so it only applies while ``browser_use`` is at WARNING or above.
 
-    Installed on browser-use's own loggers at package import (see :func:`install_quiet_filters`),
+    Installed on browser-use's own loggers while a run is in flight (see :func:`install_quiet_filters`),
     independent of any handler the host application has; a host that sets ``browser_use`` to INFO
     or DEBUG still sees everything."""
 
@@ -94,11 +97,17 @@ class _QuietUnlessVerbose(logging.Filter):
 
 
 _QUIET_ATTR = "_lba_quiet_filters"
-_quiet_logger_classes: dict[type, type] = {}
+_quiet_lock = threading.RLock()
+_quiet_count = 0
+_quiet_state: dict[str, Any] = {}
 
 
 def _quiet_filters() -> list[logging.Filter]:
     return [_QuietUnlessVerbose(_DomainListWarning()), _QuietUnlessVerbose(_StartFailureNoise())]
+
+
+def _is_bu(name: str) -> bool:
+    return name == "browser_use" or name.startswith("browser_use.")
 
 
 def _quiet(lg: logging.Logger) -> None:
@@ -108,6 +117,15 @@ def _quiet(lg: logging.Logger) -> None:
         setattr(lg, _QUIET_ATTR, True)
 
 
+def _unquiet(lg: logging.Logger) -> None:
+    for f in [f for f in lg.filters if isinstance(f, _QuietUnlessVerbose)]:
+        lg.removeFilter(f)
+    try:
+        delattr(lg, _QUIET_ATTR)
+    except AttributeError:
+        pass
+
+
 def install_quiet_filters() -> None:
     """Drop browser-use's redundant failure noise regardless of the host's logging handlers.
 
@@ -115,28 +133,63 @@ def install_quiet_filters() -> None:
     ``browser_use.utils`` (the "Optimizing domain list" warning) and from per-instance loggers named
     ``browser_use.BrowserSession...`` / ``browser_use.Agent...`` (the start-failure ERROR records and
     the "Agent run failed with exception" traceback). The per-instance ones are created on demand, so
-    new ``browser_use.*`` loggers get the filters through the logger manager's factory. Idempotent."""
-    mgr = logging.Logger.manager
-    if not getattr(mgr.loggerClass, "_lba_factory", False):
-        previous = mgr.loggerClass
+    new ``browser_use.*`` loggers get the filters through the logger manager's factory.
 
-        def factory(name: str) -> logging.Logger:
-            base = previous or logging.getLoggerClass()
-            if name == "browser_use" or name.startswith("browser_use."):
-                cls = _quiet_logger_classes.get(base)
-                if cls is None:
-                    def __init__(self, n, *a, **k):
-                        base.__init__(self, n, *a, **k)
-                        _quiet(self)
-                    cls = _quiet_logger_classes[base] = type("_QuietLogger", (base,), {"__init__": __init__})
-                return cls(name)
-            return base(name)
+    Reference counted: every call must be paired with :func:`uninstall_quiet_filters` (or use
+    :func:`quiet_filters`); the manager's previous ``loggerClass`` is restored and the filters removed
+    when the count reaches zero. Never called on import; the library's run paths hold it while a run
+    is in flight and the CLI / MCP entry points hold it for the process lifetime."""
+    global _quiet_count
+    with _quiet_lock:
+        _quiet_count += 1
+        mgr = logging.Logger.manager
+        if _quiet_count == 1:
+            previous = mgr.loggerClass
 
-        factory._lba_factory = True  # type: ignore[attr-defined]
-        mgr.loggerClass = factory  # type: ignore[assignment]
-    for lname, lg in list(mgr.loggerDict.items()):  # loggers created before this ran
-        if isinstance(lg, logging.Logger) and (lname == "browser_use" or lname.startswith("browser_use.")):
-            _quiet(lg)
+            def factory(name: str) -> logging.Logger:
+                # Defer to the manager's own class if it had one, else to whatever class the host set
+                # with setLoggerClass (looked up now, so a later call is honoured). ``previous`` may be
+                # any callable, so the logger is built first and the filters attached afterwards.
+                lg = (previous or logging.getLoggerClass())(name)
+                if _is_bu(name):
+                    _quiet(lg)
+                return lg
+
+            factory._lba_factory = True  # type: ignore[attr-defined]
+            _quiet_state["previous"] = previous
+            _quiet_state["factory"] = factory
+            mgr.loggerClass = factory  # type: ignore[assignment]
+        for lname, lg in list(mgr.loggerDict.items()):  # loggers created before this ran
+            if isinstance(lg, logging.Logger) and _is_bu(lname):
+                _quiet(lg)
+
+
+def uninstall_quiet_filters() -> None:
+    """Undo one :func:`install_quiet_filters`; the last one restores the logging state."""
+    global _quiet_count
+    with _quiet_lock:
+        if _quiet_count == 0:
+            return
+        _quiet_count -= 1
+        if _quiet_count:
+            return
+        mgr = logging.Logger.manager
+        if mgr.loggerClass is _quiet_state.get("factory"):  # a host that replaced it since keeps its choice
+            mgr.loggerClass = _quiet_state.get("previous")  # type: ignore[assignment]
+        _quiet_state.clear()
+        for lname, lg in list(mgr.loggerDict.items()):
+            if isinstance(lg, logging.Logger) and (_is_bu(lname) or getattr(lg, _QUIET_ATTR, False)):
+                _unquiet(lg)
+
+
+@contextlib.contextmanager
+def quiet_filters() -> Iterator[None]:
+    """Hold :func:`install_quiet_filters` for the duration of the ``with`` block."""
+    install_quiet_filters()
+    try:
+        yield
+    finally:
+        uninstall_quiet_filters()
 
 
 class _StderrHandler(logging.Handler):
