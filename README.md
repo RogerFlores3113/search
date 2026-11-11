@@ -75,6 +75,8 @@ Click **"I understand — let's go"** to unlock the task prompt. The modal only 
 | Windows | `C:\Users\<you>\AppData\Local\local-browser-agent\local-browser-agent\` |
 | macOS | `~/Library/Application Support/local-browser-agent/` |
 
+Set `LBA_DATA_DIR` to use a different folder. When running from a source checkout the data lives in `<repo>/data/` instead.
+
 Each folder contains `history.db` (session history), `training/runs.jsonl` (agent run logs), and `app.log` (startup/error log).
 
 ---

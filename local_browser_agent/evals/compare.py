@@ -8,11 +8,15 @@
   either file marked incomplete, or (with ``--strict``) any warning
 * 2 - the comparison is not meaningful or the input is unusable: unreadable/malformed file, a
   different ``taskset_hash`` (unless ``--allow-taskset-change``), tasks whose runs were mostly
-  infrastructure errors (INVALID), or fewer than ``--min-n`` runs on a task
+  infrastructure errors or that have infra errors and no passes with infra errors >= real
+  failures (INVALID), a task present with zero runs, NaN/inf scores or rates, or fewer than
+  ``--min-n`` runs on a task. A candidate that ran only a subset of the baseline's tasks is
+  compared on the overlapping tasks when their per-task hashes match, else it is exit 2
 """
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -109,10 +113,37 @@ class TaskDelta:
             return None
         return self.b_score - self.a_score
 
+    @staticmethod
+    def _infra_invalid(n: int, infra: int, rate: float) -> bool:
+        if n <= 0 or infra <= 0:
+            return False
+        if infra * 2 > n:
+            return True
+        passes = round(rate * n)
+        # some infra errors, no passes, and at least as many infra errors as real failures
+        return passes == 0 and infra * 2 >= n
+
+    @property
+    def invalid_reason(self) -> str | None:
+        """Why this task's numbers say nothing about the model, or ``None`` when they are usable."""
+        for side, rate, score, n, infra in (
+            ("baseline", self.a_rate, self.a_score, self.a_n, self.a_infra),
+            ("candidate", self.b_rate, self.b_score, self.b_n, self.b_infra),
+        ):
+            if rate is None:
+                continue
+            if n <= 0:
+                return f"{side} has zero runs"
+            if not math.isfinite(rate) or (score is not None and not math.isfinite(score)):
+                return f"{side} has a NaN/inf pass rate or score"
+            if self._infra_invalid(n, infra, rate):
+                return f"infra errors: {self.a_infra}/{self.a_n} vs {self.b_infra}/{self.b_n}"
+        return None
+
     @property
     def invalid(self) -> bool:
-        """Most runs on either side were infrastructure errors, so the numbers say nothing about the model."""
-        return (self.a_n > 0 and self.a_infra * 2 > self.a_n) or (self.b_n > 0 and self.b_infra * 2 > self.b_n)
+        """Zero runs, non-finite numbers, or mostly infrastructure errors on either side."""
+        return self.invalid_reason is not None
 
     @property
     def missing(self) -> bool:
@@ -191,6 +222,24 @@ class Comparison:
     def ok(self) -> bool:
         return self.exit_code == 0
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "exit_code": self.exit_code,
+            "ok": self.ok,
+            "tasks": [
+                {
+                    "task_id": d.task_id, "baseline_pass_rate": d.a_rate, "candidate_pass_rate": d.b_rate,
+                    "delta": d.delta, "regressed": d.regressed, "score_regressed": d.score_regressed,
+                    "new_violation": d.new_violation, "missing": d.missing, "invalid": d.invalid,
+                    "invalid_reason": d.invalid_reason,
+                }
+                for d in self.deltas
+            ],
+            "warnings": self.warnings,
+            "problems": self.problems,
+            "invalid_reasons": self.invalid_reasons,
+        }
+
 
 def compare_results(
     a: dict[str, Any],
@@ -208,6 +257,17 @@ def compare_results(
     problems: list[str] = []
     invalid_reasons: list[str] = []
     ma, mb = a.get("meta") or {}, b.get("meta") or {}
+    ha, hb = ma.get("task_hashes"), mb.get("task_hashes")
+    if ma.get("taskset_hash") != mb.get("taskset_hash") and tb and set(tb) < set(ta):
+        if isinstance(ha, dict) and isinstance(hb, dict) and all(hb.get(t) == ha.get(t) for t in tb):
+            warnings.append(f"candidate ran a subset ({len(tb)} of {len(ta)} tasks); compared only those")
+            ta = {t: v for t, v in ta.items() if t in tb}
+            ma = {**ma, "taskset_hash": mb.get("taskset_hash")}
+        elif not allow_taskset_change:
+            invalid_reasons.append(
+                "candidate ran a subset of tasks; rerun the full suite or pass --allow-taskset-change"
+            )
+            ma = {**ma, "taskset_hash": mb.get("taskset_hash")}  # reported once, not again below
     if ma.get("taskset_hash") != mb.get("taskset_hash"):
         msg = f"task set differs: {ma.get('taskset_hash')!r} vs {mb.get('taskset_hash')!r} (different tasks or checkers)"
         if allow_taskset_change:
@@ -252,8 +312,8 @@ def compare_results(
             warnings.append(f"{d.task_id}: mean steps rose {d.a_steps:.1f} -> {d.b_steps:.1f}")
         if d.cost_rose:
             warnings.append(f"{d.task_id}: cost rose ${d.a_cost:.4f} -> ${d.b_cost:.4f}")
-        for n, side in ((d.a_n, "baseline"), (d.b_n, "candidate")):
-            if 0 < n < min_n:
+        for n, side, present in ((d.a_n, "baseline", d.a_rate is not None), (d.b_n, "candidate", d.b_rate is not None)):
+            if present and 0 < n < min_n:
                 invalid_reasons.append(f"{d.task_id}: {side} has {n} run(s), fewer than --min-n {min_n}")
     return Comparison(
         deltas=deltas, warnings=warnings, problems=problems, invalid_reasons=invalid_reasons, strict=strict
@@ -269,7 +329,7 @@ def render_comparison(cmp: Comparison, a_name: str = "A", b_name: str = "B") -> 
         delta = "-" if d.delta is None else f"{d.delta * 100:+.0f}pp"
         flags = []
         if d.invalid:
-            flags.append(f"INVALID (infra errors: {d.a_infra}/{d.a_n} vs {d.b_infra}/{d.b_n})")
+            flags.append(f"INVALID ({d.invalid_reason})")
         if d.regressed:
             flags.append("REGRESSION")
         if d.score_regressed:

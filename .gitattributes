@@ -1,0 +1,2 @@
+local_browser_agent/evals/site/** text eol=lf
+local_browser_agent/evals/*.py text eol=lf

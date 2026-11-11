@@ -11,10 +11,12 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit, urlunsplit
 
 from browser_use.agent.views import ActionResult
 from browser_use.tools.service import Tools
+
+from local_browser_agent.redact import redact_url
 
 logger = logging.getLogger("local_browser_agent")
 
@@ -74,6 +76,9 @@ MULTILINGUAL_COMMERCE_PATTERNS: tuple[str, ...] = (
     "confirm payment", "send money", "book now", "reserve now", "complete payment", "proceed to payment",
     "proceed to pay", "pay securely", "pay with", "donate now", "subscribe now",
     "confirm and pay", "confirm booking", "complete booking", "confirm your order", "complete checkout",
+    "complete your purchase", "complete your order", "place my order", "pay invoice", "pay your invoice",
+    "submit payment", "order and pay", "proceed to buy", "1 click buy", "one click buy", "1 click order",
+    "upgrade now", "place bid", "place a bid", "place your bid",
     # de
     "kaufen", "jetzt kaufen", "zahlen", "bezahlen", "jetzt bezahlen", "zur kasse", "kasse",
     "bestellen", "jetzt bestellen", "kostenpflichtig bestellen", "zahlungspflichtig bestellen",
@@ -221,7 +226,7 @@ _URL_HOST_LABELS = frozenset({"checkout", "pay", "payments", "billing", "donate"
 # A path segment (separators removed) that is transactional wherever it appears.
 _URL_CHECKOUT_SEGMENTS = frozenset({
     "checkout", "checkouts", "placeorder", "buynow", "paynow", "confirmpayment",
-    "kasse", "caisse", "cassa",
+    "kasse", "caisse", "cassa", "makepayment", "makeapayment", "securepayment",
 })
 # Segments that are transactional only as the first path segment (after an optional locale),
 # either alone, followed by an id, or followed by an action word.
@@ -231,6 +236,7 @@ _URL_ROOT_SEGMENTS = frozenset({
 })
 _URL_ROOT_ACTIONS = frozenset({
     "confirm", "submit", "process", "checkout", "pay", "complete", "review", "place",
+    "new", "update", "upgrade", "add", "change", "start", "authorize",
 })
 _LOCALE_RE = re.compile(r"^[a-z]{2}([-_][a-z]{2})?$")
 _ID_RE = re.compile(r"^[\w-]*\d[\w-]*$")
@@ -238,6 +244,81 @@ _ID_RE = re.compile(r"^[\w-]*\d[\w-]*$")
 # --- Domain helpers ------------------------------------------------------------------
 _SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
 _HOST_RE = re.compile(r"^[^\W_](?:[\w-]*[^\W_])?(?:\.[^\W_](?:[\w-]*[^\W_])?)*$")
+
+
+_HOST_DOTS = str.maketrans({"\u3002": ".", "\uff0e": ".", "\uff61": ".", "\u2024": "."})
+_HOST_FORBIDDEN_RE = re.compile(r"[\s/\\?#@%<>^|\"'`{}\[\]]")
+
+
+def _idna_encode(h: str) -> str:
+    """IDNA-encode like Chrome (UTS46 non-transitional, so ``ß`` stays ``xn--zca``) when ``idna`` is available."""
+    if h.isascii():
+        return h.encode("idna").decode("ascii")
+    try:
+        import idna  # noqa: PLC0415
+    except ImportError:
+        return h.encode("idna").decode("ascii")
+    try:
+        return idna.encode(h, uts46=True, transitional=False).decode("ascii")
+    except idna.IDNAError as e:
+        raise UnicodeError(str(e)) from e
+
+
+def canonical_host(host: str | None) -> str | None:
+    """Canonical form of a URL host, the way Chrome resolves it. None when it cannot be canonicalised.
+
+    Percent-decodes, applies NFKC, drops format (Cf) characters such as zero-width spaces and soft
+    hyphens, maps ideographic/fullwidth dots to ``.``, lowercases, strips trailing dots and
+    IDNA-encodes (punycode for non-ASCII). IPv6 literals are only lowercased and lose any zone id.
+    Callers must treat None for a non-empty host as "deny".
+    """
+    if host is None:
+        return None
+    h = str(host).strip()
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    if ":" in h:  # IPv6 literal (urlsplit already removed any port)
+        h = h.split("%", 1)[0].lower()
+        try:
+            return str(ipaddress.ip_address(h))
+        except ValueError:
+            return None
+    for _ in range(2):  # decode, then reject anything that is still encoded
+        h2 = unquote(h)
+        if h2 == h:
+            break
+        h = h2
+    h = h.translate(_HOST_DOTS)
+    h = unicodedata.normalize("NFKC", h)
+    h = "".join(c for c in h if unicodedata.category(c) != "Cf" and c != "\u00ad")
+    h = h.translate(_HOST_DOTS).lower().rstrip(".")
+    if not h or _HOST_FORBIDDEN_RE.search(h) or any(unicodedata.category(c) in ("Cc", "Zs", "Zl", "Zp") for c in h):
+        return None
+    try:
+        h = _idna_encode(h)
+    except (UnicodeError, ValueError):
+        return None
+    return h.lower().rstrip(".") or None
+
+
+# Common multi-part public suffixes (ICANN section); an allow-list entry equal to one of these
+# would open every registrant under it.
+PUBLIC_SUFFIXES: frozenset[str] = frozenset({
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk", "nhs.uk", "police.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "asn.au", "id.au",
+    "co.nz", "org.nz", "net.nz", "govt.nz", "ac.nz", "school.nz",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp", "ad.jp", "ed.jp", "gr.jp", "lg.jp",
+    "co.in", "net.in", "org.in", "gov.in", "ac.in", "edu.in", "res.in", "firm.in", "gen.in", "ind.in",
+    "com.br", "net.br", "org.br", "gov.br", "edu.br",
+    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn",
+    "com.mx", "org.mx", "gob.mx", "edu.mx", "com.ar", "org.ar", "gob.ar", "com.co", "com.pe", "com.ve", "com.uy",
+    "com.tr", "org.tr", "net.tr", "gov.tr", "edu.tr", "com.sg", "edu.sg", "gov.sg", "com.hk", "org.hk", "gov.hk",
+    "com.tw", "org.tw", "gov.tw", "edu.tw", "com.my", "gov.my", "edu.my", "com.ph", "gov.ph", "com.vn", "gov.vn",
+    "com.ua", "gov.ua", "co.za", "org.za", "gov.za", "ac.za", "co.il", "org.il", "gov.il", "ac.il",
+    "co.kr", "or.kr", "go.kr", "ac.kr", "co.id", "or.id", "go.id", "ac.id", "co.th", "or.th", "go.th", "ac.th",
+    "com.eg", "com.sa", "com.pk", "com.ng", "co.ke", "com.gh", "com.bd", "com.lk", "com.np", "com.ru",
+    "com.pl", "com.pt", "com.es", "com.gr", "com.cy", "com.de", "co.at", "or.at", "co.hu", "co.ve",
+})
 
 
 def normalize_allowed_domain(raw: Any) -> str:
@@ -265,13 +346,62 @@ def normalize_allowed_domain(raw: Any) -> str:
             f"allowed domain {raw!r} must be a hostname like 'example.com' or '*.example.com'")
     if wildcard and "." not in host:
         raise ValueError(f"allowed domain {raw!r} is a top-level wildcard; name a specific site")
+    canon = canonical_host(host)
+    if canon is None:
+        raise ValueError(f"allowed domain {raw!r} is not a valid hostname")
+    host = canon
+    if host in PUBLIC_SUFFIXES:
+        raise ValueError(f"allowed domain {raw!r} is a public suffix that covers unrelated sites; "
+                         "name a specific site like 'example.co.uk'")
     return ("*." + host) if wildcard else host
+
+
+def normalize_blocked_domain(raw: Any) -> str:
+    """Normalise a blocked-domain entry to a bare canonical (punycode) hostname.
+
+    Scheme, userinfo, port, path, query, fragment, a ``*.`` / ``.`` prefix and trailing dots are
+    stripped, so ``"*.evil.com"``, ``"https://evil.com/x"`` and ``"evil.com:8080"`` all become
+    ``"evil.com"``.
+
+    Raises:
+        ValueError: when no valid host remains.
+    """
+    d = str(raw).strip().lower()
+    d = _SCHEME_RE.sub("", d)
+    for sep in "/\\?#":
+        d = d.split(sep, 1)[0]
+    d = d.rsplit("@", 1)[-1]
+    if not d.startswith("["):
+        d = re.sub(r":\d*$", "", d)
+    d = d.rstrip(".")
+    while d.startswith(("*.", ".")):
+        d = d[2:] if d.startswith("*.") else d[1:]
+    canon = canonical_host(d) if d else None
+    if not canon or "*" in canon:
+        raise ValueError(f"blocked domain {raw!r} has no valid hostname")
+    return canon
+
+
+def try_normalize_blocked_domain(raw: Any) -> str | None:
+    """Like :func:`normalize_blocked_domain` but returns None for an empty or invalid entry."""
+    try:
+        return normalize_blocked_domain(raw)
+    except ValueError:
+        return None
 
 
 def host_is_blocked(host: str | None, blocked: Iterable[str]) -> bool:
     """True when ``host`` is, or is a subdomain of, a blocked domain."""
-    h = (host or "").strip().lower().rstrip(".")
-    return bool(h) and any(h == b or h.endswith("." + b) for b in (x.strip().lower().rstrip(".") for x in blocked) if b)
+    if not (host or "").strip():
+        return False
+    h = canonical_host(host)
+    if h is None:  # cannot be canonicalised: treat as blocked rather than guess
+        return True
+    for x in blocked:
+        b = canonical_host(x) or str(x).strip().lower().rstrip(".")
+        if b and (h == b or h.endswith("." + b)):
+            return True
+    return False
 
 
 def allowed_matches_blocked(entry: str, blocked: Iterable[str]) -> bool:
@@ -296,6 +426,9 @@ def allowed_matches_blocked(entry: str, blocked: Iterable[str]) -> bool:
 
 
 _ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u2060-\u2064\ufeff\u00ad\u180e]")
+# Invisible "blank" characters that are not Zs/Cf: braille blank, Hangul fillers, Mongolian/Khmer vowels.
+_BLANK_RE = re.compile(r"[\u2800\u3164\u115f\u1160\uffa0\u17b4\u17b5\u034f]")
+_TURKISH_I = str.maketrans({"\u0131": "i", "\u0130": "I"})
 _SEPARATORS_RE = re.compile(r"[\-_./\\|:;,+*~·•–—]+")
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _SUBMIT_TYPES = frozenset({"submit", "image", "button"})
@@ -324,8 +457,9 @@ def normalize_text(text: str | None) -> str:
     """NFKC, drop zero-width/control chars, split camelCase, fold separators, casefold."""
     if not text:
         return ""
-    t = unicodedata.normalize("NFKC", str(text))
+    t = unicodedata.normalize("NFKC", str(text)).translate(_TURKISH_I)
     t = _ZERO_WIDTH_RE.sub("", t)
+    t = _BLANK_RE.sub(" ", t)
     t = "".join(" " if unicodedata.category(c) in ("Cc", "Zs", "Zl", "Zp") else c
                 for c in t if unicodedata.category(c) != "Cf")
     t = _CAMEL_RE.sub(" ", t)
@@ -341,6 +475,22 @@ def _core(text: str) -> str:
     """Normalised label with digits, currency symbols and punctuation removed."""
     t = "".join(c for c in text if unicodedata.category(c)[0] in ("L", "M", "Z") or c == "'")
     return " ".join(t.split())
+
+
+_EXACT_NORM = frozenset(normalize_text(x) for x in EXACT_COMMERCE_LABELS)
+_EXACT_SQUEEZED = frozenset(x.replace(" ", "") for x in _EXACT_NORM)
+
+
+def _strip_marks(text: str) -> str:
+    """Drop combining marks ("Páy", "Pa\u0336y") so accented or struck-through letters read as plain."""
+    return unicodedata.normalize("NFC", "".join(
+        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"))
+
+
+def _letterspaced(text: str) -> bool:
+    """True for labels spelled one letter at a time ("B u y   n o w")."""
+    words = text.split()
+    return len(words) >= 3 and sum(len(w) == 1 for w in words) >= 0.7 * len(words)
 
 
 _CJK_NORM = tuple(normalize_text(k) for k in CJK_COMMERCE_KEYWORDS)
@@ -382,7 +532,7 @@ def _label_hit(text: str, patterns: tuple[str, ...]) -> bool:
     for p in patterns:
         if p and _phrase_in(p, text):
             return True
-    if core in EXACT_COMMERCE_LABELS or _bare_verb_cta(text):
+    if core in _EXACT_NORM or _bare_verb_cta(text):
         return True
     if any(text.startswith(s) for s in _STARTS_WITH):
         return True
@@ -407,8 +557,15 @@ def is_commerce_label(label: str | None, patterns: Iterable[str] = DEFAULT_COMME
         return False
     pats = tuple(p for p in (normalize_text(x) for x in (*patterns, *MULTILINGUAL_COMMERCE_PATTERNS,
                                                           *NON_LATIN_COMMERCE_PATTERNS)) if p)
-    variants = dict.fromkeys((text, _fold_homoglyphs(text)))
-    return any(_label_hit(v, pats) for v in variants)
+    stripped = _strip_marks(text)
+    variants = dict.fromkeys((text, _fold_homoglyphs(text), stripped, _fold_homoglyphs(stripped)))
+    if any(_label_hit(v, pats) for v in variants):
+        return True
+    if _letterspaced(stripped):
+        squeezed = _fold_homoglyphs(stripped).replace(" ", "")
+        return squeezed in _EXACT_SQUEEZED or any(
+            len(sp := p.replace(" ", "")) >= 5 and sp in squeezed for p in pats)
+    return False
 
 
 def _path_tokens(path: str) -> list[str]:
@@ -433,9 +590,15 @@ def is_commerce_url(url: str | None, broad: bool = False) -> bool:
         parts = urlsplit(url.strip())
     except ValueError:
         return False
-    host = (parts.hostname or "").lower().rstrip(".")
+    raw_host = parts.hostname or ""
+    host = (canonical_host(raw_host) or raw_host.lower()).rstrip(".")
     if not broad and any(host == d or host.endswith("." + d) for d in _CONTENT_HOSTS):
         return False
+    if parts.fragment and re.match(r"^!?/", parts.fragment):  # hash-routed apps: /app#/checkout
+        frag = parts.fragment.lstrip("!")
+        path, _, query = frag.partition("?")
+        if is_commerce_url(urlunsplit((parts.scheme or "https", parts.netloc, path, query, "")), broad):
+            return True
     if host.split(".")[0] in _URL_HOST_LABELS and host.count(".") >= 2:
         return True
     for k, v in parse_qsl(parts.query, keep_blank_values=True):
@@ -461,7 +624,12 @@ def is_commerce_url(url: str | None, broad: bool = False) -> bool:
     rest = joined[1:]
     if not rest:
         return True
+    if joined[0] == "subscribe":  # /subscribe/pro, /subscribe/plan/annual, ...
+        return len(rest) <= 3
     return len(rest) == 1 and (rest[0] in _URL_ROOT_ACTIONS or bool(_ID_RE.match(segments[1].casefold())))
+
+
+_TARGET_DEPTH = 8  # ancestor levels inspected for link/form destinations on a click
 
 
 def _attrs(node: Any) -> dict[str, str]:
@@ -522,6 +690,11 @@ def element_risk(node: Any, page_url: str | None, label: str | None,
     """Return a reason string when a click target looks transactional, else None."""
     if is_commerce_label(label, patterns):
         return f"label {label!r} looks like a purchase/commerce action"
+    # Classify each label part on its own: "Buy | help details" must not be hidden by the info
+    # words of a neighbouring title/aria-label.
+    for part in label_parts(node):
+        if is_commerce_label(part, patterns):
+            return f"label {part!r} looks like a purchase/commerce action"
     a = _attrs(node)
     for key in ("href", "formaction", "data-href", "data-url"):
         if is_commerce_url(a.get(key), broad=key == "formaction"):
@@ -538,10 +711,11 @@ def element_risk(node: Any, page_url: str | None, label: str | None,
     return None
 
 
-def element_label(node: Any, max_len: int = 200) -> str | None:
-    """Best-effort human label for a browser-use DOM node (never raises)."""
+def label_parts(node: Any) -> list[str]:
+    """The separate human-readable strings of a node (accessible name, aria-label, title, value, alt,
+    name, text, node value), whitespace-collapsed and de-duplicated. Never raises."""
     if node is None:
-        return None
+        return []
     try:
         parts: list[str] = []
         ax = getattr(node, "ax_node", None)
@@ -565,10 +739,15 @@ def element_label(node: Any, max_len: int = 200) -> str | None:
         nv = getattr(node, "node_value", None)
         if isinstance(nv, str) and nv.strip():
             parts.append(nv)
-        label = " | ".join(dict.fromkeys(" ".join(p.split()) for p in parts))
-        return label[:max_len] or None
+        return list(dict.fromkeys(" ".join(p.split()) for p in parts))
     except Exception:  # pragma: no cover - defensive
-        return None
+        return []
+
+
+def element_label(node: Any, max_len: int = 200) -> str | None:
+    """Best-effort human label for a browser-use DOM node (never raises)."""
+    parts = label_parts(node)
+    return (" | ".join(parts)[:max_len] or None) if parts else None
 
 
 _ENTER_TOKENS = frozenset({"enter", "return", "numpadenter", "\\n", "\\r"})
@@ -676,12 +855,18 @@ def navigation_candidate(dest: str) -> tuple[str | None, str | None]:
     else:
         candidate = "https://" + raw  # schemeless or host:port
     try:
-        host = urlsplit(candidate).hostname
+        parts = urlsplit(candidate)
+        raw_host = parts.hostname
+        port = parts.port
     except ValueError:
-        host = None
-    if not host:
+        raw_host, parts, port = None, None, None
+    if not raw_host or parts is None:
         return None, "Blocked by safety policy: the address could not be parsed. Choose another page."
-    return candidate, None
+    host = canonical_host(raw_host)
+    if host is None:
+        return None, "Blocked by safety policy: the address has an invalid or obfuscated host name. Choose another page."
+    netloc = (f"[{host}]" if ":" in host else host) + (f":{port}" if port is not None else "")
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment)), None
 
 
 def navigation_host(dest: str) -> str | None:
@@ -709,7 +894,7 @@ def navigation_denial(dest: str, allow_local_network: bool = False) -> str | Non
         return denial
     if candidate is None:
         return None
-    host = urlsplit(candidate).hostname or ""
+    host = urlsplit(candidate).hostname or ""  # already canonical
     if not allow_local_network:
         if _parse_ip(host) is not None:
             return (f"Blocked by safety policy: IP-address URLs ({host}) are blocked by this agent's safety "
@@ -736,8 +921,24 @@ _LIVE_JS = """function() {
   if (typeof el.value === 'string' && el.value && ['submit', 'button', 'image', 'reset'].includes(t)) a.value = el.value.slice(0, 300);
   const f = el.closest ? el.closest('form') : null;
   const txt = String(el.innerText || el.textContent || '').slice(0, 300);
-  return JSON.stringify({tag: String(el.tagName || '').toLowerCase(), attrs: a, text: txt, form: f ? attrs(f) : null});
+  const chain = [];
+  const keep = ['href', 'formaction', 'data-href', 'action', 'type'];
+  let p = el.parentElement;
+  for (let i = 0; p && i < 8; i++, p = p.parentElement) {
+    const o = {}; for (const k of keep) if (p.hasAttribute && p.hasAttribute(k)) o[k] = String(p.getAttribute(k)).slice(0, 2000);
+    chain.push({tag: String(p.tagName || '').toLowerCase(), attrs: o});
+  }
+  return JSON.stringify({tag: String(el.tagName || '').toLowerCase(), attrs: a, text: txt, form: f ? attrs(f) : null, chain: chain});
 }"""
+
+
+def _walk_up(node: Any):
+    cur = node
+    for _ in range(40):
+        if cur is None:
+            return
+        yield cur
+        cur = getattr(cur, "parent_node", None)
 
 
 def _node_from_live(data: dict[str, Any]) -> Any:
@@ -746,8 +947,19 @@ def _node_from_live(data: dict[str, Any]) -> Any:
         form = SimpleNamespace(node_name="form", attributes=data["form"], ax_node=None, node_value="",
                                parent_node=None, get_all_children_text=lambda: "")
     text = str(data.get("text") or "")
+    parent = form
+    chain = data.get("chain")
+    if isinstance(chain, list):  # ancestors, nearest first; rebuild the parent links (closest form kept)
+        parent = None
+        for item in reversed([c for c in chain if isinstance(c, dict)]):
+            parent = SimpleNamespace(node_name=str(item.get("tag") or ""), attributes=dict(item.get("attrs") or {}),
+                                     ax_node=None, node_value="", parent_node=parent,
+                                     get_all_children_text=lambda: "")
+        if form is not None and not any(_tag(c) == "form" for c in _walk_up(parent)):
+            form.parent_node = parent
+            parent = form
     return SimpleNamespace(node_name=str(data.get("tag") or ""), attributes=dict(data.get("attrs") or {}),
-                           ax_node=None, node_value="", parent_node=form, get_all_children_text=lambda: text)
+                           ax_node=None, node_value="", parent_node=parent, get_all_children_text=lambda: text)
 
 
 async def _read_live_object(cdp: Any, object_id: str) -> Any:
@@ -776,9 +988,45 @@ def _commerce_capable(node: Any) -> bool:
             return True
         if tag in ("input", "textarea", "select"):
             return tag == "input" and str(attrs.get("type", "text")).lower() not in _NON_COMMERCE_INPUT_TYPES
-        return tag not in ("div", "span", "p", "li", "label")
+        if tag in ("div", "span", "p", "li", "label"):
+            style = str(attrs.get("style", "")).replace(" ", "").lower()
+            snap = getattr(node, "snapshot_node", None)
+            return (any(k in attrs for k in ("onclick", "onmousedown", "onmouseup", "tabindex", "jsaction", "ng-click",
+                                             "@click", "v-on:click", "data-onclick"))
+                    or "cursor:pointer" in style or getattr(snap, "is_clickable", None) is True)
+        return True
     except Exception:  # pragma: no cover - defensive
         return True
+
+
+_TEXT_INPUT_TYPES = frozenset({"text", "search", "email", "tel", "url", "password", "number"})
+
+
+def _is_text_field(node: Any) -> bool:
+    """True for a text-entry element (textarea, contenteditable, or input of a text type)."""
+    try:
+        tag = str(getattr(node, "node_name", "") or "").lower()
+        attrs = getattr(node, "attributes", None) or {}
+        if tag == "textarea":
+            return True
+        if "contenteditable" in attrs and str(attrs.get("contenteditable", "")).lower() in ("", "true", "plaintext-only"):
+            return True
+        return tag == "input" and str(attrs.get("type", "text")).lower() in _TEXT_INPUT_TYPES
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+# Actions that cannot move keyboard focus off a text field.
+_FOCUS_PRESERVING = frozenset({
+    "scroll", "wait", "extract", "extract_content", "screenshot", "find_text", "scroll_to_text", "done",
+    "get_dropdown_options", "read_file", "write_file", "replace_file", "todo", "save_as_pdf",
+})
+
+# Schemes a link or form must never take the browser to, even though they are not http(s).
+_DANGEROUS_SCHEMES = frozenset({
+    "chrome", "chrome-extension", "chrome-untrusted", "chrome-search", "chrome-error", "devtools", "edge",
+    "brave", "file", "view-source", "about", "filesystem", "ftp",
+})
 
 
 class GuardedTools(Tools):
@@ -810,8 +1058,10 @@ class GuardedTools(Tools):
         self._lba_allow_evaluate = allow_evaluate
         self._lba_allow_local = allow_local_network
         self._lba_approval_timeout = approval_timeout_s if approval_timeout_s and approval_timeout_s > 0 else None
-        self._lba_blocked = frozenset(SAFETY_DEFAULTS | {str(d).strip().lower().rstrip(".") for d in blocked_domains})
+        self._lba_blocked = frozenset(
+            SAFETY_DEFAULTS | {n for d in blocked_domains if (n := try_normalize_blocked_domain(d))})
         self._lba_warned_no_live = False
+        self._lba_text_focus = False  # last known focused element was a text field
         self.blocked_actions: list[str] = blocked_log if blocked_log is not None else []
 
     async def _lba_url(self, browser_session: Any) -> tuple[str | None, bool]:
@@ -869,8 +1119,6 @@ class GuardedTools(Tools):
                     task.cancel()
         if approved:
             return None
-        if approved:
-            return None
         self.blocked_actions.append(desc)
         why = f" ({req.reason})" if req.reason else ""
         if timed_out:
@@ -893,6 +1141,34 @@ class GuardedTools(Tools):
             )
         )
 
+    def _lba_dest_denial(self, dest: str) -> str | None:
+        """Hard-denial message for navigating to ``dest`` (blocked domain, scheme, local network), else None."""
+        denial = navigation_denial(dest, self._lba_allow_local)
+        if denial is not None:
+            return denial
+        host = navigation_host(dest)
+        if host_is_blocked(host, self._lba_blocked):
+            return (f"Blocked by safety policy: {host} is a blocked domain. "
+                    "Do not navigate there; choose another site.")
+        return None
+
+    def _lba_link_denial(self, href: Any) -> str | None:
+        """Like _lba_dest_denial for a link/form target found on an element. Relative URLs stay on the
+        current (already allowed) site; javascript:, mailto:, tel:, data: and blob: are not navigations."""
+        if not isinstance(href, str):
+            return None
+        raw = "".join(c for c in href if unicodedata.category(c) != "Cc").strip().replace("\\", "/")
+        if not raw:
+            return None
+        m = _OPAQUE_SCHEME_RE.match(raw)
+        scheme = m.group(1).lower() if m else ""
+        if scheme in _DANGEROUS_SCHEMES and not raw.lower().startswith("about:blank"):
+            return (f"Blocked by safety policy: {scheme}: URLs are not allowed. "
+                    "Only http(s) websites can be opened; choose another page.")
+        if scheme in ("http", "https") or raw.startswith("//"):
+            return self._lba_dest_denial(raw)
+        return None
+
     def _lba_blocked_navigation(self, action: Any) -> ActionResult | None:
         """Hard-deny navigation (including new-tab) to a blocked domain, a non-http(s) scheme or (unless
         allowed) a local/private address; no approval can lift it."""
@@ -906,21 +1182,73 @@ class GuardedTools(Tools):
             dest = params.get("url")
             if not isinstance(dest, str):
                 continue
-            denial = navigation_denial(dest, self._lba_allow_local)
+            denial = self._lba_dest_denial(dest)
             if denial is not None:
                 self.blocked_actions.append(f"{name} at {dest}")
                 return ActionResult(error=denial)
-            host = navigation_host(dest)
-            if host_is_blocked(host, self._lba_blocked):
-                self.blocked_actions.append(f"{name} at {dest}")
-                return ActionResult(error=f"Blocked by safety policy: {host} is a blocked domain. "
-                                          "Do not navigate there; choose another site.")
+        return None
+
+    @staticmethod
+    def _lba_targets(node: Any) -> list[str]:
+        """href / formaction / data-href / form action values on a click target and on its ancestors.
+
+        A click on a child (``<span>``, ``<img>``) of a link or button activates it, so the chain is
+        walked up to ``_TARGET_DEPTH`` levels; a submit control found on the way also contributes its form's
+        ``action``.
+        """
+        out: list[str] = []
+        cur = node
+        for _ in range(_TARGET_DEPTH):
+            if cur is None:
+                break
+            for key in ("href", "formaction", "data-href"):
+                v = _attrs(cur).get(key)
+                if isinstance(v, str) and v.strip():
+                    out.append(v)
+            if _tag(cur) == "form":
+                v = _attrs(cur).get("action")
+                if isinstance(v, str) and v.strip():
+                    out.append(v)
+            elif _is_submit_like(cur):
+                form = _ancestor_form(cur)
+                v = _attrs(form).get("action") if form is not None else None
+                if isinstance(v, str) and v.strip():
+                    out.append(v)
+            cur = getattr(cur, "parent_node", None)
+        return out
+
+    async def _lba_blocked_click(self, action: Any, browser_session: Any) -> ActionResult | None:
+        """Hard-deny a click on a link/button whose target is a blocked domain, a forbidden scheme or a
+        local address (a click navigates just like a navigate action)."""
+        try:
+            dumped = action.model_dump(exclude_unset=True)
+        except Exception:
+            return None
+        for name, params in dumped.items():
+            if name not in CLICK_ACTIONS or not isinstance(params, dict):
+                continue
+            node, ok = await self._lba_node(params, browser_session)
+            if not ok:
+                continue
+            nodes = [node]
+            state, live = await self._lba_live(node, browser_session)
+            if state == "ok":
+                nodes.append(live)
+            for n in nodes:
+                for target in self._lba_targets(n):
+                    denial = self._lba_link_denial(target)
+                    if denial is not None:
+                        self.blocked_actions.append(f"{name} on a link to {redact_url(target)}")
+                        return ActionResult(error=denial)
         return None
 
     async def act(self, action: Any, browser_session: Any, *args: Any, **kwargs: Any) -> ActionResult:
         denied_nav = self._lba_blocked_navigation(action)
         if denied_nav is not None:
             return denied_nav
+        denied_click = await self._lba_blocked_click(action, browser_session)
+        if denied_click is not None:
+            return denied_click
         if self._lba_gate:
             try:
                 dumped = action.model_dump(exclude_unset=True)
@@ -970,6 +1298,7 @@ class GuardedTools(Tools):
 
     async def _lba_classify_click(self, name: str, params: dict[str, Any], browser_session: Any) -> ActionRequest | None:
         node, ok = await self._lba_node(params, browser_session)
+        self._lba_text_focus = ok and _is_text_field(node)
         url, url_ok = await self._lba_url(browser_session)
         label = element_label(node) if ok else None
         if not ok:
@@ -1002,6 +1331,8 @@ class GuardedTools(Tools):
 
     async def _lba_classify(self, name: str, params: dict[str, Any], browser_session: Any) -> ActionRequest | None:
         """Return an ActionRequest when the action must be approved, else None."""
+        if name not in CLICK_ACTIONS | KEY_ACTIONS | INPUT_ACTIONS | _FOCUS_PRESERVING:
+            self._lba_text_focus = False  # navigation, tab switches, ... move focus off the field
         if name in CLICK_ACTIONS:
             return await self._lba_classify_click(name, params, browser_session)
         if name in NAVIGATE_ACTIONS:
@@ -1020,37 +1351,45 @@ class GuardedTools(Tools):
             return ActionRequest(action_name=name, params=dict(params), element_label=snippet, url=url,
                                  reason="arbitrary JavaScript can submit forms or click anything")
         if name in KEY_ACTIONS:
-            kind = _keys_kind(params.get("keys"))
+            keys = params.get("keys")
+            kind = _keys_kind(keys)
+            if isinstance(keys, str) and re.search(r"(?i)\btab\b", keys):
+                self._lba_text_focus = False
             if kind is None:
                 return None
+            # Enter and Space both activate a focused button, so both check the live focused element.
             url, ok = await self._lba_url(browser_session)
-            if kind == "enter":
+            state, focused = await self._lba_live_focused(browser_session)
+            verb = "Enter" if kind == "enter" else "Space"
+            label: str | None = None
+            reason: str | None = None
+            if state == "ok":
+                label = element_label(focused)
+                risk = element_risk(focused, url, label, self._lba_patterns)
+                if risk is not None:
+                    reason = f"{verb} pressed on a focused control: {risk}"
+                elif kind == "enter" and form_looks_transactional(focused):
+                    reason = "Enter pressed in a checkout/payment form"
+                self._lba_text_focus = _is_text_field(focused)
+            elif state == "failed" and not self._lba_text_focus:
+                reason = f"{verb} pressed but the focused element could not be read (failing closed)"
+            if reason is None and kind == "enter":
                 if not ok:
                     reason = "page URL could not be read (failing closed)"
                 elif is_commerce_url(url):
                     reason = "Enter pressed on a checkout/payment page"
-                else:
-                    return None
-                return ActionRequest(action_name=name, params=dict(params), element_label=str(params.get("keys")),
-                                     url=url, reason=reason)
-            # Space activates a focused button; gate when the focused element looks transactional.
-            state, focused = await self._lba_live_focused(browser_session)
-            if state == "ok":
-                risk = element_risk(focused, url, element_label(focused), self._lba_patterns)
-                if risk is None:
-                    return None
-                reason, label = f"Space pressed on a focused control: {risk}", element_label(focused)
-            elif is_commerce_url(url):
-                reason, label = "Space pressed on a checkout/payment page (focused element unknown)", None
-            else:
+            elif reason is None and state != "ok" and is_commerce_url(url) and not self._lba_text_focus:
+                reason = "Space pressed on a checkout/payment page (focused element unknown)"
+            if reason is None:
                 return None
-            return ActionRequest(action_name=name, params=dict(params), element_label=label or str(params.get("keys")),
+            return ActionRequest(action_name=name, params=dict(params), element_label=label or str(keys),
                                  url=url, reason=reason)
         if name in INPUT_ACTIONS:
             text = params.get("text")
+            node, ok = await self._lba_node(params, browser_session)
+            self._lba_text_focus = ok and _is_text_field(node)
             if not isinstance(text, str) or not _TRAILING_NEWLINE_RE.search(text):
                 return None
-            node, ok = await self._lba_node(params, browser_session)
             url, url_ok = await self._lba_url(browser_session)
             if not ok:
                 reason = "input target could not be resolved (failing closed)"

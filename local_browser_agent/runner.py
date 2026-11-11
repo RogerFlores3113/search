@@ -182,6 +182,7 @@ class BrowserAgent:
         self._run_id = ""
         self._main_task: asyncio.Future | None = None
         self._sink_timeouts: dict[int, int] = {}
+        self._sink_failures: dict[int, int] = {}
         self._sinks_dropped: set[int] = set()
 
     # ---- control -------------------------------------------------------
@@ -258,8 +259,14 @@ class BrowserAgent:
                 else:
                     logger.debug("event sink %r timed out on %r event after %gs", sink, etype, SINK_TIMEOUT_S)
             except Exception as e:  # a failing sink must never crash a run
-                logger.warning("event sink %r failed on %r event: %s", sink, etype,
-                               self._redact(str(e)), exc_info=True)
+                n = self._sink_failures.get(key, 0) + 1
+                self._sink_failures[key] = n
+                if n == 1:  # full traceback once per sink; later failures are one-liners
+                    logger.warning("event sink %r failed on %r event: %s", sink, etype,
+                                   self._redact(str(e)), exc_info=True)
+                else:
+                    logger.warning("event sink %r failed again on %r event (failure #%d): %s", sink, etype, n,
+                                   self._redact(str(e)))
 
     def _wants_screenshots(self) -> bool:
         return any(getattr(s, "wants_screenshots", True) for s in self.sinks)
@@ -272,6 +279,7 @@ class BrowserAgent:
         self._stop_requested = False
         self._paused = False
         self._sink_timeouts = {}
+        self._sink_failures = {}
         self._sinks_dropped = set()
         try:
             return await self._run(task, start_url)
@@ -677,5 +685,15 @@ async def run_task(task: str, config: AgentConfig | None = None, *, sinks: Itera
 
 def run_task_sync(task: str, config: AgentConfig | None = None, *, sinks: Iterable[Any] = (),
                   approval: ApprovalCallback | None = None, start_url: str | None = None) -> RunResult:
-    """Blocking wrapper around :func:`run_task` for scripts without an event loop."""
+    """Blocking wrapper around :func:`run_task` for scripts without an event loop.
+
+    Raises ``RuntimeError`` when called from inside a running event loop (use ``await run_task(...)``).
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("run_task_sync() cannot be called from a running event loop; "
+                           "use `await run_task(...)` instead")
     return asyncio.run(run_task(task, config, sinks=sinks, approval=approval, start_url=start_url))

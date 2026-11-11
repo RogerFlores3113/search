@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import json
 import sys
 import uuid
@@ -22,6 +23,27 @@ def _version() -> str:
         return __version__
 
 
+EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_ENV, EXIT_INTERRUPTED = 0, 1, 2, 3, 130
+# error_kind values meaning "the environment is not ready" (no browser / provider / CDP endpoint),
+# as opposed to the task itself failing: `lba run` exits 3 for these.
+ENV_ERROR_KINDS = frozenset({"chrome_missing", "preflight", "cdp_connect"})
+
+RUN_EPILOG = """\
+safety: IP-address URLs, localhost and local network names are blocked unless
+LBA_ALLOW_LOCAL_NETWORK=1; use a hostname.
+
+exit codes:
+  0    success
+  1    the run failed, timed out, was stopped or errored (including a start URL that
+       the safety policy blocks: error_kind start_url_blocked)
+  2    usage or configuration error (bad flags, malformed --cdp-url / --start-url,
+       unwritable --trace path, invalid LBA_* values)
+  3    environment not ready: Chrome not found, provider pre-flight failed or the
+       CDP endpoint is unreachable (error_kind chrome_missing, preflight, cdp_connect)
+  130  interrupted (Ctrl-C)
+"""
+
+
 def _add_log_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("-q", "--quiet", action="store_true", help="errors only on stderr; nothing from browser-use")
     p.add_argument("--log-level", choices=LEVELS, help="stderr log level (default: info; warning for mcp; errors only with --json)")
@@ -33,9 +55,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     r = sub.add_parser(
-        "run", help="run one natural-language browser task",
-        epilog="Safety: IP-address URLs, localhost and local network names are blocked unless "
-               "LBA_ALLOW_LOCAL_NETWORK=1; use a hostname.")
+        "run", prog="lba run", help="run one natural-language browser task",
+        epilog=RUN_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
     r.add_argument("task", help="what the agent should do")
     r.add_argument("--provider", help="ollama | anthropic | openai | openai_compatible | litellm (default: $LBA_PROVIDER or ollama)")
     r.add_argument("--model", help="model name (default depends on provider)")
@@ -44,29 +65,34 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--cdp-url", help="attach to a running browser via CDP instead of launching one")
     r.add_argument("--max-steps", type=int, help="maximum agent steps")
     r.add_argument("--timeout", type=float, help="overall timeout in seconds")
-    r.add_argument("--start-url", help="navigate here before the agent starts")
+    r.add_argument("--start-url", help="navigate here before the agent starts (http(s):// URL with a host)")
     r.add_argument("--allowed-domain", action="append", dest="allowed_domains", help="restrict to this domain (repeatable)")
     r.add_argument("--json", action="store_true", help="print the RunResult as JSON")
-    r.add_argument("--trace", metavar="PATH", help="append every event as a JSON line to PATH")
+    r.add_argument("--trace", metavar="PATH",
+                   help="append every event as a JSON line to PATH (the directory must already exist)")
     r.add_argument("--no-preflight", action="store_true", help="skip the provider availability check")
 
     _add_log_args(r)
 
-    m = sub.add_parser("mcp", help="start the stdio MCP server (config from LBA_* env vars)")
+    m = sub.add_parser("mcp", prog="lba mcp", help="start the stdio MCP server (config from LBA_* env vars)")
     _add_log_args(m)
     ev = sub.add_parser("eval", help="run the evaluation suite (remaining args are forwarded)", add_help=False)
     ev.add_argument("rest", nargs=argparse.REMAINDER)
     return p
 
 
-def _valid_cdp_url(url: str) -> bool:
+def _valid_url(url: str, schemes: tuple[str, ...]) -> bool:
     from urllib.parse import urlsplit
 
     try:
         parts = urlsplit(url.strip())
-        return parts.scheme.lower() in ("http", "https", "ws", "wss") and bool(parts.hostname)
+        return parts.scheme.lower() in schemes and bool(parts.hostname)
     except ValueError:
         return False
+
+
+def _valid_cdp_url(url: str) -> bool:
+    return _valid_url(url, ("http", "https", "ws", "wss"))
 
 
 def _config_from_args(args: argparse.Namespace):
@@ -78,6 +104,9 @@ def _config_from_args(args: argparse.Namespace):
     if args.cdp_url is not None and not _valid_cdp_url(args.cdp_url):
         raise ValueError("invalid --cdp-url: expected an http(s):// or ws(s):// URL with a host, "
                          f"got {args.cdp_url!r}")
+    if args.start_url is not None and not _valid_url(args.start_url, ("http", "https")):
+        raise ValueError("invalid --start-url: expected an http(s):// URL with a host, "
+                         f"got {args.start_url!r}")
     data = AgentConfig.from_env().model_dump()
     if args.provider:
         data["model"]["provider"] = args.provider.lower()
@@ -137,23 +166,25 @@ def _configure_logging(args: argparse.Namespace, default: str) -> None:
     configure_logging(level, third_party=third_party)
 
 
-def _error_result(task: str, message: str, status: str = "error", run_id: str | None = None,
+def _error_result(task: str, errors: list[str], status: str = "error", run_id: str | None = None,
                   error_kind: str | None = None) -> dict:
     from local_browser_agent.runner import RunResult
 
     result = RunResult(run_id=run_id or str(uuid.uuid4()), task=task, status=status, success=None,
-                       errors=[message]).to_dict()
+                       errors=list(errors)).to_dict()
     result["error_kind"] = error_kind
     return result
 
 
 def _fail(args: argparse.Namespace, message: str, code: int, *, status: str = "error", trace=None,
-          error_kind: str | None = None) -> int:
-    """Report a failure that happened before/outside a run: text on stderr, JSON on stdout."""
+          error_kind: str | None = None, errors: list[str] | None = None) -> int:
+    """Report a failure that happened before/outside a run: text on stderr, JSON on stdout.
+
+    ``errors`` is the per-problem list for the JSON ``errors`` field (default: ``[message]``)."""
     run_id = str(uuid.uuid4())
-    print(f"lba: {message}", file=sys.stderr)
+    print(f"lba run: error: {message}", file=sys.stderr)
     if getattr(args, "json", False):
-        print(json.dumps(_error_result(args.task, message, status, run_id, error_kind), indent=2))
+        print(json.dumps(_error_result(args.task, errors or [message], status, run_id, error_kind), indent=2))
     if trace is not None and trace.events_written == 0:
         from local_browser_agent.events import DoneEvent, ErrorEvent, StateEvent
 
@@ -175,13 +206,16 @@ def _fail(args: argparse.Namespace, message: str, code: int, *, status: str = "e
 
 
 def _open_trace(path: str):
-    """Create the trace sink after proving the path is writable (raises OSError otherwise)."""
+    """Create the trace sink after proving the path is writable (raises OSError otherwise).
+
+    The parent directory is never created: a missing one is an error."""
     from pathlib import Path
 
     from local_browser_agent.sinks import JsonlTraceSink
 
     p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    if not p.parent.is_dir():
+        raise OSError(errno.ENOENT, "directory does not exist")
     with open(p, "a", encoding="utf-8"):
         pass
     return JsonlTraceSink(p)
@@ -197,13 +231,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
     try:
         cfg = _config_from_args(args)
     except Exception as e:
-        return _fail(args, f"invalid configuration:\n{format_validation_error(e)}", 2, error_kind="config")
+        problems = [ln for ln in format_validation_error(e).splitlines() if ln.strip()] or [str(e)]
+        if len(problems) == 1:
+            message = f"invalid configuration: {problems[0]}"
+        else:
+            message = "invalid configuration:\n" + "\n".join(f"  {ln}" for ln in problems)
+        return _fail(args, message, EXIT_USAGE, error_kind="config", errors=problems)
     trace = None
     if args.trace:
         try:
             trace = _open_trace(args.trace)
         except OSError as e:
-            return _fail(args, f"cannot write --trace {args.trace!r}: {e.strerror or e}", 2, error_kind="config")
+            return _fail(args, f"cannot write --trace {args.trace!r}: {e.strerror or e}", EXIT_USAGE,
+                          error_kind="config")
     sinks = [trace] if trace else []
 
     async def go():
@@ -214,16 +254,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
     try:
         result = asyncio.run(go())
     except PreFlightError as e:
-        return _fail(args, str(e), 1, trace=trace, error_kind="preflight")
+        return _fail(args, str(e), EXIT_ENV, trace=trace, error_kind="preflight")
     except KeyboardInterrupt:
-        return _fail(args, "interrupted", 130, status="stopped", trace=trace, error_kind="stopped")
+        return _fail(args, "interrupted", EXIT_INTERRUPTED, status="stopped", trace=trace, error_kind="stopped")
     if args.json:
         print(json.dumps(result.to_dict(), indent=2))
     else:
         print(_human_summary(result))
         for e in result.errors:
-            print(f"lba: error: {e}", file=sys.stderr)
-    return 0 if result.status == "success" else 1
+            print(f"lba run: error: {e}", file=sys.stderr)
+    if result.status == "success":
+        return EXIT_OK
+    return EXIT_ENV if result.error_kind in ENV_ERROR_KINDS else EXIT_FAILED
 
 
 def _cmd_eval(rest: Sequence[str]) -> int:

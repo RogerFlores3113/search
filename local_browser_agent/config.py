@@ -16,6 +16,7 @@ from local_browser_agent.safety import (
     SAFETY_DEFAULTS,
     allowed_matches_blocked,
     normalize_allowed_domain,
+    normalize_blocked_domain,
 )
 
 
@@ -122,6 +123,7 @@ class BrowserConfig(BaseModel):
         window_width, window_height: Browser window size in pixels.
         llm_screenshot_width, llm_screenshot_height: Size of screenshots sent to the model.
         keep_alive: Leave a launched browser open after the run.
+        allow_downloads: Let the page save downloads (and auto-download PDFs). Off by default.
 
     ``cdp_url`` must be an ``http(s)`` / ``ws(s)`` URL with a host. ``repr()`` and
     validation errors redact its userinfo and query; ``model_dump()`` keeps the real value
@@ -140,6 +142,7 @@ class BrowserConfig(BaseModel):
     llm_screenshot_width: int = 1024
     llm_screenshot_height: int = 640
     keep_alive: bool = False
+    allow_downloads: bool = False
 
     @field_validator("cdp_url")
     @classmethod
@@ -172,7 +175,8 @@ class BrowserConfig(BaseModel):
 
 
 def _norm_domain(d: Any) -> str:
-    return str(d).strip().lower().rstrip(".")
+    """Normalised blocked domain; "" for a blank entry, ValueError for one with no valid host."""
+    return normalize_blocked_domain(d) if str(d).strip() else ""
 
 
 class SafetyPolicy(BaseModel):

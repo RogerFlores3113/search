@@ -150,11 +150,19 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
          patch("asyncio.to_thread", side_effect=_sync_to_thread):
 
         with TestClient(app) as client:
-            # One request to confirm the server is up; the event loop has already
-            # started the agent task during lifespan startup.
-            response = client.get("/nonexistent")
-            # 404 is expected — we only care that the server responded
-            assert response.status_code in (200, 404, 405)
+            # The first page load of a browser that accepted the disclaimer starts the
+            # boot task through the tracked path used by POST /run.
+            from local_browser_agent.app import main as main_mod
+            from local_browser_agent.app.main import DISCLAIMER_COOKIE_NAME, _disclaimer_serializer
+            response = client.get(
+                "/", cookies={DISCLAIMER_COOKIE_NAME: _disclaimer_serializer().dumps("1")}
+            )
+            assert response.status_code == 200
+            import time
+            deadline = time.monotonic() + 10
+            while main_mod._active_task is not None and not main_mod._active_task.done():
+                assert time.monotonic() < deadline, "boot task did not finish"
+                time.sleep(0.05)
 
         # TestClient.__exit__ triggers lifespan shutdown, which waits for the task
         # to complete (or cancels it). Since Agent.run() returns instantly in

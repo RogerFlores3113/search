@@ -29,6 +29,7 @@ from local_browser_agent.app.paths import get_secret_key
 from local_browser_agent.app.runner import run_agent, stop_agent
 
 
+MAX_TASK_CHARS = 2000
 DISCLAIMER_COOKIE_NAME = "lba_disclaimer"
 DISCLAIMER_COOKIE_VALUE = "1"
 # 1 year persistence — disclaimer acceptance is a "did the user ever click
@@ -178,9 +179,10 @@ def _origin_ok(request: Request) -> bool:
 async def lifespan(app: FastAPI):
     """FastAPI lifespan hook.
 
-    On startup: initialise the runs DB table, then if app.state.pending_task is
-    set, create an asyncio task for run_agent.
-    On shutdown: cancel the task if still running.
+    On startup: initialise the runs DB table and seed the prompt library.
+    On shutdown: cancel the active run if still going. A boot task
+    (``lba-app "task"``) is not started here: it goes through ``_start_run`` once the
+    page is loaded by a browser that has accepted the disclaimer (see ``index``).
     """
     await history_db.init_db()
 
@@ -193,13 +195,10 @@ async def lifespan(app: FastAPI):
     _cfg.prompts = _seeded.get("prompts", [])
     _cfg.active_prompt_id = _seeded.get("active_prompt_id", "generic")
 
-    task_ref: Optional[asyncio.Task] = None
-    pending = getattr(app.state, "pending_task", None)
-    if pending:
-        task_ref = asyncio.create_task(run_agent(pending, on_agent=_set_active_agent))
-
     yield
 
+    # Shutdown: cancel a run that is still going (started by /run or by the boot task).
+    task_ref = _active_task
     if task_ref is not None and not task_ref.done():
         task_ref.cancel()
         try:
@@ -210,8 +209,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-@app.middleware("http")
-async def _security_middleware(request: Request, call_next):
+def _add_security_headers(response):
+    """Anti-clickjacking and hardening headers, added to every response."""
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    existing = response.headers.get("content-security-policy")
+    if existing is None:
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+    elif "frame-ancestors" not in existing.lower():
+        response.headers["Content-Security-Policy"] = existing.rstrip("; ") + "; frame-ancestors 'none'"
+    return response
+
+
+async def _check_request(request: Request):
+    """The refusal response for a request that fails the security checks, else None."""
     if not _host_allowed(request.headers.get("host")):
         return JSONResponse({"status": "forbidden", "detail": "invalid host"}, status_code=403)
     if request.method not in _SAFE_METHODS:
@@ -221,7 +233,15 @@ async def _security_middleware(request: Request, call_next):
             supplied = request.headers.get(TOKEN_HEADER, "")
             if not secrets.compare_digest(supplied.encode(), SECURITY_TOKEN.encode()):
                 return JSONResponse({"status": "forbidden", "detail": "missing or invalid token"}, status_code=403)
-    return await call_next(request)
+    return None
+
+
+@app.middleware("http")
+async def _security_middleware(request: Request, call_next):
+    refusal = await _check_request(request)
+    if refusal is not None:
+        return _add_security_headers(refusal)
+    return _add_security_headers(await call_next(request))
 
 
 # Default chrome_missing to False; set to True by __main__.py pre-flight check (DIST-02)
@@ -290,6 +310,33 @@ async def _run_tracked(task: str, queue: asyncio.Queue, control_queue: asyncio.Q
         _active_control_queue = None
 
 
+async def _start_run(task: str, active_prompt_id: str) -> bool:
+    """Start a tracked run (queues, ``_active_task``); False when one is already running.
+
+    The one start path for POST /run and the boot task, serialized by ``_start_lock``.
+    """
+    global _active_task, _active_queue, _active_control_queue, _last_run_delivered
+    async with _start_lock:
+        if _active_task is not None and not _active_task.done():
+            return False
+        data_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+        control_queue: asyncio.Queue = _TrackingQueue(maxsize=16)
+        _last_run.clear()
+        _last_run_delivered = False
+        _active_queue = data_queue
+        _active_control_queue = control_queue
+        _active_task = asyncio.create_task(
+            _run_tracked(task, data_queue, control_queue, active_prompt_id)
+        )
+    return True
+
+
+@app.get("/healthz")
+async def healthz() -> JSONResponse:
+    """Liveness probe for CI and scripts: 200 once the server answers requests."""
+    return JSONResponse({"status": "ok"})
+
+
 @app.get("/")
 async def index(request: Request):
     """Render the HTMX+Alpine UI skeleton, or Chrome-missing page if Chrome not found.
@@ -303,12 +350,27 @@ async def index(request: Request):
     request.app.state.chrome_missing = not chrome_is_installed()
     if request.app.state.chrome_missing:
         return templates.TemplateResponse(request=request, name="no_chrome.html", context={})
+    accepted = _disclaimer_accepted(request)
+    # Boot task (`lba-app "task"`): consumed by the first page load. Without an accepted
+    # disclaimer it is only pre-filled in the task box (nothing runs until the user presses
+    # Run); with one it starts through the same tracked path as POST /run, so /run answers
+    # 409 and the page's /stream shows it.
+    boot_task = getattr(request.app.state, "pending_task", None)
+    prefill_task = ""
+    if boot_task:
+        request.app.state.pending_task = None
+        if accepted:
+            from local_browser_agent.app.config import config  # noqa: PLC0415
+            await _start_run(boot_task, config.active_prompt_id)
+        else:
+            prefill_task = boot_task
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
-            "disclaimer_accepted": _disclaimer_accepted(request),
+            "disclaimer_accepted": accepted,
             "security_token": SECURITY_TOKEN,
+            "prefill_task": prefill_task,
         },
     )
 
@@ -334,7 +396,7 @@ async def accept_disclaimer_endpoint(request: Request):
 
 
 @app.post("/run")
-async def run_endpoint(request: Request, task: str = Form(..., max_length=2000), active_prompt_id: str = Form("generic")):
+async def run_endpoint(request: Request, task: str = Form(...), active_prompt_id: str = Form("generic")):
     """Accept a task string and start the agent as a fire-and-forget asyncio task.
 
     Accepts application/x-www-form-urlencoded (the HTMX default for form submissions).
@@ -348,29 +410,25 @@ async def run_endpoint(request: Request, task: str = Form(..., max_length=2000),
     run_agent coroutine as an asyncio.Task with the queue wired in, and responds
     with HX-Trigger: streamStarted so the HTMX SSE container activates.
     """
-    global _active_task, _active_queue, _active_control_queue, _last_run_delivered
     if not _disclaimer_accepted(request):
         return _disclaimer_required_response()
+    if len(task) > MAX_TASK_CHARS:
+        return JSONResponse(
+            {"status": "error",
+             "detail": f"The task is too long ({len(task)} characters). The limit is {MAX_TASK_CHARS}."},
+            status_code=422,
+        )
     task = task.strip()
     if not task:
         return JSONResponse(
             {"status": "error", "detail": "Type a task for the agent first."}, status_code=422
         )
-    async with _start_lock:
-        if _active_task is not None and not _active_task.done():
-            return JSONResponse(
-                {"status": "busy", "detail": "A run is already in progress. Stop it first, or wait for it to finish."},
-                status_code=409,
-            )
-        data_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
-        control_queue: asyncio.Queue = _TrackingQueue(maxsize=16)
-        _last_run.clear()
-        _last_run_delivered = False
-        _active_queue = data_queue
-        _active_control_queue = control_queue
-        _active_task = asyncio.create_task(
-            _run_tracked(task, data_queue, control_queue, active_prompt_id)
+    if not await _start_run(task, active_prompt_id):
+        return JSONResponse(
+            {"status": "busy", "detail": "A run is already in progress. Stop it first, or wait for it to finish."},
+            status_code=409,
         )
+    request.app.state.pending_task = None  # a not-yet-consumed boot task must not run later
     return JSONResponse({"status": "started"}, headers={"HX-Trigger": "streamStarted"})
 
 

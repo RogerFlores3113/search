@@ -11,7 +11,13 @@ from browser_use.browser.session import BrowserSession
 from local_browser_agent.chrome import CHROME_NOT_FOUND_MESSAGE, ChromeNotFoundError, find_chrome
 from local_browser_agent.config import BrowserConfig, SafetyPolicy
 from local_browser_agent.redact import redact_url
-from local_browser_agent.safety import allowed_matches_blocked, host_is_blocked, normalize_allowed_domain
+from local_browser_agent.safety import (
+    allowed_matches_blocked,
+    canonical_host,
+    host_is_blocked,
+    normalize_allowed_domain,
+    try_normalize_blocked_domain,
+)
 
 # Non-web schemes the agent must never reach (chrome://settings/passwords, extensions, devtools).
 # browser-use only consults these patterns when allowed_domains is unset; with an allow-list
@@ -25,7 +31,7 @@ INTERNAL_SCHEME_PATTERNS = (
 LOCAL_SUFFIXES = ("localhost", "local", "internal", "lan", "home.arpa", "localdomain", "intranet")
 # Names only: IP literals are rejected by block_ip_addresses, and single-label hostnames
 # ("intranet", "printer") cannot be expressed as patterns (the tool-layer navigation guard denies them).
-LOCAL_HOST_PATTERNS = ("localhost",) + tuple(p for s in LOCAL_SUFFIXES for p in (f"*.{s}", f"*.{s}."))
+LOCAL_HOST_PATTERNS = ("*.localhost", "*.localhost.") + tuple(p for s in LOCAL_SUFFIXES for p in (f"*.{s}", f"*.{s}."))
 
 
 def is_local_host(host: str | None) -> bool:
@@ -65,6 +71,11 @@ def start_url_problem(url: str, safety: SafetyPolicy) -> str | None:
         return f"start_url must be an http(s) URL, got {shown!r}"
     if not host:
         return f"start_url has no host: {shown!r}"
+    # Check the host Chrome would actually connect to (percent-encoding, fullwidth dots, IDNA...).
+    canon = canonical_host(host)
+    if not canon:
+        return f"start_url host cannot be resolved safely: {shown!r}"
+    host = canon
     if host_is_blocked(host, safety.blocked_domains):
         return f"start_url host {host!r} is blocked by the safety policy"
     if safety.allowed_domains and not any(_allowed_covers(e, host) for e in safety.allowed_domains):
@@ -76,14 +87,19 @@ def start_url_problem(url: str, safety: SafetyPolicy) -> str | None:
 
 
 def _norm_domain(d: str) -> str:
-    return str(d).strip().lower().rstrip(".").removeprefix("*.")
+    return try_normalize_blocked_domain(d) or ""
 
 
 def blocked_patterns(blocked_domains) -> list[str]:
-    """browser-use patterns blocking each domain, its subdomains and its trailing-dot host form."""
+    """browser-use patterns blocking each domain, its subdomains and its trailing-dot host form.
+
+    ``*.d`` already matches ``d``, ``www.d`` and every subdomain, and ``*.d.`` matches the
+    trailing-dot spellings, so a plain ``d`` entry would be redundant. Two patterns per domain
+    keep a default policy well under browser-use's 100-entry list-to-set conversion.
+    """
     out: list[str] = []
     for d in sorted({_norm_domain(x) for x in blocked_domains if _norm_domain(x)}):
-        out += [d, f"*.{d}", f"*.{d}."]
+        out += [f"*.{d}", f"*.{d}."]
     return out
 
 
@@ -101,6 +117,10 @@ def build_browser_profile(browser: BrowserConfig, safety: SafetyPolicy) -> Any:
         enable_default_extensions=False,
         # Blocks every IP-address URL (loopback, private, link-local/metadata, public literals).
         block_ip_addresses=not safety.allow_local_network,
+        # No clipboard / notification grants by default, and no automatic downloads.
+        permissions=[],
+        accept_downloads=bool(browser.allow_downloads),
+        auto_download_pdfs=bool(browser.allow_downloads),
     )
     if safety.allowed_domains:
         # browser-use ignores prohibited_domains when allowed_domains is set, so the allow-list
@@ -132,14 +152,27 @@ def build_browser_profile(browser: BrowserConfig, safety: SafetyPolicy) -> Any:
         if browser.user_data_dir:
             kwargs["user_data_dir"] = browser.user_data_dir
     profile = BrowserProfile(**kwargs)
-    if not isinstance(profile.prohibited_domains, list):
-        # browser-use turns lists of >=100 entries into an exact-match set, which silently drops
-        # the "*." patterns; restore the list so subdomains stay blocked.
-        object.__setattr__(profile, "prohibited_domains", patterns)
+    _restore_domain_lists(profile, patterns, kwargs.get("allowed_domains"))
     return profile
 
 
+def _restore_domain_lists(profile: Any, prohibited: list[str], allowed: list[str] | None) -> None:
+    """Undo browser-use's conversion of >=100-entry domain lists into exact-match sets.
+
+    The set form drops every ``*.`` pattern silently (subdomains and IP/local rules stop
+    matching), so the lists are put back on ``profile``. BrowserSession re-validates the profile
+    and converts again, which is why this also runs on the built session.
+    """
+    if not isinstance(profile.prohibited_domains, list):
+        object.__setattr__(profile, "prohibited_domains", list(prohibited))
+    if allowed is not None and not isinstance(profile.allowed_domains, list):
+        object.__setattr__(profile, "allowed_domains", list(allowed))
+
+
 def build_browser_session(browser: BrowserConfig, safety: SafetyPolicy) -> Any:
-    session = BrowserSession(browser_profile=build_browser_profile(browser, safety))
+    profile = build_browser_profile(browser, safety)
+    session = BrowserSession(browser_profile=profile)
+    _restore_domain_lists(session.browser_profile, list(profile.prohibited_domains),
+                          list(profile.allowed_domains) if profile.allowed_domains is not None else None)
     session.llm_screenshot_size = (browser.llm_screenshot_width, browser.llm_screenshot_height)
     return session

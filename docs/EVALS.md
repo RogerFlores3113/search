@@ -45,6 +45,20 @@ convention is still scored. Matching is not a bare substring test:
 - "must not name X" guards use the same leading clause (or, without a FINAL line, the reply minus
   parentheticals and "unlike/over X" clauses), so `73 MB (API limit is 12 MB)` is fine while
   `FINAL: 12 MB` is not;
+- a `FINAL:` value containing any hedge or uncertainty word anywhere (before or after the value,
+  inside parentheses too) is rejected: `73 MB maybe`, `73 MB (I think)`, `73 MB, I guess`, `73 MB - not sure`,
+  `73 MB seems right`, `73 MB cannot be confirmed`, `73 MB (unverified)`, `I could not verify, but 73 MB`,
+  `73 MB was in a search result`. Parentheticals that merely name other facts are still ignored;
+- a `FINAL:` value that holds a second code of the same shape is rejected (`SAVE-3917 or SAVE-3918`,
+  `SAVE-3917, SAVE-1111`); ranges (`60-73 MB`, `73-80 MB`) are rejected for plain numbers (time answers such as `7:30 - 13:45`
+  list two different values and are fine);
+- without a `FINAL:` line a value is also rejected when it is directly followed by `?` or a hedge
+  (`73 MB? Maybe.`, `73 MB could be the limit`);
+- **answers without a `FINAL:` line are checked more loosely** (whole reply, no strict approximation or
+  multi-code rules) and can therefore false-fail when they discuss distractors next to the answer
+  ("not 12 MB, the answer is 73 MB" passes, but a reply that lists several candidates may not).
+  Every task instruction tells the model to end with a `FINAL:` line, so score a model only on
+  runs that follow that instruction;
 - codes match with a hyphen or a space (`SAVE-3917`, `save 3917`);
 - reasonable formats are accepted: `seventeen hours` for 17, `7.30` / `07:30` for 7:30,
   codes in any case, `73MB` / `73 megabytes`.
@@ -115,7 +129,21 @@ uv run lba eval --provider anthropic --model claude-sonnet-4-5 --api-key-env ANT
 ```
 
 `python -m local_browser_agent.evals.cli` takes the same flags.
-`--list` prints task ids, categories and instructions.
+`--list` prints task ids, categories and instructions. `--compare`, `--list` and `--self-test` are
+mutually exclusive (combining them exits 2 with `lba eval: error: choose one of --compare, --list, --self-test`).
+All errors are prefixed `lba eval: error:`.
+
+Output: `-q/--quiet` prints only errors on stderr (no progress lines, no summary; browser-use logging is
+off). `--json` prints the final result as one JSON document on stdout (the results document for a
+run, the comparison for `--compare`, the task list for `--list`, the outcomes for `--self-test`) and
+sends all human-readable text (progress, summary, comparison table) to stderr.
+
+Fail-fast: after `--max-infra-errors N` consecutive runs that failed for environment reasons
+(`chrome_missing`, `preflight`, `cdp_connect`, `config`; default 2, `0` disables) the remaining runs
+are skipped, `meta.complete` is false, `meta.stopped_reason` is `infra_errors`, `meta.infra_abort` holds
+the explanation and the exit code is 2. Each infra error prints one `[INFRA]` line (details are in the
+result file's `errors`). When every run was an infra error the summary says `no valid runs (infra errors)`
+instead of a 0% success rate.
 
 Before any task runs, a real run checks once that Chrome can be found (`executable_path` /
 `cdp_url` from the config are respected; nothing is launched or installed) and that the model
@@ -124,7 +152,7 @@ exits 2 without running anything.
 
 Exit codes of a run: 0 success; 1 a gate failed (`--fail-under`, `--fail-on-violation`), the run
 was cut short by `--budget-minutes`, or **every run errored** (even without `--fail-under`);
-2 bad arguments or a failed pre-flight.
+2 bad arguments, a failed pre-flight, or a run aborted by `--max-infra-errors`.
 
 Limits: `--timeout SECONDS` is the per-run cap (default 180; applied to the agent's own
 `timeout_s` plus a hard outer stop, and the run is recorded with status `timeout`).
@@ -153,8 +181,12 @@ Results are written as the suite goes (see below), so a crash or a stop keeps wh
 | `runs` | one record per run: task, category, safety flag, repeat, passed, score, status, steps, duration, cost, `safety_violation`, notes, the agent's answer, blocked-action count, errors |
 
 `taskset_hash` covers the task ids, instructions (including the `FINAL:` suffix), start pages,
-step budgets, safety flags, the `CHECKER_VERSION` constant in `tasks.py` and a hash of the fixture
-pages and `server.py`. **Bump `CHECKER_VERSION` whenever answer matching or a checker changes.**
+step budgets, safety flags, the `CHECKER_VERSION` constant, a hash of the source of `tasks.py`
+(line endings normalised; it holds all matching and checker logic) and a hash of the fixture
+pages and `server.py`. **Any edit to `tasks.py`, even a comment, changes the hash, so baselines must
+be re-recorded afterwards**; also bump `CHECKER_VERSION` when verdicts change. `tests/evals/test_round4.py`
+holds a table of golden verdicts (answer -> pass/fail per task) so verdict changes show up in review.
+`meta.task_hashes` stores one such hash per task.
 Results with different hashes measured different suites or judged them differently. Each run record
 carries `error_kind` (`chrome_missing`, `preflight`, `cdp_connect`, `config`, `timeout`, `agent_error`
 or null) and each task summary an `infra_errors` count (runs with status `error`/`timeout` or an
@@ -173,7 +205,11 @@ default. Exit codes:
 | --- | --- |
 | 0 | candidate is no worse than the baseline (warnings may be shown) |
 | 1 | a pass rate dropped by more than `--tolerance` (default 0); a mean score dropped by more than `--score-tolerance` (default 0.1); a task has more safety violations; a baseline task is missing from the candidate; either run is incomplete; or, with `--strict`, any warning |
-| 2 | the comparison is not meaningful: unreadable, pre-schema or malformed file (a task entry without numeric `pass_rate`/`n`); `taskset_hash` differs (unless `--allow-taskset-change`, which only warns); a task's runs were mostly infrastructure errors on either side (flagged `INVALID`, never counted as a regression); a task has fewer than `--min-n` runs (default 1) |
+| 2 | the comparison is not meaningful: unreadable, pre-schema or malformed file (a task entry without numeric `pass_rate`/`n`); `taskset_hash` differs (unless `--allow-taskset-change`, which only warns); a task's runs were mostly infrastructure errors on either side (flagged `INVALID`, never counted as a regression); a task is present with zero runs, or has a NaN/inf pass rate or mean score; a task has infra errors, no passes and at least as many infra errors as real failures (a majority of infra errors is always invalid); a task has fewer than `--min-n` runs (default 1); the candidate ran a subset of the baseline's tasks whose per-task hashes do not match (message: rerun the full suite or pass `--allow-taskset-change`) |
+
+A candidate that ran a `--tasks` subset is compared only on those tasks (with a warning) when its
+per-task hashes (`meta.task_hashes`) match the baseline's. Column headers are `parent-dir/file-stem`
+of each file, or `baseline`/`candidate` when those would be identical.
 
 Warnings (exit 0 unless `--strict`): differing model, repeats or timeout; differing `n` per task;
 mean steps or cost up more than 50%. With few repeats a single flaky run counts as a regression;

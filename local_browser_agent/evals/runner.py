@@ -13,11 +13,12 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .server import FIXTURE_HOST, FixtureServer
-from .tasks import CHECKER_VERSION, EvalTask, get_tasks, taskset_hash
+from .tasks import CHECKER_VERSION, EvalTask, get_tasks, task_hash, taskset_hash
 
 SCHEMA_VERSION = 1
 
 RunFn = Callable[..., Awaitable[Any]]
+DEFAULT_MAX_INFRA_ERRORS = 2
 _HARD_STOP_GRACE_S = 30.0
 
 
@@ -219,6 +220,7 @@ def build_meta(
         "git_sha": _git_sha(),
         "lba_version": _lba_version(),
         "taskset_hash": taskset_hash(tasks),
+        "task_hashes": {t.id: task_hash(t) for t in tasks},
         "checker_version": CHECKER_VERSION,
         "task_ids": [t.id for t in tasks],
         "max_steps": {t.id: t.max_steps for t in tasks},
@@ -240,6 +242,7 @@ async def run_suite(
     progress: Callable[[RunRecord], None] | None = None,
     timeout_s: float | None = None,
     budget_s: float | None = None,
+    max_infra_errors: int | None = DEFAULT_MAX_INFRA_ERRORS,
 ) -> SuiteResult:
     """Run each selected task ``repeats`` times against a fresh fixture state.
 
@@ -248,7 +251,10 @@ async def run_suite(
     hard stop). With ``out_dir``, every run is appended to ``results.jsonl`` and ``results.json`` /
     ``results.md`` are rewritten after each task, so a crash keeps partial results.
     ``budget_s`` stops launching new runs once that much wall-clock time has passed; the result
-    is then marked ``meta["complete"] = False``.
+    is then marked ``meta["complete"] = False``. After ``max_infra_errors`` consecutive runs that
+    failed for environment reasons (``INFRA_ERROR_KINDS``: no Chrome, CDP, pre-flight, config) the
+    remaining runs are skipped: ``meta["complete"] = False``, ``meta["stopped_reason"] =
+    "infra_errors"`` and ``meta["infra_abort"]`` holds the one-line explanation (``None`` disables).
     """
     tasks = get_tasks(task_ids)
     run = run_fn or _lazy_run_task()
@@ -271,6 +277,8 @@ async def run_suite(
 
     started = time.monotonic()
     out_of_budget = False
+    infra_streak = 0
+    infra_abort: str | None = None
     with FixtureServer() as server:
         for task in tasks:
             for rep in range(1, repeats + 1):
@@ -281,18 +289,28 @@ async def run_suite(
                 instruction = task.render(server.base_url)
                 rec = await _run_one(run, config, task, rep, instruction, server, timeout_s)
                 records.append(rec)
+                infra_streak = infra_streak + 1 if rec.error_kind in INFRA_ERROR_KINDS else 0
                 if report:
                     report.append_run(rec, Path(out_dir))
                 if progress:
                     progress(rec)
-            if out_of_budget:
+                if max_infra_errors and infra_streak >= max_infra_errors:
+                    infra_abort = (
+                        f"aborting: {infra_streak} consecutive infrastructure errors "
+                        f"({rec.error_kind}); the environment is broken, see the result file"
+                    )
+                    break
+            if out_of_budget or infra_abort:
                 break
             if report:
                 report.write_report(result, Path(out_dir))
 
-    meta["complete"] = not out_of_budget
+    meta["complete"] = not out_of_budget and not infra_abort
     if out_of_budget:
         meta["stopped_reason"] = "budget"
+    if infra_abort:
+        meta["stopped_reason"] = "infra_errors"
+        meta["infra_abort"] = infra_abort
     meta["elapsed_s"] = round(time.monotonic() - started, 1)
     if report:
         report.write_report(result, Path(out_dir))

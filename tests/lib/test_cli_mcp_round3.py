@@ -139,7 +139,7 @@ def test_preflight_failure_trace_uses_json_run_id(monkeypatch, capsys, tmp_path)
     rc = cli.main(["run", "x", "--json", "--trace", str(trace)])
     out = json.loads(capsys.readouterr().out)
     recs = [json.loads(line) for line in trace.read_text().splitlines()]
-    assert rc == 1 and len(recs) == 3
+    assert rc == 3 and len(recs) == 3
     assert {r["run_id"] for r in recs} == {out["run_id"]}
 
 

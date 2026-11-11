@@ -27,7 +27,7 @@
     disclaimerAccepted: {{ 'true' if disclaimer_accepted else 'false' }},
     async accept() {
       const r = await fetch('/accept-disclaimer', {method: 'POST', headers: lbaHeaders()});
-      if (r.ok) this.disclaimerAccepted = true;
+      if (r.ok) { this.disclaimerAccepted = true; lbaClearNoticeAfterSuccess(); }
       else lbaReportFailure(r.status, await r.text());
     }
   }">
@@ -170,7 +170,13 @@
                         rows="3"
                         maxlength="2000"
                         placeholder="Describe a task for the agent — e.g. find the Wikipedia page for the Eiffel Tower"
-                        :readonly="state === 'running' || state === 'paused'"></textarea>
+                        @input="taskLen = $event.target.value.length"
+                        x-init="taskLen = $el.value.length"
+                        :readonly="state === 'running' || state === 'paused'">{{ prefill_task }}</textarea>
+              <div class="char-counter" aria-live="off"
+                   style="text-align:right;font-size:0.75rem;margin-top:2px"
+                   :style="taskLen > 1900 ? 'color:#fca5a5' : 'color:#9ca3af'"
+                   x-text="taskLen + ' / 2000'"></div>
               <button type="submit"
                       class="btn btn-primary"
                       style="margin-top:8px"
@@ -443,6 +449,21 @@
       const box = document.getElementById('lba-notice');
       if (box) box.hidden = true;
     }
+    // A "Lost connection" notice stays until the EventSource reconnects (lbaConnectionRestored),
+    // so a successful side request (for example the /runs refresh) cannot hide it.
+    let lbaConnectionLost = false;
+    function lbaConnectionRestored() {
+      if (!lbaConnectionLost) return;
+      lbaConnectionLost = false;
+      lbaHideNotice();
+    }
+    function lbaLostConnection() {
+      lbaConnectionLost = true;
+      lbaShowNotice('Lost connection to the app. It may have been closed or restarted. Reload to continue.', true);
+    }
+    function lbaClearNoticeAfterSuccess() {
+      if (!lbaConnectionLost) lbaHideNotice();
+    }
     // Turn a failed HTTP response into a visible message. `body` is the raw response text.
     function lbaReportFailure(status, body) {
       let data = {};
@@ -464,10 +485,16 @@
       lbaReportFailure(xhr ? xhr.status : 0, xhr ? xhr.responseText : '');
     });
     document.addEventListener('htmx:sendError', () => {
-      lbaShowNotice('Lost connection to the app. It may have been closed. Reload to continue.', true);
+      lbaLostConnection();
     });
+    // Clear a notice only after a successful /run or /accept-disclaimer (or the user's dismissal);
+    // never on other requests such as the /runs refresh, and never a lost-connection notice.
     document.addEventListener('htmx:afterRequest', (e) => {
-      if (e.detail && e.detail.successful) lbaHideNotice();
+      const cfg = e.detail && e.detail.requestConfig;
+      const path = cfg && cfg.path ? String(cfg.path).split('?')[0] : '';
+      if (e.detail && e.detail.successful && (path === '/run' || path === '/accept-disclaimer')) {
+        lbaClearNoticeAfterSuccess();
+      }
     });
 
     function lbaHeaders() {
@@ -485,6 +512,7 @@
         humanNeeded: false,
         humanMessage: '',
         _stream: null,
+        taskLen: 0,
         agentActive: false,
         stepNum: 0,
         maxSteps: 25,
@@ -531,6 +559,7 @@
           if (this._stream) { this._stream.close(); this._stream = null; }
           const source = new EventSource('/stream');
           this._stream = source;
+          source.onopen = () => lbaConnectionRestored();
           const routes = {
             state: 'handleState', summary: 'handleSummary', error_msg: 'handleError',
             screenshot: 'handleScreenshot', progress: 'handleProgress', token: 'handleToken',
@@ -555,7 +584,7 @@
             this.agentActive = false;
             this.humanNeeded = false;
             this.state = 'disconnected';
-            lbaShowNotice('Lost connection to the app. It may have been closed or restarted. Reload to continue.', true);
+            lbaLostConnection();
           };
         },
 
