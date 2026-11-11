@@ -56,9 +56,9 @@ def test_jobs_have_tag_condition():
 
 
 def test_jobs_have_write_permissions():
-    """WIN-04: both build jobs need permissions: contents: write for artifact upload."""
+    """WIN-04: the single publish job (which creates the release) needs contents: write."""
     wf = _load_workflow()
-    for job_name in ("build-mac", "build-windows"):
+    for job_name in ("publish",):
         perms = wf["jobs"][job_name].get("permissions", {})
         assert perms.get("contents") == "write", (
             f"{job_name} missing 'permissions: contents: write'; got: {perms!r}"

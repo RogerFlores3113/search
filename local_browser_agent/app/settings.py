@@ -233,7 +233,14 @@ def save_settings_json(data: dict) -> None:
     path = get_settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    # 0600: the Fernet key is derived from hostname:user, so other local users must not read this file.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(data, indent=2))
+    try:
+        os.chmod(tmp, 0o600)  # in case the temp file pre-existed with a looser mode; no-op on Windows
+    except OSError:
+        pass
     os.replace(tmp, path)
 
 
