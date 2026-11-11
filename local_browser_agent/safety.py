@@ -126,6 +126,9 @@ _CJK_NEGATIVE = (
 )
 
 # --- Transactional URL signals ---------------------------------------------------------
+# Broad token matching: only used for form actions / formaction attributes, where a stray
+# match is cheap. Page and link URLs use the stricter path-shape rules below so that
+# /wiki/Donation or /help/payment-methods never gate a whole page.
 _URL_TOKENS = frozenset({
     "checkout", "payment", "payments", "pay", "placeorder", "subscribe", "subscription", "donate",
     "donation", "donations", "billing", "purchase", "buynow", "paynow", "confirmpayment",
@@ -133,14 +136,90 @@ _URL_TOKENS = frozenset({
 })
 _URL_BIGRAMS = frozenset({
     ("cart", "confirm"), ("cart", "checkout"), ("cart", "pay"), ("order", "place"), ("order", "confirm"),
-    ("order", "submit"), ("order", "complete"), ("place", "order"), ("confirm", "order"),
-    ("confirm", "payment"), ("confirm", "purchase"), ("complete", "purchase"), ("complete", "order"),
-    ("buy", "now"), ("send", "money"), ("money", "transfer"),
+    ("order", "submit"), ("order", "complete"), ("order", "review"), ("place", "order"),
+    ("confirm", "order"), ("confirm", "payment"), ("confirm", "purchase"), ("complete", "purchase"),
+    ("complete", "order"), ("buy", "now"), ("send", "money"), ("money", "transfer"),
 })
 _URL_NEGATIVE_TOKENS = frozenset({
     "history", "faq", "help", "policy", "policies", "terms", "methods", "settings", "docs", "blog",
 })
 _URL_HOST_LABELS = frozenset({"checkout", "pay", "payments", "billing", "donate"})
+# A path segment (separators removed) that is transactional wherever it appears.
+_URL_CHECKOUT_SEGMENTS = frozenset({
+    "checkout", "placeorder", "buynow", "paynow", "confirmpayment",
+    "kasse", "caisse", "cassa",
+})
+# Segments that are transactional only as the first path segment (after an optional locale),
+# either alone, followed by an id, or followed by an action word.
+_URL_ROOT_SEGMENTS = frozenset({
+    "pay", "payment", "payments", "billing", "subscribe", "donate", "purchase",
+    "zahlung", "paiement", "pagamento", "betaling",
+})
+_URL_ROOT_ACTIONS = frozenset({
+    "confirm", "submit", "process", "checkout", "pay", "complete", "review", "place",
+})
+_LOCALE_RE = re.compile(r"^[a-z]{2}([-_][a-z]{2})?$")
+_ID_RE = re.compile(r"^[\w-]*\d[\w-]*$")
+
+# --- Domain helpers ------------------------------------------------------------------
+_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
+_HOST_RE = re.compile(r"^[^\W_](?:[\w-]*[^\W_])?(?:\.[^\W_](?:[\w-]*[^\W_])?)*$")
+
+
+def normalize_allowed_domain(raw: Any) -> str:
+    """Normalise an allow-list entry to a plain hostname or ``"*." + hostname``.
+
+    A scheme, port, path, query or fragment is stripped. Bare ``*``, TLD-only wildcards
+    (``*.com``), mid-label globs (``paypal.*``) and anything else that is not a hostname
+    are rejected, because browser-use treats ``*`` patterns as globs and ignores its
+    blocklist whenever an allow-list is set.
+
+    Raises:
+        ValueError: when the entry is not a plain hostname or ``*.hostname``.
+    """
+    d = str(raw).strip().lower()
+    d = _SCHEME_RE.sub("", d)
+    for sep in "/?#":
+        d = d.split(sep, 1)[0]
+    if "@" in d:
+        raise ValueError(f"allowed domain {raw!r} must not contain credentials")
+    d = re.sub(r":\d+$", "", d).rstrip(".")
+    wildcard = d.startswith("*.")
+    host = d[2:] if wildcard else d
+    if not host or "*" in host or not _HOST_RE.match(host):
+        raise ValueError(
+            f"allowed domain {raw!r} must be a hostname like 'example.com' or '*.example.com'")
+    if wildcard and "." not in host:
+        raise ValueError(f"allowed domain {raw!r} is a top-level wildcard; name a specific site")
+    return ("*." + host) if wildcard else host
+
+
+def host_is_blocked(host: str | None, blocked: Iterable[str]) -> bool:
+    """True when ``host`` is, or is a subdomain of, a blocked domain."""
+    h = (host or "").strip().lower().rstrip(".")
+    return bool(h) and any(h == b or h.endswith("." + b) for b in (x.strip().lower().rstrip(".") for x in blocked) if b)
+
+
+def allowed_matches_blocked(entry: str, blocked: Iterable[str]) -> bool:
+    """True when a normalised allow-list ``entry`` would let browser-use reach a blocked domain.
+
+    browser-use matches ``*.d`` against ``d`` and its subdomains, and a plain ``d`` against
+    ``d`` and ``www.d``. The entry is unsafe when it covers a blocked domain or sits under one.
+    """
+    wildcard = entry.startswith("*.")
+    base = entry[2:] if wildcard else entry
+    for b in blocked:
+        b = b.strip().lower().rstrip(".")
+        if not b:
+            continue
+        if base == b or base.endswith("." + b):
+            return True
+        if wildcard and b.endswith("." + base):
+            return True
+        if not wildcard and b == "www." + base:
+            return True
+    return False
+
 
 _ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u2060-\u2064\ufeff\u00ad\u180e]")
 _SEPARATORS_RE = re.compile(r"[\-_./\\|:;,+*~·•–—]+")
@@ -215,8 +294,22 @@ def is_commerce_label(label: str | None, patterns: Iterable[str] = DEFAULT_COMME
     return any(k in text for k in CJK_COMMERCE_KEYWORDS) and not any(n in text for n in _CJK_NEGATIVE)
 
 
-def is_commerce_url(url: str | None) -> bool:
-    """True when a URL's host or path looks transactional (checkout, payment, order/place, ...)."""
+def _path_tokens(path: str) -> list[str]:
+    path = unicodedata.normalize("NFKC", path or "")
+    return [t for t in re.split(r"[\W_]+", _CAMEL_RE.sub(" ", path).casefold()) if t]
+
+
+def is_commerce_url(url: str | None, broad: bool = False) -> bool:
+    """True when a URL looks transactional.
+
+    By default a URL counts only when it has a transactional shape: a ``checkout.*`` style
+    host, a ``/checkout`` (or ``/place-order``, ...) segment, ``/cart/confirm``,
+    ``/order/place``, or a first segment such as ``/pay``, ``/payment``, ``/billing``,
+    ``/subscribe`` or ``/donate`` that is alone, followed by an id, or followed by an action
+    (``/payment/confirm``). ``/wiki/Payment``, ``/help/payment-methods`` or ``/subscriptions``
+    do not match. With ``broad=True`` any path token such as "payment" or "donation" matches
+    (used for form actions, where the URL is the submit target).
+    """
     if not url or not isinstance(url, str):
         return False
     try:
@@ -226,13 +319,26 @@ def is_commerce_url(url: str | None) -> bool:
     host = (parts.hostname or "").lower()
     if host.split(".")[0] in _URL_HOST_LABELS and host.count(".") >= 2:
         return True
-    path = unicodedata.normalize("NFKC", parts.path or "")
-    tokens = [t for t in re.split(r"[\W_]+", _CAMEL_RE.sub(" ", path).casefold()) if t]
+    tokens = _path_tokens(parts.path)
     if not tokens or any(t in _URL_NEGATIVE_TOKENS for t in tokens):
         return False
-    if any(t in _URL_TOKENS for t in tokens):
+    if any(pair in _URL_BIGRAMS for pair in zip(tokens, tokens[1:], strict=False)):
         return True
-    return any(pair in _URL_BIGRAMS for pair in zip(tokens, tokens[1:], strict=False))
+    if broad:
+        return any(t in _URL_TOKENS for t in tokens)
+    segments = [seg for seg in unicodedata.normalize("NFKC", parts.path or "").split("/") if seg]
+    joined = ["".join(_path_tokens(seg)) for seg in segments]
+    if any(j in _URL_CHECKOUT_SEGMENTS for j in joined):
+        return True
+    if joined and _LOCALE_RE.match(segments[0].casefold()):
+        joined = joined[1:]
+        segments = segments[1:]
+    if not joined or joined[0] not in _URL_ROOT_SEGMENTS:
+        return False
+    rest = joined[1:]
+    if not rest:
+        return True
+    return len(rest) == 1 and (rest[0] in _URL_ROOT_ACTIONS or bool(_ID_RE.match(segments[1].casefold())))
 
 
 def _attrs(node: Any) -> dict[str, str]:
@@ -278,7 +384,7 @@ def form_looks_transactional(node: Any) -> bool:
     if form is None:
         return False
     fa = _attrs(form)
-    if is_commerce_url(fa.get("action")):
+    if is_commerce_url(fa.get("action"), broad=True):
         return True
     return any(is_commerce_label(fa.get(k)) for k in ("id", "name", "aria-label"))
 
@@ -290,7 +396,7 @@ def element_risk(node: Any, page_url: str | None, label: str | None,
         return f"label {label!r} looks like a purchase/commerce action"
     a = _attrs(node)
     for key in ("href", "formaction", "data-href", "data-url"):
-        if is_commerce_url(a.get(key)):
+        if is_commerce_url(a.get(key), broad=key == "formaction"):
             return f"{key} {a.get(key)!r} points to a checkout/payment URL"
     for key in ("name", "id", "aria-label", "title", "value", "data-testid", "data-action"):
         if is_commerce_label(a.get(key), patterns):
@@ -360,6 +466,7 @@ class GuardedTools(Tools):
         approval: ApprovalCallback | None = None,
         blocked_log: list[str] | None = None,
         allow_evaluate: bool = False,
+        blocked_domains: Iterable[str] = SAFETY_DEFAULTS,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -367,6 +474,7 @@ class GuardedTools(Tools):
         self._lba_gate = gate_commerce_clicks
         self._lba_approval = approval
         self._lba_allow_evaluate = allow_evaluate
+        self._lba_blocked = frozenset(SAFETY_DEFAULTS | {str(d).strip().lower().rstrip(".") for d in blocked_domains})
         self.blocked_actions: list[str] = blocked_log if blocked_log is not None else []
 
     async def _lba_url(self, browser_session: Any) -> tuple[str | None, bool]:
@@ -408,6 +516,14 @@ class GuardedTools(Tools):
             f" at {req.url}" if req.url else "")
         self.blocked_actions.append(desc)
         why = f" ({req.reason})" if req.reason else ""
+        if req.action_name in EVAL_ACTIONS:
+            if self._lba_approval is None:
+                msg = ("JavaScript evaluation is disabled in this session (set LBA_ALLOW_EVALUATE=true to allow). "
+                       "Use click, input, scroll or extract instead and continue the task.")
+            else:
+                msg = ("JavaScript evaluation was not approved. "
+                       "Use click, input, scroll or extract instead and continue the task.")
+            return ActionResult(error=msg)
         return ActionResult(
             error=(
                 f"Blocked by safety policy: {desc}{why} looks like a purchase/irreversible action "
@@ -415,7 +531,32 @@ class GuardedTools(Tools):
             )
         )
 
+    def _lba_blocked_navigation(self, action: Any) -> ActionResult | None:
+        """Hard-deny navigation (including new-tab) to a blocked domain; no approval can lift it."""
+        try:
+            dumped = action.model_dump(exclude_unset=True)
+        except Exception:
+            return None
+        for name, params in dumped.items():
+            if name not in NAVIGATE_ACTIONS or not isinstance(params, dict):
+                continue
+            dest = params.get("url")
+            if not isinstance(dest, str):
+                continue
+            try:
+                host = urlsplit(dest.strip()).hostname
+            except ValueError:
+                continue
+            if host_is_blocked(host, self._lba_blocked):
+                self.blocked_actions.append(f"{name} at {dest}")
+                return ActionResult(error=f"Blocked by safety policy: {host} is a blocked domain. "
+                                          "Do not navigate there; choose another site.")
+        return None
+
     async def act(self, action: Any, browser_session: Any, *args: Any, **kwargs: Any) -> ActionResult:
+        denied_nav = self._lba_blocked_navigation(action)
+        if denied_nav is not None:
+            return denied_nav
         if self._lba_gate:
             try:
                 dumped = action.model_dump(exclude_unset=True)

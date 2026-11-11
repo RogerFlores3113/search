@@ -13,6 +13,8 @@ from local_browser_agent.safety import (
     DEFAULT_COMMERCE_PATTERNS,
     GUARDRAIL_PROMPT,
     SAFETY_DEFAULTS,
+    allowed_matches_blocked,
+    normalize_allowed_domain,
 )
 
 
@@ -118,7 +120,8 @@ class SafetyPolicy(BaseModel):
             ``SAFETY_DEFAULTS``, also after ``model_copy(update=...)`` or ``model_construct``.
             Entries are lowercased, stripped and lose a trailing dot.
         allowed_domains: If set, navigation is restricted to these domains. Entries are
-            normalised the same way. Blocked domains win: an allowed domain equal to or
+            reduced to a plain hostname or ``*.hostname`` (scheme, port and path are stripped); bare
+            ``*``, TLD-only wildcards like ``*.com`` and other globs raise ``ValueError``. Blocked domains win: an allowed domain equal to or
             under a blocked domain is dropped; if that leaves nothing, a ``ValueError`` is raised.
         guardrail_prompt: Text appended to the agent's system prompt.
         gate_commerce_clicks: Block clicks whose label matches ``commerce_patterns``
@@ -154,7 +157,7 @@ class SafetyPolicy(BaseModel):
             return None
         if isinstance(v, str):
             v = [v]
-        return [n for d in v if (n := _norm_domain(d))]
+        return [normalize_allowed_domain(d) for d in v if str(d).strip()]
 
     @model_validator(mode="after")
     def _blocked_wins(self) -> SafetyPolicy:
@@ -172,7 +175,7 @@ class SafetyPolicy(BaseModel):
             blocked = d["blocked_domains"]
             kept = [
                 n for x in allowed
-                if (n := _norm_domain(x)) and not any(n == b or n.endswith("." + b) for b in blocked)
+                if not allowed_matches_blocked(n := normalize_allowed_domain(x), blocked)
             ]
             if allowed and not kept:
                 raise ValueError("allowed_domains contains only blocked domains; blocked domains always win")

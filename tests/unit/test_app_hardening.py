@@ -455,3 +455,20 @@ def test_browser_use_prompt_files_exist_in_venv():
 
     prompts = Path(browser_use.__file__).parent / "agent" / "system_prompts"
     assert (prompts / "system_prompt.md").is_file()
+
+
+@pytest.mark.parametrize("browser_kw", [{"cdp_url": "http://127.0.0.1:9222"}, {"executable_path": "/x/chrome"}])
+async def test_preflight_skips_chrome_check_with_cdp_or_executable(monkeypatch, training_dir, browser_kw):
+    from local_browser_agent.app.runner import PreFlightError
+    from local_browser_agent.config import AgentConfig, BrowserConfig
+
+    async def sentinel(cfg):
+        raise PreFlightError("reached provider check")
+
+    runner_mod, inserted = await _run_and_collect(monkeypatch, preflight=sentinel, chrome=False)
+    monkeypatch.setattr(runner_mod, "build_agent_config",
+                        lambda *a, **k: AgentConfig(browser=BrowserConfig(**browser_kw)))
+    with patch("local_browser_agent.runner.build_browser_session") as launch:
+        await runner_mod.run_agent("t", queue=asyncio.Queue(), control_queue=asyncio.Queue())
+        launch.assert_not_called()
+    assert "reached provider check" in inserted["error"]

@@ -8,16 +8,11 @@ from browser_use.browser.session import BrowserSession
 
 from local_browser_agent.chrome import CHROME_NOT_FOUND_MESSAGE, ChromeNotFoundError, find_chrome
 from local_browser_agent.config import BrowserConfig, SafetyPolicy
+from local_browser_agent.safety import allowed_matches_blocked, normalize_allowed_domain
 
 
 def _norm_domain(d: str) -> str:
     return str(d).strip().lower().rstrip(".").removeprefix("*.")
-
-
-def _is_blocked(domain: str, blocked: set[str]) -> bool:
-    """True when ``domain`` is, or is a subdomain of, a blocked domain."""
-    d = _norm_domain(domain)
-    return any(d == b or d.endswith("." + b) for b in blocked)
 
 
 def blocked_patterns(blocked_domains) -> list[str]:
@@ -40,10 +35,16 @@ def build_browser_profile(browser: BrowserConfig, safety: SafetyPolicy) -> Any:
         enable_default_extensions=False,
     )
     if safety.allowed_domains:
-        # An allow-list must not be able to re-enable a blocked site (or its subdomains).
-        allowed = [d for d in safety.allowed_domains if not _is_blocked(d, blocked)]
-        # If everything allowed is blocked, allow nothing rather than everything.
-        kwargs["allowed_domains"] = allowed or ["about:blank"]
+        # browser-use ignores prohibited_domains when allowed_domains is set, so the allow-list
+        # itself must be unable to reach a blocked site. SafetyPolicy already guarantees this;
+        # re-check here because a policy can be built with model_construct or mutated.
+        allowed = list(dict.fromkeys(
+            n for d in safety.allowed_domains
+            if not allowed_matches_blocked(n := normalize_allowed_domain(d), blocked)
+        ))
+        if not allowed:
+            raise ValueError("allowed_domains contains only blocked domains; blocked domains always win")
+        kwargs["allowed_domains"] = allowed
     if browser.cdp_url:
         # Attach to an already-running browser instead of launching one.
         kwargs["cdp_url"] = browser.cdp_url
@@ -52,9 +53,8 @@ def build_browser_profile(browser: BrowserConfig, safety: SafetyPolicy) -> Any:
         path = browser.executable_path or find_chrome(browser.channel)
         if not path:
             raise ChromeNotFoundError(CHROME_NOT_FOUND_MESSAGE)
+        # executable_path and channel are mutually exclusive in BrowserProfile; we always have a path.
         kwargs["executable_path"] = path
-        if browser.channel:
-            kwargs["channel"] = browser.channel
         if browser.user_data_dir:
             kwargs["user_data_dir"] = browser.user_data_dir
     profile = BrowserProfile(**kwargs)

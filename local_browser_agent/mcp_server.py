@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover
 
 from local_browser_agent.config import AgentConfig, SafetyPolicy
 from local_browser_agent.runner import run_task
+from local_browser_agent.safety import normalize_allowed_domain
 
 _locks: dict[int, asyncio.Lock] = {}
 
@@ -73,14 +74,17 @@ def _norm_domain(d: str) -> str:
 def restrict_domains(server: list[str] | None, requested: list[str]) -> list[str]:
     """Combine the server allowlist with a per-call one.
 
-    With no server allowlist the call's list is used as-is. Otherwise only call
-    domains that equal, or are subdomains of, a server domain survive; the call can
-    narrow the server policy but never widen it.
+    Entries go through the same normalisation as ``SafetyPolicy.allowed_domains`` (plain
+    hostname or ``*.hostname``; a bare ``*`` or ``*.com`` raises ``ValueError``). With no
+    server allowlist the normalised call list is used. Otherwise only call domains that equal,
+    or are subdomains of, a server domain survive; the call can narrow the server policy but
+    never widen it.
     """
+    req = [normalize_allowed_domain(r) for r in requested if str(r).strip()]
     if not server:
-        return list(requested)
-    srv = [_norm_domain(s) for s in server if s.strip()]
-    return [r for r in requested if any(_norm_domain(r) == s or _norm_domain(r).endswith("." + s) for s in srv)]
+        return req
+    srv = [_norm_domain(normalize_allowed_domain(s)) for s in server if s.strip()]
+    return [r for r in req if any(_norm_domain(r) == s or _norm_domain(r).endswith("." + s) for s in srv)]
 
 
 def _error(message: str) -> dict:

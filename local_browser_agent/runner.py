@@ -417,6 +417,7 @@ class BrowserAgent:
                         patterns=cfg.safety.commerce_patterns,
                         gate_commerce_clicks=cfg.safety.gate_commerce_clicks,
                         allow_evaluate=cfg.safety.allow_evaluate,
+                        blocked_domains=cfg.safety.blocked_domains,
                         approval=self.approval,
                         blocked_log=blocked,
                     )

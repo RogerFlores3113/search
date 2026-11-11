@@ -67,7 +67,8 @@ async def test_run_agent_constructs_browser_session_with_chrome_channel(monkeypa
     # BrowserProfile must be built with browser settings and prohibited_domains
     assert MockBrowserProfile.called, "BrowserProfile was never instantiated"
     profile_kwargs = MockBrowserProfile.call_args.kwargs
-    assert profile_kwargs.get("channel") == "chrome"
+    assert profile_kwargs.get("channel") is None  # executable_path and channel are mutually exclusive
+    assert profile_kwargs.get("executable_path")
     assert profile_kwargs.get("headless") is False
     assert profile_kwargs.get("keep_alive") is False
     assert profile_kwargs.get("window_size") == {"width": 1280, "height": 800}

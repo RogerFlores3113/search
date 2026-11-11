@@ -165,7 +165,8 @@ def test_lifespan_runs_full_agent_loop_with_mocks(monkeypatch, tmp_path):
     # BrowserProfile was constructed with prohibited_domains and browser settings
     assert MockBrowserProfile.called, "BrowserProfile was never instantiated"
     profile_kwargs = MockBrowserProfile.call_args.kwargs
-    assert profile_kwargs.get("channel") == "chrome"
+    assert profile_kwargs.get("channel") is None  # executable_path and channel are mutually exclusive
+    assert profile_kwargs.get("executable_path")
     assert profile_kwargs.get("headless") is False
     assert profile_kwargs.get("keep_alive") is False
     assert "prohibited_domains" in profile_kwargs

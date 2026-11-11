@@ -25,34 +25,83 @@ class ChromeNotFoundError(PreFlightError):
         super().__init__(message)
 
 
-def windows_chrome_paths() -> list[str]:
-    """Candidate Chrome paths on Windows (env vars may be absent, so use ``.get``)."""
+_MAC_APPS = {
+    "chrome": "Google Chrome.app/Contents/MacOS/Google Chrome",
+    "chrome-beta": "Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
+    "chrome-dev": "Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev",
+    "chrome-canary": "Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+    "msedge": "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "chromium": "Chromium.app/Contents/MacOS/Chromium",
+}
+# Path under a LocalAppData / Program Files base, per channel on Windows.
+_WIN_APPS = {
+    "chrome": ("Google", "Chrome", "Application", "chrome.exe"),
+    "chrome-beta": ("Google", "Chrome Beta", "Application", "chrome.exe"),
+    "chrome-dev": ("Google", "Chrome Dev", "Application", "chrome.exe"),
+    "chrome-canary": ("Google", "Chrome SxS", "Application", "chrome.exe"),
+    "msedge": ("Microsoft", "Edge", "Application", "msedge.exe"),
+}
+_LINUX_CHANNEL_NAMES = {
+    "chrome": _LINUX_NAMES,
+    "chrome-beta": ("google-chrome-beta",),
+    "chrome-dev": ("google-chrome-unstable",),
+    "chrome-canary": (),
+    "msedge": ("microsoft-edge", "microsoft-edge-stable"),
+    "chromium": ("chromium", "chromium-browser"),
+}
+_LINUX_CHANNEL_FIXED = {
+    "chrome": _LINUX_FIXED,
+    "chrome-beta": ("/opt/google/chrome-beta/chrome",),
+    "chrome-dev": ("/opt/google/chrome-unstable/chrome",),
+    "msedge": ("/opt/microsoft/msedge/msedge",),
+}
+
+
+def _channel_key(channel: str | None) -> str:
+    c = (channel or "chrome").strip().lower()
+    if c.startswith("chromium"):
+        return "chromium"
+    return c if c in _MAC_APPS else "chrome"
+
+
+def windows_chrome_paths(channel: str | None = "chrome") -> list[str]:
+    """Candidate browser paths on Windows (env vars may be absent, so use ``.get``)."""
+    rel = _WIN_APPS.get(_channel_key(channel))
+    if rel is None:
+        return []
     out = []
     for env_var in ("LOCALAPPDATA", "PROGRAMFILES", "ProgramFiles(x86)"):
         base = os.environ.get(env_var)
         if base:
-            out.append(os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
+            out.append(os.path.join(base, *rel))
     return out
 
 
 def find_chrome(channel: str | None = "chrome") -> str | None:
-    """Return the path of an installed Chrome (or Chromium on Linux/macOS), else ``None``.
+    """Return the path of an installed browser for ``channel``, else ``None``.
 
-    ``channel`` is accepted for symmetry with ``BrowserConfig.channel``; a ``chromium*``
-    channel prefers Chromium names, anything else prefers Google Chrome.
+    Channels: ``chrome`` (default; on Linux/macOS also falls back to Chromium), ``chrome-beta``,
+    ``chrome-dev``, ``chrome-canary``, ``msedge`` and ``chromium*`` (prefers Chromium, then
+    Chrome). Unknown channels behave like ``chrome``. Never launches or installs anything.
     """
-    prefer_chromium = bool(channel) and str(channel).lower().startswith("chromium")
+    key = _channel_key(channel)
     if sys.platform == "darwin":
-        paths = [CHROMIUM_PATH_MACOS, CHROME_PATH_MACOS] if prefer_chromium else [CHROME_PATH_MACOS, CHROMIUM_PATH_MACOS]
+        names = [_MAC_APPS[key]]
+        if key == "chrome":
+            names.append(_MAC_APPS["chromium"])
+        elif key == "chromium":
+            names.append(_MAC_APPS["chrome"])
+        roots = ("/Applications", os.path.expanduser("~/Applications"))
+        paths = [os.path.join(r, n) for n in names for r in roots]
         return next((p for p in paths if os.path.exists(p)), None)
     if sys.platform == "win32":
-        return next((p for p in windows_chrome_paths() if os.path.exists(p)), None)
-    names = _LINUX_NAMES
-    if prefer_chromium:
-        names = tuple(n for n in _LINUX_NAMES if n.startswith("chromium")) + tuple(
-            n for n in _LINUX_NAMES if not n.startswith("chromium"))
+        return next((p for p in windows_chrome_paths(key) if os.path.exists(p)), None)
+    names = _LINUX_CHANNEL_NAMES.get(key, ())
+    fixed = _LINUX_CHANNEL_FIXED.get(key, ())
+    if key == "chromium":
+        names, fixed = names + _LINUX_NAMES, _LINUX_FIXED
     for name in names:
         found = shutil.which(name)
         if found:
             return found
-    return next((p for p in _LINUX_FIXED if os.path.exists(p)), None)
+    return next((p for p in fixed if os.path.exists(p)), None)

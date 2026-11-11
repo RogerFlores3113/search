@@ -318,7 +318,9 @@ async def run_agent(
 
     async def _preflight() -> None:
         nonlocal stopped_in_preflight
-        if not chrome_is_installed():
+        # With an explicit binary or an attach URL we never look for a system Chrome.
+        own_browser = bool(cfg.browser.cdp_url or cfg.browser.executable_path)
+        if not own_browser and not chrome_is_installed():
             raise PreFlightError(CHROME_MISSING_MESSAGE)
         if stop_event.is_set():
             stopped_in_preflight = True
