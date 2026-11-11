@@ -3,12 +3,20 @@
 Importing this package reads no configuration, touches no disk and uses no network.
 """
 import os
+from importlib import metadata as _metadata
 
-# Must run before anything imports browser_use.
-os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
+# Must run before anything imports browser_use. An inherited ANONYMIZED_TELEMETRY=true is
+# overridden; opt in explicitly with LBA_ALLOW_TELEMETRY=1.
+if os.environ.get("LBA_ALLOW_TELEMETRY") != "1":
+    os.environ["ANONYMIZED_TELEMETRY"] = "false"
 os.environ.setdefault("BROWSER_USE_CLOUD_SYNC", "false")
+# Keep litellm from fetching its model-cost map from GitHub at import time.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
-__version__ = "0.1.0"
+try:
+    __version__ = _metadata.version("local-browser-agent")
+except _metadata.PackageNotFoundError:  # pragma: no cover - running from a bare checkout
+    __version__ = "0.0.0+unknown"
 
 from local_browser_agent.config import AgentConfig, BrowserConfig, ModelConfig, SafetyPolicy  # noqa: E402
 from local_browser_agent.events import (  # noqa: E402

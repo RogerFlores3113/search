@@ -27,10 +27,44 @@ print(result.status, result.final_result)
 
 `run_task_sync(...)` is the same call wrapped in `asyncio.run`. For control (pause/resume/stop), use
 `BrowserAgent(config, sinks=..., approval=...)` and `await agent.run(task, start_url=None)`.
-`AgentConfig.from_env()` builds a config from `LBA_*` variables (`LBA_PROVIDER`, `LBA_MODEL`,
-`LBA_API_KEY`, `LBA_BASE_URL`, `LBA_HEADLESS`, `LBA_CDP_URL`, `LBA_MAX_STEPS`, `LBA_TIMEOUT_S`,
-`LBA_ALLOWED_DOMAINS`, ...); `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are used when the provider matches.
-See `examples/use_as_library.py`.
+`AgentConfig.from_env()` builds a config from the `LBA_*` variables below (`ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY` are used when the provider matches and `LBA_API_KEY` is unset). See `examples/use_as_library.py`.
+
+## Configuration
+
+Configs are pydantic models and are validated when constructed: `ModelConfig` raises `ValueError`
+(a pydantic `ValidationError`) for an unknown provider, `openai_compatible` without `base_url`, or a
+`base_url` that is not an `http(s)` URL. `api_key` is not required at construction (it may come from the
+environment); a missing key is reported by `check_provider` / `build_llm` and names the variables, e.g.
+"Anthropic API key is not set. Set ANTHROPIC_API_KEY or LBA_API_KEY." `AgentConfig` requires
+`1 <= max_steps <= 500` and `timeout_s > 0`. `from_env` errors name the variable and expected type
+(`LBA_MAX_STEPS must be an integer, got 'abc'`).
+
+| variable | type | default | meaning |
+|---|---|---|---|
+| `LBA_PROVIDER` | str | `ollama` | provider name |
+| `LBA_MODEL` | str | provider default | model name |
+| `LBA_API_KEY` | str | unset | API key (falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) |
+| `LBA_BASE_URL` | http(s) URL | unset | endpoint override; required for `openai_compatible` |
+| `LBA_TEMPERATURE` | float | unset | sampling temperature |
+| `LBA_HEADLESS` | bool | `false` | run the browser without a window |
+| `LBA_KEEP_ALIVE` | bool | `false` | leave a launched browser open after the run |
+| `LBA_CHANNEL` | str | `chrome` | installed browser channel |
+| `LBA_EXECUTABLE_PATH` | str | unset | browser binary path |
+| `LBA_CDP_URL` | str | unset | attach to a running browser |
+| `LBA_USER_DATA_DIR` | str | unset | Chrome profile directory |
+| `LBA_MAX_STEPS` | int (1-500) | `25` | maximum agent steps |
+| `LBA_TIMEOUT_S` | float (> 0) | `600` | run timeout in seconds |
+| `LBA_USE_VISION` | bool | `true` | send screenshots to the model |
+| `LBA_USE_JUDGE` | bool | `false` | grade the result with the judge |
+| `LBA_ALLOWED_DOMAINS` | comma list | unset | restrict navigation to these domains |
+| `LBA_BLOCKED_DOMAINS` | comma list | unset | extra blocked domains (added to `SAFETY_DEFAULTS`) |
+| `LBA_ALLOW_TELEMETRY` | `1` | unset | read at import; `1` lets an inherited `ANONYMIZED_TELEMETRY=true` stand |
+
+Booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. By default importing the package forces
+`ANONYMIZED_TELEMETRY=false` (even if inherited as `true`) and sets `LITELLM_LOCAL_MODEL_COST_MAP=True`
+so litellm does not fetch its cost map from GitHub. `local_browser_agent.__version__` reports the installed
+version, and the package ships `py.typed`.
 
 ## Providers
 
@@ -57,7 +91,10 @@ config = AgentConfig(model=ModelConfig(provider="my-gateway", api_key="..."))
 `register_provider(name, factory, default_model=None)`; the factory takes a `ModelConfig` and returns a
 browser-use chat model. An unknown provider raises `ValueError` listing the known ones. API keys are
 `SecretStr` and never appear in `repr`, logs or `RunResult`. `await check_provider(model_config)` is an
-optional pre-flight check (raises `PreFlightError`).
+optional pre-flight check (raises `PreFlightError`). For `ollama` it lists local models; for `anthropic` and
+`openai` it makes a small live API call (list models) to validate the key, so it needs network access and
+the key must be valid; other providers are not checked. A custom provider without a model reports its own
+name as the model name.
 
 ## Browser options
 
@@ -73,8 +110,8 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 
 `SafetyPolicy(blocked_domains, allowed_domains=None, guardrail_prompt=GUARDRAIL_PROMPT, gate_commerce_clicks=True, commerce_patterns=[...])`
 
-- `blocked_domains` always includes `SAFETY_DEFAULTS` (banks, payments, government, medical, password managers); extra entries are added, none can be removed.
-- `allowed_domains` restricts navigation to those domains.
+- `blocked_domains` always includes `SAFETY_DEFAULTS` (banks, payments, government, medical, password managers); extra entries are added, none can be removed (also via `model_copy(update=...)`). Entries are lowercased with trailing dots stripped.
+- `allowed_domains` restricts navigation to those domains. Blocked domains win: an allowed domain equal to or under a blocked one is dropped, and a list that is left empty raises `ValueError`.
 - The guardrail prompt is appended to the system prompt.
 - **Commerce gate:** click actions whose target label matches a commerce pattern ("Buy now", "Checkout", "Place order", "Pay", ...) are blocked in the tool layer, independent of the model. If you pass `approval=async (ActionRequest) -> bool`, it is asked first (`ActionRequest` has `action_name, params, element_label, url`); returning `True` lets the click through. Without a callback the click is blocked, the agent gets an error, and the attempt is listed in `RunResult.blocked_actions`.
 - The element label is read from the accessibility name / aria-label / text of the clicked element via `browser_session.get_element_by_index`; coordinate clicks and unlabeled elements cannot be gated.
