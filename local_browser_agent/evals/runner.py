@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .server import FIXTURE_HOST, FixtureServer
-from .tasks import EvalTask, get_tasks, taskset_hash
+from .tasks import CHECKER_VERSION, EvalTask, get_tasks, taskset_hash
 
 SCHEMA_VERSION = 1
 
@@ -26,6 +26,15 @@ def _lazy_run_task() -> RunFn:
     from local_browser_agent import run_task  # noqa: PLC0415
 
     return run_task
+
+
+#: ``error_kind`` values that mean the environment, not the model, failed.
+INFRA_ERROR_KINDS = frozenset({"chrome_missing", "preflight", "cdp_connect", "config"})
+
+
+def is_infra_error(status: str | None, error_kind: str | None) -> bool:
+    """A run that says nothing about the model: errored, timed out, or failed to set up."""
+    return status in ("error", "timeout") or error_kind in INFRA_ERROR_KINDS
 
 
 @dataclass
@@ -45,6 +54,11 @@ class RunRecord:
     answer: str
     blocked_actions: int = 0
     errors: list[str] = field(default_factory=list)
+    error_kind: str | None = None
+
+    @property
+    def infra_error(self) -> bool:
+        return is_infra_error(self.status, self.error_kind)
 
 
 @dataclass
@@ -112,6 +126,7 @@ class SuiteResult:
                 "mean_duration_s": sum(r.duration_s for r in rs) / n,
                 "cost_usd": sum(costs) if costs else None,
                 "safety_violations": sum(r.safety_violation for r in rs),
+                "infra_errors": sum(r.infra_error for r in rs),
             }
         return out
 
@@ -204,6 +219,7 @@ def build_meta(
         "git_sha": _git_sha(),
         "lba_version": _lba_version(),
         "taskset_hash": taskset_hash(tasks),
+        "checker_version": CHECKER_VERSION,
         "task_ids": [t.id for t in tasks],
         "max_steps": {t.id: t.max_steps for t in tasks},
         "timeout_s": timeout_s,
@@ -293,7 +309,7 @@ async def _run_one(
     timeout_s: float | None = None,
 ) -> RunRecord:
     status, steps, duration, cost = "error", 0, 0.0, None
-    answer, errors, blocked = "", [], 0
+    answer, errors, blocked, error_kind = "", [], 0, None
     try:
         cfg = _config_for_run(config, task, FIXTURE_HOST, timeout_s)
         coro = run(instruction, cfg, start_url=task.start_url(server.base_url))
@@ -306,12 +322,15 @@ async def _run_one(
         answer = getattr(res, "final_result", None) or ""
         errors = [str(e) for e in (getattr(res, "errors", None) or [])]
         blocked = len(getattr(res, "blocked_actions", None) or [])
+        error_kind = getattr(res, "error_kind", None)
     except asyncio.CancelledError:
         raise
     except asyncio.TimeoutError:
         status, errors = "timeout", [f"run exceeded the {timeout_s:g}s timeout and was stopped"]
+        error_kind = "timeout"
     except Exception as exc:  # one bad task must never stop the suite
         errors = [f"{type(exc).__name__}: {exc}"]
+        error_kind = getattr(exc, "error_kind", None) or "agent_error"
 
     try:
         check = task.check(server.state, answer)
@@ -338,4 +357,5 @@ async def _run_one(
         answer=answer,
         blocked_actions=blocked,
         errors=errors,
+        error_kind=error_kind,
     )
