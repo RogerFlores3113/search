@@ -431,7 +431,10 @@ def serve(log_level: str = "warning", *, third_party: str | None = None) -> int:
     try:
         AgentConfig.from_env()
     except Exception as e:
-        print(f"lba mcp: error: invalid configuration:\n{format_validation_error(e)}", file=sys.stderr)
+        from local_browser_agent.cli import _config_problems
+
+        for problem in _config_problems(e):
+            print(f"lba mcp: error: invalid configuration: {problem}", file=sys.stderr)
         return 2
     try:
         server = build_server()
