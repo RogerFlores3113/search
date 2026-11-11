@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 import os
+import tempfile
+
 import pytest
+
+# Module-level data paths (db.DB_PATH, training_sink.TRAINING_FILE) are computed at import
+# time: point them at a throwaway directory so the suite never touches <repo>/data.
+os.environ.setdefault("LBA_DATA_DIR", tempfile.mkdtemp(prefix="lba-test-data-"))
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +25,14 @@ def _app_test_defaults(monkeypatch):
     monkeypatch.setattr(main_mod, "_REQUIRE_TOKEN", False)
     monkeypatch.setattr(runner_mod, "chrome_is_installed", lambda: True)
     monkeypatch.setattr(main_mod, "chrome_is_installed", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_history_db(tmp_path, monkeypatch):
+    """Each test gets its own history.db (the data dir is no longer cwd-relative)."""
+    import local_browser_agent.app.db as db_mod
+
+    monkeypatch.setattr(db_mod, "DB_PATH", tmp_path / "history.db")
 
 
 @pytest.fixture(autouse=True)

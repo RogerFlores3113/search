@@ -68,13 +68,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "task", nargs="*",
-        help="optional task to run immediately when the server starts (dev convenience); "
-             "put -- before a task that starts with a dash",
+        help="optional task for the first page load (dev convenience). If you have already "
+             "accepted the safety notice in that browser it starts running at once; otherwise "
+             "it is only pre-filled in the task box and you press Run after accepting. "
+             "Put -- before a task that starts with a dash",
     )
     parser.add_argument("--host", default="127.0.0.1",
                         help="interface to bind (loopback only; default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8080, help="port to listen on (default: 8080)")
-    parser.add_argument("--no-open", action="store_true",
+    parser.add_argument("--no-open", "--no-browser", action="store_true",
                         help="do not open the UI in your default browser")
     parser.add_argument("--smoke", action="store_true",
                         help="check that every module, template, static file and browser-use "
@@ -175,8 +177,8 @@ def main(argv: list[str] | None = None) -> int:
     """Launch the web UI (default 127.0.0.1:8080).
 
     With no task: starts the server idle - open the printed URL and start runs from the
-    UI. With a task string: pre-queues that task so the agent starts immediately on server
-    boot (dev-mode convenience, backward compatible).
+    UI. With a task string: the first page load starts it (through the same tracked path as
+    POST /run) when that browser has accepted the disclaimer, else pre-fills the task box.
 
     Frozen-app behavior:
       - redirect_data_paths() moves DB and JSONL writes to user_data_dir
