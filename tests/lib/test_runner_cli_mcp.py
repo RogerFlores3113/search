@@ -332,7 +332,8 @@ def test_mcp_registration_and_busy(monkeypatch):
             "a", start_url="https://s.com", max_steps=4, allowed_domains=["s.com"]))
         await asyncio.sleep(0.05)
         busy = await mcp_server.run_browser_task("b")
-        assert busy.isError and busy.structuredContent["status"] == "error" and "busy" in busy.structuredContent["error"]
+        assert busy.isError and busy.structuredContent["status"] == "error" and "busy" in busy.structuredContent["errors"][0]
+        assert busy.structuredContent["error_kind"] == "busy" and "steps" in busy.structuredContent
         gate.set()
         return (await first).structuredContent
 
@@ -340,7 +341,7 @@ def test_mcp_registration_and_busy(monkeypatch):
     assert res["status"] == "success"
     assert seen["cfg"].max_steps == 4 and seen["cfg"].safety.allowed_domains == ["s.com"]
     assert seen["kw"]["start_url"] == "https://s.com"
-    cfg = mcp_server.get_agent_config()
+    cfg = mcp_server.get_agent_config().structuredContent
     assert cfg["model"]["api_key"] == "set" and "sk-hidden" not in json.dumps(cfg)
 
 

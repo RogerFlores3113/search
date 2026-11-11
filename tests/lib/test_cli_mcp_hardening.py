@@ -94,8 +94,21 @@ def test_restrict_domains():
     from local_browser_agent.mcp_server import restrict_domains
 
     assert restrict_domains(None, ["a.com"]) == ["a.com"]
-    assert restrict_domains(["a.com"], ["a.com", "x.a.com", "evil.com", "nota.com"]) == ["a.com", "x.a.com"]
+    assert restrict_domains(["*.a.com"], ["a.com", "x.a.com", "*.x.a.com", "evil.com", "nota.com"]) == [
+        "a.com", "x.a.com", "*.x.a.com"]
+    assert restrict_domains(["a.com"], ["a.com", "www.a.com", "x.a.com", "evil.com", "nota.com"]) == [
+        "a.com", "www.a.com"]
     assert restrict_domains(["a.com"], ["evil.com"]) == []
+
+
+def test_restrict_domains_wildcard_call_does_not_widen_plain_server():
+    from local_browser_agent.mcp_server import restrict_domains
+
+    # browser-use: a plain "a.com" does not cover arbitrary subdomains, so "*.a.com" would widen it
+    assert restrict_domains(["a.com"], ["*.a.com"]) == []
+    assert restrict_domains(["a.com"], ["*.a.com", "a.com"]) == ["a.com"]
+    assert restrict_domains(["*.a.com"], ["*.a.com"]) == ["*.a.com"]
+    assert restrict_domains(["*.x.a.com"], ["*.a.com"]) == []
 
 
 def _fake_run(monkeypatch, seen):
@@ -112,7 +125,7 @@ def test_mcp_server_allowlist_not_widened(monkeypatch):
     pytest.importorskip("mcp.server.fastmcp")
     from local_browser_agent import mcp_server
 
-    monkeypatch.setenv("LBA_ALLOWED_DOMAINS", "a.com")
+    monkeypatch.setenv("LBA_ALLOWED_DOMAINS", "*.a.com")
     seen = {}
     _fake_run(monkeypatch, seen)
     res = asyncio.run(mcp_server.run_browser_task("t", allowed_domains=["evil.com"]))
@@ -133,21 +146,106 @@ def test_mcp_no_server_allowlist_uses_call(monkeypatch):
     assert seen["cfg"].safety.allowed_domains == ["x.com"]
 
 
-def test_mcp_rejects_bad_bounds():
-    pytest.importorskip("mcp.server.fastmcp")
-    from mcp.server.fastmcp.exceptions import ToolError
+_RUN_KEYS = {"run_id", "task", "status", "success", "final_result", "steps", "step_count", "duration_s",
+             "cost_usd", "errors", "urls_visited", "blocked_actions", "error_kind"}
 
+
+def _assert_error_envelope(res, kind, text=None):
+    assert res.isError is True
+    sc = res.structuredContent
+    assert set(sc) >= _RUN_KEYS and sc["status"] == "error" and sc["success"] is None
+    assert sc["error_kind"] == kind and sc["errors"] and sc["steps"] == []
+    assert json.loads(res.content[0].text) == sc
+    if text:
+        assert text in sc["errors"][0]
+
+
+def test_mcp_every_failure_has_the_runresult_envelope(monkeypatch):
+    pytest.importorskip("mcp.server.fastmcp")
+    from local_browser_agent import mcp_server
+
+    monkeypatch.delenv("LBA_ALLOWED_DOMAINS", raising=False)
+    server = mcp_server.build_server()
+
+    def call(args):
+        return asyncio.run(server.call_tool("run_browser_task", args))
+
+    # schema violations go through FastMCP's own validation and are wrapped
+    for bad, text in (({"max_steps": 0}, "max_steps"), ({"max_steps": 10_000}, "max_steps"),
+                      ({"allowed_domains": []}, "allowed_domains")):
+        _assert_error_envelope(call({"task": "t", **bad}), "invalid_argument", text)
+    _assert_error_envelope(call({}), "invalid_argument", "task")
+    # handler-level rejections
+    for args in ({"task": "   "},
+                 {"task": "t", "start_url": "file:///etc/passwd"},
+                 {"task": "t", "start_url": "javascript:alert(1)"},
+                 {"task": "t", "start_url": "https://"}):
+        _assert_error_envelope(call(args), "invalid_argument")
+    monkeypatch.setenv("LBA_MAX_STEPS", "0")
+    res = call({"task": "t"})
+    _assert_error_envelope(res, "config", "max_steps")
+    assert "errors.pydantic.dev" not in res.structuredContent["errors"][0]
+    assert "validation error for" not in res.structuredContent["errors"][0]
+
+
+def test_mcp_empty_intersection_is_enveloped(monkeypatch):
+    pytest.importorskip("mcp.server.fastmcp")
+    from local_browser_agent import mcp_server
+
+    monkeypatch.setenv("LBA_ALLOWED_DOMAINS", "a.com")
+    seen = {}
+    _fake_run(monkeypatch, seen)
+    res = asyncio.run(mcp_server.run_browser_task("t", allowed_domains=["*.a.com"]))
+    _assert_error_envelope(res, "invalid_argument", "LBA_ALLOWED_DOMAINS")
+    assert "cfg" not in seen
+
+
+def test_mcp_schemas_instructions_and_structured_config(monkeypatch):
+    pytest.importorskip("mcp.server.fastmcp")
     from local_browser_agent import mcp_server
 
     server = mcp_server.build_server()
-    for bad in ({"max_steps": 0}, {"max_steps": 10_000}, {"allowed_domains": []}):
-        with pytest.raises(ToolError):
-            asyncio.run(server.call_tool("run_browser_task", {"task": "t", **bad}))
-    tool = next(t for t in asyncio.run(server.list_tools()) if t.name == "run_browser_task")
-    assert tool.inputSchema["properties"]["max_steps"]["anyOf"][0]["maximum"] == 200
-    assert "only one task" in tool.description.lower()
-    direct = asyncio.run(mcp_server._run("t", None, None, []))
-    assert direct["status"] == "error"
+    tools = {t.name: t for t in asyncio.run(server.list_tools())}
+    run = tools["run_browser_task"]
+    assert run.inputSchema["properties"]["max_steps"]["anyOf"][0]["maximum"] == 200
+    assert "only one task" in run.description.lower()
+    assert set(run.outputSchema["properties"]) == _RUN_KEYS
+    assert tools["get_agent_config"].outputSchema is not None
+    assert "LBA_ALLOWED_DOMAINS" in server.instructions and "ONE task" in server.instructions
+
+    monkeypatch.setenv("LBA_PROVIDER", "openai")
+    monkeypatch.setenv("LBA_API_KEY", "sk-hidden")
+    res = asyncio.run(server.call_tool("get_agent_config", {}))
+    assert res.isError is False and res.structuredContent["model"]["api_key"] == "set"
+    monkeypatch.setenv("LBA_MAX_STEPS", "abc")
+    res = asyncio.run(server.call_tool("get_agent_config", {}))
+    assert res.isError is True and res.structuredContent["error_kind"] == "config"
+
+
+def test_mcp_start_url_validated_before_runner(monkeypatch):
+    pytest.importorskip("mcp.server.fastmcp")
+    from local_browser_agent import mcp_server
+
+    seen = {}
+    _fake_run(monkeypatch, seen)
+    res = asyncio.run(mcp_server.run_browser_task("t", start_url="ftp://x.com"))
+    _assert_error_envelope(res, "invalid_argument", "start_url")
+    assert "cfg" not in seen
+    asyncio.run(mcp_server.run_browser_task("t", start_url="https://x.com/a"))
+    assert "cfg" in seen
+
+
+def test_serve_exits_2_on_bad_config(monkeypatch, capsys):
+    from local_browser_agent import mcp_server
+
+    monkeypatch.setenv("LBA_MAX_STEPS", "0")
+    monkeypatch.setattr(mcp_server, "build_server", lambda: pytest.fail("must not start"))
+    assert mcp_server.serve() == 2
+    err = capsys.readouterr().err
+    assert "invalid configuration" in err and "max_steps" in err and "errors.pydantic.dev" not in err
+    monkeypatch.delenv("LBA_MAX_STEPS")
+    monkeypatch.setenv("LBA_PROVIDER", "nope")
+    assert cli.main(["mcp"]) == 2
 
 
 def test_public_config_redacts():

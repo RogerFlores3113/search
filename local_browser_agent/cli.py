@@ -23,8 +23,8 @@ def _version() -> str:
 
 
 def _add_log_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("-q", "--quiet", action="store_true", help="only log errors to stderr")
-    p.add_argument("--log-level", choices=LEVELS, help="stderr log level (default: info; warning with --json or for mcp)")
+    p.add_argument("-q", "--quiet", action="store_true", help="errors only on stderr; nothing from browser-use")
+    p.add_argument("--log-level", choices=LEVELS, help="stderr log level (default: info; warning for mcp; errors only with --json)")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -56,39 +56,53 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _valid_cdp_url(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url.strip())
+        return parts.scheme.lower() in ("http", "https", "ws", "wss") and bool(parts.hostname)
+    except ValueError:
+        return False
+
+
 def _config_from_args(args: argparse.Namespace):
-    from local_browser_agent.config import AgentConfig, SafetyPolicy
+    """Env config plus flag overrides, validated as a whole (flags can never bypass validation)."""
+    import os
 
-    cfg = AgentConfig.from_env()
+    from local_browser_agent.config import AgentConfig
+
+    if args.cdp_url is not None and not _valid_cdp_url(args.cdp_url):
+        raise ValueError("invalid --cdp-url: expected an http(s):// or ws(s):// URL with a host, "
+                         f"got {args.cdp_url!r}")
+    data = AgentConfig.from_env().model_dump()
     if args.provider:
-        cfg.model.provider = args.provider.lower()
+        data["model"]["provider"] = args.provider.lower()
         # re-resolve provider-specific key fallback when provider was overridden
-        if cfg.model.api_key is None:
-            import os
-
-            key = os.environ.get(f"{cfg.model.provider.upper()}_API_KEY") if cfg.model.provider in ("anthropic", "openai") else None
+        provider = data["model"]["provider"]
+        if data["model"].get("api_key") is None and provider in ("anthropic", "openai"):
+            key = os.environ.get(f"{provider.upper()}_API_KEY")
             if key:
-                from pydantic import SecretStr
-
-                cfg.model.api_key = SecretStr(key)
+                data["model"]["api_key"] = key
     if args.model:
-        cfg.model.model = args.model
+        data["model"]["model"] = args.model
     if args.base_url:
-        cfg.model.base_url = args.base_url
+        data["model"]["base_url"] = args.base_url
     if args.headless:
-        cfg.browser.headless = True
-    if args.cdp_url:
-        cfg.browser.cdp_url = args.cdp_url
-    if args.max_steps:
-        cfg.max_steps = args.max_steps
-    if args.timeout:
-        cfg.timeout_s = args.timeout
+        data["browser"]["headless"] = True
+    if args.cdp_url is not None:
+        data["browser"]["cdp_url"] = args.cdp_url.strip()
+    if args.max_steps is not None:
+        data["max_steps"] = args.max_steps
+    if args.timeout is not None:
+        data["timeout_s"] = args.timeout
     if args.allowed_domains:
-        cfg.safety = SafetyPolicy(**{**cfg.safety.model_dump(), "allowed_domains": args.allowed_domains})
-    return cfg
+        data["safety"]["allowed_domains"] = args.allowed_domains
+    return AgentConfig.model_validate(data)
 
 
 def _human_summary(result) -> str:
+    """Stdout summary for humans; error messages go to stderr (see ``_cmd_run``)."""
     lines = [
         f"status:   {result.status}",
         f"steps:    {result.step_count}  ({result.duration_s:.1f}s)",
@@ -99,33 +113,55 @@ def _human_summary(result) -> str:
         lines.append(f"result:   {result.final_result}")
     for b in result.blocked_actions:
         lines.append(f"blocked:  {b}")
-    for e in result.errors:
-        lines.append(f"error:    {e}")
     return "\n".join(lines)
 
 
-def _log_level(args: argparse.Namespace, default: str) -> str:
+def _log_settings(args: argparse.Namespace, default: str) -> tuple[str, str | None]:
+    """(our level, third-party level). ``-q``: errors only from our logger and nothing from browser-use.
+    ``--json`` behaves the same by default (the RunResult carries the errors). ``--log-level`` always
+    wins and applies to everything."""
     if args.log_level:
-        return args.log_level
-    return "error" if args.quiet else default
+        return args.log_level, None
+    if args.quiet or getattr(args, "json", False):
+        return "error", "off"
+    return default, None
 
 
-def _error_result(task: str, message: str, status: str = "error") -> dict:
+def _configure_logging(args: argparse.Namespace, default: str) -> None:
+    from local_browser_agent.log import configure_logging
+
+    level, third_party = _log_settings(args, default)
+    configure_logging(level, third_party=third_party)
+
+
+def _error_result(task: str, message: str, status: str = "error", run_id: str | None = None,
+                  error_kind: str | None = None) -> dict:
     from local_browser_agent.runner import RunResult
 
-    return RunResult(run_id=str(uuid.uuid4()), task=task, status=status, success=None, errors=[message]).to_dict()
+    result = RunResult(run_id=run_id or str(uuid.uuid4()), task=task, status=status, success=None,
+                       errors=[message]).to_dict()
+    result["error_kind"] = error_kind
+    return result
 
 
-def _fail(args: argparse.Namespace, message: str, code: int, *, status: str = "error", trace=None) -> int:
+def _fail(args: argparse.Namespace, message: str, code: int, *, status: str = "error", trace=None,
+          error_kind: str | None = None) -> int:
     """Report a failure that happened before/outside a run: text on stderr, JSON on stdout."""
+    run_id = str(uuid.uuid4())
     print(f"lba: {message}", file=sys.stderr)
     if getattr(args, "json", False):
-        print(json.dumps(_error_result(args.task, message, status), indent=2))
+        print(json.dumps(_error_result(args.task, message, status, run_id, error_kind), indent=2))
     if trace is not None and trace.events_written == 0:
         from local_browser_agent.events import DoneEvent, ErrorEvent, StateEvent
 
+        trace.run_id = run_id  # same id as the RunResult printed above
+
         async def write():
             for ev in (ErrorEvent(message=message), StateEvent(state="error"), DoneEvent()):
+                try:
+                    ev.run_id = run_id  # type: ignore[attr-defined]
+                except Exception:  # pragma: no cover
+                    pass
                 await trace(ev)
 
         try:
@@ -135,19 +171,36 @@ def _fail(args: argparse.Namespace, message: str, code: int, *, status: str = "e
     return code
 
 
-def _cmd_run(args: argparse.Namespace) -> int:
-    from local_browser_agent.log import configure_logging
+def _open_trace(path: str):
+    """Create the trace sink after proving the path is writable (raises OSError otherwise)."""
+    from pathlib import Path
 
-    configure_logging(_log_level(args, "warning" if args.json else "info"))
+    from local_browser_agent.sinks import JsonlTraceSink
+
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "a", encoding="utf-8"):
+        pass
+    return JsonlTraceSink(p)
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    from local_browser_agent.log import format_validation_error
+
+    _configure_logging(args, "info")
     from local_browser_agent import run_task
     from local_browser_agent.models import PreFlightError, check_provider
-    from local_browser_agent.sinks import JsonlTraceSink
 
     try:
         cfg = _config_from_args(args)
     except Exception as e:
-        return _fail(args, f"invalid configuration: {e}", 2)
-    trace = JsonlTraceSink(args.trace) if args.trace else None
+        return _fail(args, f"invalid configuration:\n{format_validation_error(e)}", 2, error_kind="config")
+    trace = None
+    if args.trace:
+        try:
+            trace = _open_trace(args.trace)
+        except OSError as e:
+            return _fail(args, f"cannot write --trace {args.trace!r}: {e.strerror or e}", 2, error_kind="config")
     sinks = [trace] if trace else []
 
     async def go():
@@ -158,10 +211,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
     try:
         result = asyncio.run(go())
     except PreFlightError as e:
-        return _fail(args, str(e), 1, trace=trace)
+        return _fail(args, str(e), 1, trace=trace, error_kind="preflight")
     except KeyboardInterrupt:
-        return _fail(args, "interrupted", 130, status="stopped", trace=trace)
-    print(json.dumps(result.to_dict(), indent=2) if args.json else _human_summary(result))
+        return _fail(args, "interrupted", 130, status="stopped", trace=trace, error_kind="stopped")
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        print(_human_summary(result))
+        for e in result.errors:
+            print(f"lba: error: {e}", file=sys.stderr)
     return 0 if result.status == "success" else 1
 
 
@@ -186,8 +244,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "mcp":
         from local_browser_agent.mcp_server import serve
 
-        serve(_log_level(args, "warning"))
-        return 0
+        level, third_party = _log_settings(args, "warning")
+        return serve(level, third_party=third_party)
     if args.command == "eval":
         return _cmd_eval(args.rest or [])
     return 2
