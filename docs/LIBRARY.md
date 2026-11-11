@@ -183,6 +183,9 @@ captcha, recaptcha, hcaptcha, cloudflare, bot detection, access denied, verify y
 | `stopped` | `stop()` was called (`status="stopped"`) |
 | `start_url_blocked` | `start_url` not http(s), blocked, outside `allowed_domains` or local |
 | `agent_error` | any other error during the run |
+| `invalid_argument` | MCP only: a tool argument was rejected before the run started |
+| `busy` | MCP only: another task is already running on this server |
+| `internal` | MCP only: unexpected server error outside the run |
 
 `ChromeNotFoundError` and `PreFlightError` are exported from `local_browser_agent`.
 

@@ -66,6 +66,8 @@ _LABEL_TAG_FALLBACK = frozenset({"button", "a", "input", "textarea", "select"})
 #   agent_error        any other error during the run
 ERROR_KINDS = ("chrome_missing", "preflight", "config", "cdp_connect", "timeout", "captcha",
                "stopped", "start_url_blocked", "agent_error")
+# Extra kinds only the MCP server produces (argument rejected, server busy, unexpected error).
+MCP_ERROR_KINDS = ("invalid_argument", "busy", "internal")
 
 
 @dataclass
