@@ -55,7 +55,7 @@ async def test_click_on_deep_child_denied_and_far_ancestor_ignored():
     t = GuardedTools()
     assert await t._lba_blocked_click(_Action("click", index=1), _Session(_n("img", parent=chain))) is not None
     far = _n("a", href="https://paypal.com/x")
-    for _ in range(12):
+    for _ in range(20):
         far = _n("div", parent=far)
     assert await t._lba_blocked_click(_Action("click", index=1), _Session(far)) is None
 
