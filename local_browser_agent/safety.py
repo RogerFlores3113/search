@@ -142,7 +142,7 @@ _URL_NEGATIVE_TOKENS = frozenset({
 })
 _URL_HOST_LABELS = frozenset({"checkout", "pay", "payments", "billing", "donate"})
 
-_ZERO_WIDTH_RE = re.compile(r"[​-‏⁠-⁤﻿­᠎]")
+_ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u2060-\u2064\ufeff\u00ad\u180e]")
 _SEPARATORS_RE = re.compile(r"[\-_./\\|:;,+*~·•–—]+")
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _SUBMIT_TYPES = frozenset({"submit", "image", "button"})
