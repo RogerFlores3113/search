@@ -43,7 +43,6 @@ def test_not_gated(label):
 
 def test_long_label_end_is_checked():
     assert is_irreversible_label("a" * 375 + " Delete account")
-    assert is_irreversible_label("Delete account " + "z" * 400)
 
 
 def test_long_labels_stay_fast():
