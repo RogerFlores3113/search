@@ -119,4 +119,4 @@ print(result.status, result.final_result, result.errors)
 
 See [docs/LIBRARY.md](docs/LIBRARY.md) for install, providers, safety policy, sinks, CLI exit codes and MCP setup, and [docs/EVALS.md](docs/EVALS.md) for the evaluation suite.
 
-Exit codes and output contract: docs/CLI.md
+- [CLI reference](docs/CLI.md): exit codes, stdout/stderr contract and JSON output of `lba run`, `lba eval` and `lba mcp`.
