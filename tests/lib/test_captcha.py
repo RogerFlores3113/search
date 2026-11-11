@@ -93,7 +93,10 @@ def patched(monkeypatch):
 
 def test_looks_like_captcha():
     assert looks_like_captcha("Please solve the CAPTCHA to continue")
-    assert looks_like_captcha("Access Denied by Cloudflare")
+    assert looks_like_captcha("Cloudflare Turnstile: verify you are human")
+    assert not looks_like_captcha("Access Denied by Cloudflare")
+    assert not looks_like_captcha("TLS challenge failed")
+    assert not looks_like_captcha("HTTP 403 access denied")
     assert not looks_like_captcha("element not found")
     assert not looks_like_captcha(None)
 

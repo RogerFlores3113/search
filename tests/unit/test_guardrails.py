@@ -42,10 +42,10 @@ def test_captcha_keywords_set_is_frozenset(monkeypatch_env):
 
 
 def test_captcha_keywords_contains_core_terms(monkeypatch_env):
-    """CAPTCHA_KEYWORDS must contain 'captcha', 'recaptcha', 'cloudflare'."""
+    """CAPTCHA_KEYWORDS must contain captcha, recaptcha, turnstile."""
     from local_browser_agent.captcha import CAPTCHA_KEYWORDS
 
-    for term in ("captcha", "recaptcha", "cloudflare"):
+    for term in ("captcha", "recaptcha", "turnstile"):
         assert term in CAPTCHA_KEYWORDS, f"Expected {term!r} in CAPTCHA_KEYWORDS"
 
 
