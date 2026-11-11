@@ -84,7 +84,7 @@ window_width=1280, window_height=800, llm_screenshot_width=1024, llm_screenshot_
 A sink is any `async def sink(event)`. Events: `StateEvent, ModelInfoEvent, ThoughtEvent, ActionDetailEvent, ProgressEvent, TokenEvent, ScreenshotEvent, SummaryEvent, ErrorEvent, DoneEvent, HumanNeededEvent, StepCompletedEvent`. A failing sink never crashes a run.
 
 - `QueueSink(data_q, control_q=None)`: lossy `put_nowait` for data events; lifecycle events (state, model_info, summary, error_msg, done) block up to 2s.
-- `JsonlTraceSink(path, include_screenshots=False)`: one JSON line per event.
+- `JsonlTraceSink(path, include_screenshots=False)`: one JSON line per event, appended to the file (an existing file is not truncated); each record has `ts` (UTC ISO 8601) and `run_id` (uuid4 per sink).
 - `CallbackSink(fn)`: sync or async function.
 
 The screenshot loop only runs when at least one sink wants screenshots (a trace-only sink does not).
@@ -114,20 +114,64 @@ captcha, recaptcha, hcaptcha, cloudflare, bot detection, access denied, verify y
 ## CLI
 
 ```bash
+uv run lba --version
 uv run lba run "Open example.com and read the heading" --provider anthropic --headless --max-steps 10 --json --trace run.jsonl
 uv run lba run "..." --cdp-url http://127.0.0.1:9222 --start-url https://example.com
-uv run lba mcp          # stdio MCP server
+uv run lba run "..." -q                 # only errors on stderr
+uv run lba run "..." --log-level debug  # debug | info | warning | error
+uv run lba mcp          # stdio MCP server (quiet stderr by default; -q / --log-level also work)
 uv run lba eval ...     # evaluation suite (when installed)
 ```
 
-`lba run` exits 0 on success, 1 on failed/error/timeout. It runs a provider pre-flight check unless `--no-preflight`.
+**Exit codes:** `0` success; `1` the run failed, errored, timed out, or the pre-flight check failed; `2` usage or
+configuration error (invalid flags / `LBA_*` values, or `lba eval` unavailable); `130` interrupted (Ctrl-C).
+
+**Output streams:** with `--json`, stdout is always one JSON document shaped like `RunResult`, including when
+pre-flight fails (then `status` is `"error"`, `success` is `null`, `errors` holds the message, `steps` is empty);
+the human-readable message goes to stderr. Without `--json`, stdout holds the human summary and diagnostics go
+to stderr. Logs always go to stderr; `--json` defaults to `warning` level, otherwise `info`; ANSI colour is
+stripped when stderr is not a terminal.
+
+**Pre-flight:** unless `--no-preflight`, `lba run` checks the provider first. For `ollama` it queries the local
+server; for `anthropic` and `openai` it makes a **live API call** (listing models) with your key, so it needs
+network access and can fail on a bad key or an outage. Chrome-not-found is also reported as a pre-flight error.
+
+**Trace (`--trace PATH`):** `JsonlTraceSink` *appends* to an existing file (it never truncates), one JSON object
+per event. Each record has `ts` (ISO 8601, UTC) and `run_id` (a uuid4 per sink, i.e. per CLI invocation), so
+several runs can share a file. A pre-flight failure still writes `error_msg`, `state: error` and `done` events.
 
 ## MCP server
 
-Tools: `run_browser_task(task, start_url?, max_steps?, allowed_domains?)` (one run at a time; a concurrent call returns an error dict) and `get_agent_config()` (no secrets). Configuration comes from `LBA_*` environment variables.
+Tools: `run_browser_task(task, start_url?, max_steps?, allowed_domains?)` and `get_agent_config()` (no secrets;
+API key shown as `set`, URL credentials/tokens and `model.extra` values redacted).
+
+- One task at a time; a concurrent call fails at once with a `busy` error.
+- `max_steps` must be 1-200; `allowed_domains`, if given, must be non-empty. Invalid input is rejected.
+- If the server has `LBA_ALLOWED_DOMAINS`, a call's `allowed_domains` can only **narrow** it: a requested domain
+  is kept only if it equals or is a subdomain of a server domain; an empty result returns an error and nothing runs.
+  Without a server allowlist the call's list is used. Blocked domains (banks, payments, ...) always stay blocked.
+- Any status other than `success` is returned with `isError: true`; the `RunResult` dict is in `structuredContent`
+  (and the text content).
+
+Configuration comes from `LBA_*` environment variables: `LBA_PROVIDER`, `LBA_MODEL`, `LBA_API_KEY`, `LBA_BASE_URL`,
+`LBA_HEADLESS`, `LBA_CDP_URL`, `LBA_MAX_STEPS`, `LBA_TIMEOUT_S`, `LBA_ALLOWED_DOMAINS` (comma-separated), plus
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` for those providers. See `AgentConfig.from_env` in
+`local_browser_agent/config.py` for the full list.
+
+Run it without cloning anything, via uvx:
 
 ```bash
-claude mcp add local-browser-agent -e LBA_PROVIDER=anthropic -e ANTHROPIC_API_KEY=sk-ant-... -- uv run lba mcp
+uvx --from "local-browser-agent[mcp] @ git+https://github.com/rogerflores3113/search" lba mcp
+```
+
+Claude Code:
+
+```bash
+claude mcp add local-browser-agent -e LBA_PROVIDER=anthropic -e ANTHROPIC_API_KEY=sk-ant-... -- \
+  uvx --from "local-browser-agent[mcp] @ git+https://github.com/rogerflores3113/search" lba mcp
+# or, from a checkout:
+claude mcp add local-browser-agent -e LBA_PROVIDER=anthropic -e ANTHROPIC_API_KEY=sk-ant-... -- \
+  uv run --directory /path/to/search lba mcp
 ```
 
 Claude Desktop (`claude_desktop_config.json`):
