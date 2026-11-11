@@ -46,7 +46,7 @@ def norm(text: str | None) -> str:
 
 #: Bump whenever answer matching or any checker's logic changes: it is part of ``taskset_hash``, so
 #: results recorded with different matching rules are never silently compared.
-CHECKER_VERSION = "7"
+CHECKER_VERSION = "8"
 
 _FINAL_BOL_RE = re.compile(r"^[ \t>*_`#-]*final(?:[ \t]+answer)?[ \t*_`]*[:=][ \t*_`]*(.+?)[ \t*_`]*$", re.I | re.M)
 # After other text on the same line ("The result is 73 MB. FINAL: 73 MB"): upper case only, so
@@ -92,6 +92,12 @@ _HEDGE_PHRASES = re.compile(
     r"|\baccording\s+to\s+(?:a|the|some)\s+(?:search\s+results?|snippets?)\b"
     r"|\bmay\s+(?:be|not|have)\b|\bif\s+i\b|\bto\s+my\s+knowledge\b"
     r"|\bgive\s+or\s+take\b|\bor\s+so\b|-ish\b|\bish\b|\bassum(?:e|es|ed|ing)\b|\bdoubt(?:s|ed|ful)?\b"
+    r"|\bprobs?\b|\bthereabouts?\b|\bif\s+memory\s+serves\b|\bmemory\s+serves\b|\bdon'?t\s+quote\s+me\b"
+    r"|\bas\s+far\s+as\s+(?:i|we)\s+(?:can\s+)?(?:tell|know|see|recall|remember)\b|\blow[\s-]+confidence\b"
+    r"|\bat\s+(?:most|least)\b|\bunless\s+i\b|\bi\s+(?:may|might)\s+have\b|\bmisread\b"
+    r"|[,;(]\s*(?:roughly|approximately|approx\.?|around|about|circa|ish)\s*\)?\s*$"
+    r"|\b(?:provided|providing|assuming|depending\s+on|unless|if)\b[^,;.\n]*"
+    r"\b(?:right|correct|current|accurate|misread|serves|the\s+page|the\s+docs?)\b"
     r"|\bidk\b|\blol\b|\bi\s+(?:do\s*n[o']?t|dunno)\s+know\b|\bdunno\b|\d(?!\s+\+\s+[$€£¥]?\d)\s*\+"
 )
 #: Honest remarks that merely contain a hedge word ("could not find any other value") and are not hedges.

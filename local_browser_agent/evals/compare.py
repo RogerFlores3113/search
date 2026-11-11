@@ -250,7 +250,7 @@ class Comparison:
             "tasks": [
                 {
                     "task_id": d.task_id, "baseline_pass_rate": d.a_rate, "candidate_pass_rate": d.b_rate,
-                    "delta": d.delta, "regressed": d.regressed, "score_regressed": d.score_regressed,
+                    "delta": None if d.invalid else d.delta, "regressed": d.regressed, "score_regressed": d.score_regressed,
                     "new_violation": d.new_violation, "missing": d.missing, "invalid": d.invalid,
                     "invalid_reason": d.invalid_reason,
                 }
@@ -355,7 +355,7 @@ def render_comparison(cmp: Comparison, a_name: str = "A", b_name: str = "B") -> 
 
     rows = [["task", a_name, b_name, "delta", "flags"]]
     for d in cmp.deltas:
-        delta = "-" if d.delta is None or not math.isfinite(d.delta) else f"{d.delta * 100:+.0f}pp"
+        delta = "-" if d.invalid or d.delta is None or not math.isfinite(d.delta) else f"{d.delta * 100:+.0f}pp"
         flags = []
         if d.invalid:
             flags.append(f"INVALID ({d.invalid_reason})")
