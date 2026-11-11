@@ -6,6 +6,7 @@ import base64
 import contextlib
 import dataclasses
 import logging
+import math
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterable
@@ -172,6 +173,18 @@ def _retrieve_exception(task: asyncio.Future) -> None:
         task.add_done_callback(_consume)
 
 
+def _validate_sink_limits(sink_timeout_s: Any, sink_max_timeouts: Any) -> None:
+    """Raise ``ValueError`` for a non-finite / non-positive timeout or a non-int / < 1 timeout count."""
+    if sink_timeout_s is not None:
+        ok = (isinstance(sink_timeout_s, (int, float)) and not isinstance(sink_timeout_s, bool)
+              and math.isfinite(sink_timeout_s) and sink_timeout_s > 0)
+        if not ok:
+            raise ValueError(f"sink_timeout_s must be a finite number > 0 (seconds), got {sink_timeout_s!r}")
+    if sink_max_timeouts is not None:
+        if not isinstance(sink_max_timeouts, int) or isinstance(sink_max_timeouts, bool) or sink_max_timeouts < 1:
+            raise ValueError(f"sink_max_timeouts must be an integer >= 1, got {sink_max_timeouts!r}")
+
+
 class BrowserAgent:
     """Runs one natural-language task at a time in a browser.
 
@@ -185,6 +198,7 @@ class BrowserAgent:
                  approval: ApprovalCallback | None = None,
                  preflight: Callable[[], Awaitable[None]] | None = None,
                  sink_timeout_s: float | None = None, sink_max_timeouts: int | None = None) -> None:
+        _validate_sink_limits(sink_timeout_s, sink_max_timeouts)
         self.config = config or AgentConfig()
         # Per-call limit for one sink and the number of consecutive timeouts after which the sink is
         # dropped for the run. None = the module defaults SINK_TIMEOUT_S / SINK_MAX_TIMEOUTS (read at run time).
@@ -619,7 +633,9 @@ class BrowserAgent:
                     error_kind = "config"
                 else:
                     error_kind = "agent_error"
-                logger.warning("run %s failed: %s", run_id, error_msg)
+                # RunResult.errors carries the full message; keep the log line short.
+                logger.warning("run %s failed (%s)", run_id, error_kind)
+                logger.debug("run %s failure detail: %s", run_id, error_msg)
                 if agent is not None:
                     history = getattr(agent, "history", None)
             finally:
@@ -723,6 +739,9 @@ async def run_task(task: str, config: AgentConfig | None = None, *, sinks: Itera
         sink_max_timeouts: Consecutive timeouts after which a sink is dropped for the rest of the
             run (default ``SINK_MAX_TIMEOUTS``, 3).
 
+    Raises ``ValueError`` (before anything runs) when ``sink_timeout_s`` is not a finite number > 0 or
+    ``sink_max_timeouts`` is not an integer >= 1.
+
     Never raises for run failures: errors (including a missing Chrome or provider
     problems) come back as ``status="error"`` with messages in ``RunResult.errors``.
     """
@@ -736,8 +755,10 @@ def run_task_sync(task: str, config: AgentConfig | None = None, *, sinks: Iterab
                   sink_timeout_s: float | None = None, sink_max_timeouts: int | None = None) -> RunResult:
     """Blocking wrapper around :func:`run_task` for scripts without an event loop.
 
-    Raises ``RuntimeError`` when called from inside a running event loop (use ``await run_task(...)``).
+    Raises ``RuntimeError`` when called from inside a running event loop (use ``await run_task(...)``),
+    and ``ValueError`` for invalid ``sink_timeout_s`` / ``sink_max_timeouts``.
     """
+    _validate_sink_limits(sink_timeout_s, sink_max_timeouts)
     try:
         asyncio.get_running_loop()
     except RuntimeError:

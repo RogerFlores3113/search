@@ -148,7 +148,7 @@ def test_serve_error_prefix(monkeypatch, capsys):
     from local_browser_agent import mcp_server
 
     monkeypatch.setenv("LBA_MAX_STEPS", "0")
-    assert mcp_server.serve() == 2
+    assert mcp_server.serve(strict=True) == 2
     err = capsys.readouterr().err
     assert err.startswith("lba mcp: error: invalid configuration")
     lines = [ln for ln in err.splitlines() if ln.strip()]
