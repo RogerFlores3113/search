@@ -53,8 +53,11 @@ jobs:
       - name: Check tag matches pyproject version
         shell: bash
         run: |
-          py=$(command -v python3 || command -v python)
-          "$py" -c "import sys,tomllib; v=tomllib.load(open('pyproject.toml','rb'))['project']['version']; t='${{ github.ref_name }}'.removeprefix('v'); print('tag',t,'pyproject',v); sys.exit(0 if v==t else 1)"
+          # Plain shell, so it doesn't depend on the runner's system Python having tomllib.
+          v=$(grep -m1 -E '^version *= *"' pyproject.toml | sed -E 's/^version *= *"([^"]+)".*/\1/')
+          t="${GITHUB_REF_NAME#v}"
+          echo "tag $t pyproject $v"
+          test -n "$v" && test "$v" = "$t"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -121,8 +124,11 @@ jobs:
       - name: Check tag matches pyproject version
         shell: bash
         run: |
-          py=$(command -v python3 || command -v python)
-          "$py" -c "import sys,tomllib; v=tomllib.load(open('pyproject.toml','rb'))['project']['version']; t='${{ github.ref_name }}'.removeprefix('v'); print('tag',t,'pyproject',v); sys.exit(0 if v==t else 1)"
+          # Plain shell, so it doesn't depend on the runner's system Python having tomllib.
+          v=$(grep -m1 -E '^version *= *"' pyproject.toml | sed -E 's/^version *= *"([^"]+)".*/\1/')
+          t="${GITHUB_REF_NAME#v}"
+          echo "tag $t pyproject $v"
+          test -n "$v" && test "$v" = "$t"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5

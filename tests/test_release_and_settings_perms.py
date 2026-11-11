@@ -29,7 +29,7 @@ def test_version_check_in_build_jobs():
     jobs = _wf()["jobs"]
     for key in ("build-mac", "build-windows"):
         runs = " ".join(s.get("run", "") for s in jobs[key]["steps"])
-        assert "tomllib" in runs and "github.ref_name" in runs
+        assert "pyproject.toml" in runs and "GITHUB_REF_NAME" in runs
 
 
 def test_single_publish_job_needs_both_builds():
