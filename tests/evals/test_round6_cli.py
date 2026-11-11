@@ -33,7 +33,7 @@ def _rec(**kw):
 
 
 def test_checker_version_bumped():
-    assert CHECKER_VERSION == "8"
+    assert CHECKER_VERSION == "9"
 
 
 def test_all_infra_below_threshold_exits_3_and_leaves_no_out_dir(tmp_path, capsys):
@@ -114,3 +114,75 @@ def test_all_config_errors_exit_2_like_lba_run(tmp_path, capsys):
     assert rc == 2
     assert json.loads(capsys.readouterr().out)["error_kind"] == "config"
     assert not out.exists()
+
+
+# ---- round 7 ----
+
+def test_valid_success_rate_and_timeout_not_infra():
+    recs = [_rec(task_id="a", status="success", passed=True, score=1.0, error_kind=None)] + \
+           [_rec(task_id=f"b{i}") for i in range(3)]
+    r = SuiteResult(runs=recs)
+    assert r.success_rate == 0.25 and r.n_valid == 1 and r.valid_success_rate == 1.0
+    d = r.to_dict()["summary"]
+    assert d["n_valid"] == 1 and d["valid_success_rate"] == 1.0
+    assert "Success rate, valid runs only | 100%" in render_markdown(r)
+    assert SuiteResult(runs=recs[1:]).valid_success_rate is None
+    t = _rec(status="timeout", error_kind="timeout")
+    assert not t.infra_error and SuiteResult(runs=[t]).success_rate == 0.0
+
+
+def test_compare_counts_timeout_as_failure_and_warns_on_mismatch():
+    def doc(runs, infra):
+        n = len(runs)
+        passes = sum(r["passed"] for r in runs)
+        return {"schema_version": 1, "meta": {"taskset_hash": "h", "complete": True},
+                "tasks": {"t": {"category": "c", "safety": False, "n": n, "passes": passes, "pass_rate": passes / n,
+                                "mean_score": passes / n, "mean_steps": 1, "infra_errors": infra,
+                                "safety_violations": 0}},
+                "runs": runs}
+
+    def run(passed, status="success", kind=None):
+        return {"task_id": "t", "passed": passed, "status": status, "error_kind": kind}
+
+    base = doc([run(True), run(True)], 0)
+    cand = doc([run(False, "timeout", "timeout"), run(False, "timeout", "timeout")], 2)
+    cmp = compare_results(base, cand)
+    assert cmp.exit_code == 1 and not cmp.invalid_reasons
+    assert any("infra_errors says 2 but runs[] has 0" in w for w in cmp.warnings)
+
+
+def test_unknown_task_lists_valid_ids(capsys):
+    rc = cli.main(["--tasks", "nope"], config=make_config())
+    err = capsys.readouterr().err
+    assert rc == 2 and "unknown task id(s): nope" in err and "table-max-row" in err
+
+
+def test_all_infra_json_has_error_kinds_list_and_root_cause_first(tmp_path, capsys):
+    async def fake(instruction, config, *, start_url):
+        return infra_res()
+
+    cli.main(["--tasks", "table-max-row", "--repeats", "3", "--json", "--out", str(tmp_path / "r")],
+             run_fn=fake, config=make_config())
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["error_kinds"] == ["cdp_connect"]
+    assert doc["errors"][0] == "cannot reach CDP" and doc["errors"][-1].startswith("aborting:")
+
+
+def test_preflight_failure_does_not_say_no_tasks_were_run(capsys):
+    cli.main(["--json"], config=make_config(), preflight=lambda c: ["Anthropic API key is invalid"])
+    cap = capsys.readouterr()
+    assert "no tasks were run" not in cap.err
+    assert json.loads(cap.out)["error_kinds"] == ["preflight"]
+
+
+def test_bad_flag_is_usage_and_bad_env_is_config(monkeypatch, capsys):
+    monkeypatch.setenv("LBA_PROVIDER", "ollama")
+    monkeypatch.setenv("LBA_MODEL", "m")
+    monkeypatch.setattr(cli, "preflight_problems", lambda c: [])
+    rc = cli.main(["--json", "--base-url", "not a url", "--provider", "ollama"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 2 and doc["error_kind"] == "usage", doc
+    monkeypatch.setenv("LBA_MAX_STEPS", "banana")
+    rc = cli.main(["--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 2 and doc["error_kind"] == "config", doc

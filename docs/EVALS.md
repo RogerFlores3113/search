@@ -152,7 +152,10 @@ Fail-fast: after `--max-infra-errors N` consecutive runs that failed for environ
 are skipped, `meta.complete` is false, `meta.stopped_reason` is `infra_errors`, `meta.infra_abort` holds
 the explanation and the exit code is 3. Each infra error prints one `[INFRA]` line (details are in the
 result file's `errors`). When every run was an infra error the summary says `no valid runs (infra errors)`
-instead of a 0% success rate.
+instead of a 0% success rate. A `timeout` is **not** an infra error: a model that hangs is a real
+failure, counted as a failed run in the summary, in `--compare` and in the all-infra checks. Infra errors are
+status `error` or an `error_kind` of `chrome_missing`, `preflight`, `cdp_connect` or `config` (`runner.py`
+`INFRA_ERROR_KINDS` and `compare.py` use the same rule).
 
 Before any task runs, a real run checks once that Chrome can be found (`executable_path` /
 `cdp_url` from the config are respected; nothing is launched or installed) and that the model
@@ -168,8 +171,14 @@ not found, provider unreachable or unusable, CDP failure, a run aborted by `--ma
 With `--json` stdout always holds exactly one JSON document; on any failure before or instead of a run
 it is `{"status": "error", "error_kind": ..., "error_kinds": [...], "errors": [...]}` (`error_kind`: `usage`, `config`,
 `chrome_missing`, `preflight`, `cdp_connect`, `invalid_input`; `error_kinds` lists all kinds when several apply).
+For pre-flight and all-infra failures `error_kinds` is always a list (even with one kind); `errors` lists the root
+cause first and the "aborting: N consecutive infrastructure errors" wrapper after it. A bad flag value is `usage`,
+an invalid `LBA_*` environment value is `config`, and `--tasks` with an unknown id lists the valid ids.
 A successful run adds `"out"` (the results directory) to the document; in human mode that path is printed on stderr.
-No results directory is created when pre-flight fails or every run was an infra error. In a results document `summary.success_rate` and
+No results directory is created when pre-flight fails or every run was an infra error. `summary.n_valid` is the number of non-infra runs and `summary.valid_success_rate` the pass rate over those
+(`null` when `n_valid` is 0); both also appear in `results.md`. `summary.success_rate` divides by all runs, so
+infra errors lower it (an aborted run with 1 pass and 3 infra errors reports 0.25, `valid_success_rate` 1.0), and
+**`--fail-under` compares against that raw `success_rate`**. In a results document `summary.success_rate` and
 `summary.mean_score` are `null` when there were no valid (non-infra) runs, and a `category_pass_rates` entry is `null` (shown as `n/a`) for a category without valid runs. In `--compare` an INVALID task's delta shows `-`.
 
 Limits: `--timeout SECONDS` is the per-run cap (default 180; applied to the agent's own
@@ -194,7 +203,7 @@ Results are written as the suite goes (see below), so a crash or a stop keeps wh
 | `schema_version` | integer; `--compare` refuses files without it |
 | `meta` | `git_sha` (or `GITHUB_SHA`), `lba_version`, `taskset_hash`, `task_ids`, `max_steps` (per task), `timeout_s`, `repeats`, `provider`, `model`, `planned_runs`, `complete` (false for partial results), `stopped_reason`, `elapsed_s` |
 | `provider`, `model`, `timestamp` | UTC time the suite started |
-| `summary` | total runs, success rate, mean score, per-category pass rates, safety violations, mean steps, mean duration, total cost |
+| `summary` | total runs, success rate, `n_valid`, `valid_success_rate`, mean score, per-category pass rates, safety violations, mean steps, mean duration, total cost |
 | `tasks` | per task id: `category`, `safety`, `n`, `passes`, `pass_rate`, `mean_score`, `mean_steps`, `mean_duration_s`, `cost_usd` (null if unknown), `safety_violations` |
 | `runs` | one record per run: task, category, safety flag, repeat, passed, score, status, steps, duration, cost, `safety_violation`, notes, the agent's answer, blocked-action count, errors |
 
@@ -207,7 +216,7 @@ holds a table of golden verdicts (answer -> pass/fail per task) so verdict chang
 `meta.task_hashes` stores one such hash per task.
 Results with different hashes measured different suites or judged them differently. Each run record
 carries `error_kind` (`chrome_missing`, `preflight`, `cdp_connect`, `config`, `timeout`, `agent_error`
-or null) and each task summary an `infra_errors` count (runs with status `error`/`timeout` or an
+or null) and each task summary an `infra_errors` count (runs with status `error` or an
 infrastructure `error_kind`).
 
 ### Comparing two runs
@@ -229,7 +238,7 @@ A candidate that ran a `--tasks` subset is compared only on those tasks (with a 
 per-task hashes (`meta.task_hashes`) match the baseline's. Column headers are `parent-dir/file-stem`
 of each file, or `baseline`/`candidate` when those would be identical.
 
-Warnings (exit 0 unless `--strict`): differing model, repeats or timeout; candidate `n` above the baseline's;
+Warnings (exit 0 unless `--strict`): a task whose `infra_errors` field disagrees with its `runs[]` (`runs[]` wins); differing model, repeats or timeout; candidate `n` above the baseline's;
 mean steps or cost up more than 50%. With few repeats a single flaky run counts as a regression;
 use `--repeats 3` or more for stable comparisons.
 

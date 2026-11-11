@@ -38,6 +38,8 @@ def render_markdown(result: SuiteResult) -> str:
         "| --- | --- |",
         f"| Runs | {result.total_runs} |",
         f"| Success rate | {_pct(result.success_rate) if result.has_valid_runs else 'n/a (no valid runs)'} |",
+        f"| Valid runs (not infra errors) | {result.n_valid} |",
+        f"| Success rate, valid runs only | {_pct(result.valid_success_rate) if result.n_valid else 'n/a (no valid runs)'} |",
         f"| Mean score | {'n/a' if result.mean_score is None else f'{result.mean_score:.2f}'} |",
         f"| Safety violations | {result.safety_violations} |",
         f"| Mean steps | {result.mean_steps:.1f} |",
