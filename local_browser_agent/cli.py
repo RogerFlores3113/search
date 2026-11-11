@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import errno
 import json
+import logging
 import sys
 import uuid
 from collections.abc import Sequence
@@ -66,7 +67,7 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--max-steps", type=int, help="maximum agent steps")
     r.add_argument("--timeout", type=float, help="overall timeout in seconds")
     r.add_argument("--start-url", help="navigate here before the agent starts (http(s):// URL with a host)")
-    r.add_argument("--allowed-domain", action="append", dest="allowed_domains", help="restrict to this domain (repeatable)")
+    r.add_argument("--allowed-domain", "--allow-domain", action="append", dest="allowed_domains", help="restrict to this domain (repeatable)")
     r.add_argument("--json", action="store_true", help="print the RunResult as JSON")
     r.add_argument("--trace", metavar="PATH",
                    help="append every event as a JSON line to PATH (the directory must already exist)")
@@ -93,6 +94,30 @@ def _valid_url(url: str, schemes: tuple[str, ...]) -> bool:
 
 def _valid_cdp_url(url: str) -> bool:
     return _valid_url(url, ("http", "https", "ws", "wss"))
+
+
+def _config_problems(exc: BaseException) -> list[str]:
+    """One message per problem, without a repeated field name ("cdp_url: cdp_url must be ..." -> "cdp_url: must be ...")."""
+    from local_browser_agent.log import format_validation_error
+
+    out: list[str] = []
+    for ln in format_validation_error(exc).splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        field, sep, msg = ln.partition(": ")
+        leaf = field.rsplit(".", 1)[-1]
+        if sep and msg.startswith(leaf + " "):
+            ln = f"{field}: {msg[len(leaf) + 1:]}"
+        out.append(ln)
+    return out or [str(exc)]
+
+
+class _DropRunFailedWarning(logging.Filter):
+    """``run_task`` logs "run <id> failed: <msg>" and the CLI prints the same message as an error."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (record.levelno == logging.WARNING and record.msg == "run %s failed: %s")
 
 
 def _config_from_args(args: argparse.Namespace):
@@ -182,7 +207,8 @@ def _fail(args: argparse.Namespace, message: str, code: int, *, status: str = "e
 
     ``errors`` is the per-problem list for the JSON ``errors`` field (default: ``[message]``)."""
     run_id = str(uuid.uuid4())
-    print(f"lba run: error: {message}", file=sys.stderr)
+    for line in (message.splitlines() or [message]):
+        print(f"lba run: error: {line}", file=sys.stderr)
     if getattr(args, "json", False):
         print(json.dumps(_error_result(args.task, errors or [message], status, run_id, error_kind), indent=2))
     if trace is not None and trace.events_written == 0:
@@ -221,21 +247,29 @@ def _open_trace(path: str):
     return JsonlTraceSink(p)
 
 
-def _cmd_run(args: argparse.Namespace) -> int:
-    from local_browser_agent.log import format_validation_error
+def _usage_problem(args: argparse.Namespace) -> str | None:
+    """Flag mistakes that must exit 2 before any pre-flight or config work."""
+    if not (args.task or "").strip():
+        return "the task must not be empty"
+    for d in args.allowed_domains or []:
+        if not d.strip():
+            return "invalid --allowed-domain: must not be empty"
+    return None
 
+
+def _cmd_run(args: argparse.Namespace) -> int:
     _configure_logging(args, "info")
     from local_browser_agent import run_task
     from local_browser_agent.models import PreFlightError, check_provider
 
+    usage = _usage_problem(args)
+    if usage:
+        return _fail(args, usage, EXIT_USAGE, error_kind="config")
     try:
         cfg = _config_from_args(args)
     except Exception as e:
-        problems = [ln for ln in format_validation_error(e).splitlines() if ln.strip()] or [str(e)]
-        if len(problems) == 1:
-            message = f"invalid configuration: {problems[0]}"
-        else:
-            message = "invalid configuration:\n" + "\n".join(f"  {ln}" for ln in problems)
+        problems = _config_problems(e)
+        message = "\n".join(f"invalid configuration: {p}" for p in problems)
         return _fail(args, message, EXIT_USAGE, error_kind="config", errors=problems)
     trace = None
     if args.trace:
@@ -251,12 +285,17 @@ def _cmd_run(args: argparse.Namespace) -> int:
             await check_provider(cfg.model)
         return await run_task(args.task, cfg, sinks=sinks, start_url=args.start_url)
 
+    dup = _DropRunFailedWarning()
+    lib_logger = logging.getLogger("local_browser_agent")
+    lib_logger.addFilter(dup)
     try:
         result = asyncio.run(go())
     except PreFlightError as e:
         return _fail(args, str(e), EXIT_ENV, trace=trace, error_kind="preflight")
     except KeyboardInterrupt:
         return _fail(args, "interrupted", EXIT_INTERRUPTED, status="stopped", trace=trace, error_kind="stopped")
+    finally:
+        lib_logger.removeFilter(dup)
     if args.json:
         print(json.dumps(result.to_dict(), indent=2))
     else:

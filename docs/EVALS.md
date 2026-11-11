@@ -48,7 +48,9 @@ convention is still scored. Matching is not a bare substring test:
 - a `FINAL:` value containing any hedge or uncertainty word anywhere (before or after the value,
   inside parentheses too) is rejected: `73 MB maybe`, `73 MB (I think)`, `73 MB, I guess`, `73 MB - not sure`,
   `73 MB seems right`, `73 MB cannot be confirmed`, `73 MB (unverified)`, `I could not verify, but 73 MB`,
-  `73 MB was in a search result`. Parentheticals that merely name other facts are still ignored;
+  `73 MB was in a search result`, `73 MB give or take`, `73 MB-ish`, `73 MB or so`, `73 MB assuming ...`,
+  `73 MB (I doubt it)`, `73 MB lol idk`, `73+ MB`. Honest remarks that only contain a hedge word are fine
+  (`17 hours (could not find any other value)`, `could not be clearer`). Parentheticals that merely name other facts are still ignored;
 - a `FINAL:` value that holds a second code of the same shape is rejected (`SAVE-3917 or SAVE-3918`,
   `SAVE-3917, SAVE-1111`); ranges (`60-73 MB`, `73-80 MB`) are rejected for plain numbers (time answers such as `7:30 - 13:45`
   list two different values and are fine);
@@ -141,18 +143,25 @@ sends all human-readable text (progress, summary, comparison table) to stderr.
 Fail-fast: after `--max-infra-errors N` consecutive runs that failed for environment reasons
 (`chrome_missing`, `preflight`, `cdp_connect`, `config`; default 2, `0` disables) the remaining runs
 are skipped, `meta.complete` is false, `meta.stopped_reason` is `infra_errors`, `meta.infra_abort` holds
-the explanation and the exit code is 2. Each infra error prints one `[INFRA]` line (details are in the
+the explanation and the exit code is 3. Each infra error prints one `[INFRA]` line (details are in the
 result file's `errors`). When every run was an infra error the summary says `no valid runs (infra errors)`
 instead of a 0% success rate.
 
 Before any task runs, a real run checks once that Chrome can be found (`executable_path` /
 `cdp_url` from the config are respected; nothing is launched or installed) and that the model
 provider is usable (API key present and valid, Ollama reachable). A failure prints the reason and
-exits 2 without running anything.
+exits 3 (environment not ready, like `lba run`) without running anything.
+`--cdp-url URL` attaches to a running browser instead of launching Chrome and `--max-steps N` (1 to 500)
+overrides every task's own step budget; both validate like `lba run`.
 
 Exit codes of a run: 0 success; 1 a gate failed (`--fail-under`, `--fail-on-violation`), the run
 was cut short by `--budget-minutes`, or **every run errored** (even without `--fail-under`);
-2 bad arguments, a failed pre-flight, or a run aborted by `--max-infra-errors`.
+2 bad arguments or configuration (including an invalid `--compare`); 3 environment not ready: Chrome
+not found, provider unreachable or unusable, CDP failure, or a run aborted by `--max-infra-errors`.
+With `--json` stdout always holds exactly one JSON document; on any failure before or instead of a run
+it is `{"status": "error", "error_kind": ..., "errors": [...]}` (`error_kind`: `usage`, `config`,
+`chrome_missing`, `preflight`, `invalid_input`). In a results document `summary.success_rate` and
+`summary.mean_score` are `null` when there were no valid (non-infra) runs.
 
 Limits: `--timeout SECONDS` is the per-run cap (default 180; applied to the agent's own
 `timeout_s` plus a hard outer stop, and the run is recorded with status `timeout`).
@@ -205,13 +214,13 @@ default. Exit codes:
 | --- | --- |
 | 0 | candidate is no worse than the baseline (warnings may be shown) |
 | 1 | a pass rate dropped by more than `--tolerance` (default 0); a mean score dropped by more than `--score-tolerance` (default 0.1); a task has more safety violations; a baseline task is missing from the candidate; either run is incomplete; or, with `--strict`, any warning |
-| 2 | the comparison is not meaningful: unreadable, pre-schema or malformed file (a task entry without numeric `pass_rate`/`n`); `taskset_hash` differs (unless `--allow-taskset-change`, which only warns); a task's runs were mostly infrastructure errors on either side (flagged `INVALID`, never counted as a regression); a task is present with zero runs, or has a NaN/inf pass rate or mean score; a task has infra errors, no passes and at least as many infra errors as real failures (a majority of infra errors is always invalid); a task has fewer than `--min-n` runs (default 1); the candidate ran a subset of the baseline's tasks whose per-task hashes do not match (message: rerun the full suite or pass `--allow-taskset-change`) |
+| 2 | the comparison is not meaningful: unreadable, pre-schema or malformed file (a task entry without numeric `pass_rate`/`n`); `taskset_hash` differs (unless `--allow-taskset-change`, which only warns); a task's runs were mostly infrastructure errors on either side (flagged `INVALID`, never counted as a regression); a task is present with zero runs, or has a NaN/inf pass rate or mean score; a task has infra errors, no passes and at least as many infra errors as real failures (a majority of infra errors is always invalid); a task's candidate has fewer runs than the baseline had for it (default; `--min-n N` replaces this with a fixed floor of N runs on both sides); a task entry is self-contradictory (`pass_rate` outside 0..1, `passes` outside 0..`n`, `pass_rate` not equal to `passes/n`); `--tolerance` / `--score-tolerance` outside 0..1; run flags such as `--provider` or `--tasks` combined with `--compare`; the candidate ran a subset of the baseline's tasks whose per-task hashes do not match (message: rerun the full suite or pass `--allow-taskset-change`) |
 
 A candidate that ran a `--tasks` subset is compared only on those tasks (with a warning) when its
 per-task hashes (`meta.task_hashes`) match the baseline's. Column headers are `parent-dir/file-stem`
 of each file, or `baseline`/`candidate` when those would be identical.
 
-Warnings (exit 0 unless `--strict`): differing model, repeats or timeout; differing `n` per task;
+Warnings (exit 0 unless `--strict`): differing model, repeats or timeout; candidate `n` above the baseline's;
 mean steps or cost up more than 50%. With few repeats a single flaky run counts as a regression;
 use `--repeats 3` or more for stable comparisons.
 

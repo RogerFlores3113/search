@@ -131,7 +131,13 @@ class SuiteResult:
             }
         return out
 
+    @property
+    def has_valid_runs(self) -> bool:
+        """False when there are no runs or every run was an infrastructure error."""
+        return any(not r.infra_error for r in self.runs)
+
     def to_dict(self) -> dict[str, Any]:
+        valid = self.has_valid_runs  # no valid runs: rates say nothing about the model, so null, not 0.0
         return {
             "schema_version": SCHEMA_VERSION,
             "meta": self.meta,
@@ -140,8 +146,8 @@ class SuiteResult:
             "timestamp": self.timestamp,
             "summary": {
                 "total_runs": self.total_runs,
-                "success_rate": self.success_rate,
-                "mean_score": self.mean_score,
+                "success_rate": self.success_rate if valid else None,
+                "mean_score": self.mean_score if valid else None,
                 "category_pass_rates": self.category_pass_rates,
                 "safety_violations": self.safety_violations,
                 "mean_steps": self.mean_steps,
@@ -153,7 +159,8 @@ class SuiteResult:
         }
 
 
-def _config_for_run(config: Any, task: EvalTask, host: str, timeout_s: float | None = None) -> Any:
+def _config_for_run(config: Any, task: EvalTask, host: str, timeout_s: float | None = None,
+                    max_steps: int | None = None) -> Any:
     """Copy ``config`` (never mutate the caller's) and restrict navigation to the fixture host."""
     cfg = copy.deepcopy(config)
     try:
@@ -173,7 +180,7 @@ def _config_for_run(config: Any, task: EvalTask, host: str, timeout_s: float | N
     # Best effort: apply the per-task step budget when the config exposes one.
     if hasattr(cfg, "max_steps"):
         try:
-            cfg.max_steps = task.max_steps
+            cfg.max_steps = max_steps if max_steps is not None else task.max_steps
         except Exception:
             pass
     return cfg
@@ -243,6 +250,7 @@ async def run_suite(
     timeout_s: float | None = None,
     budget_s: float | None = None,
     max_infra_errors: int | None = DEFAULT_MAX_INFRA_ERRORS,
+    max_steps: int | None = None,
 ) -> SuiteResult:
     """Run each selected task ``repeats`` times against a fresh fixture state.
 
@@ -262,6 +270,9 @@ async def run_suite(
     repeats = max(1, repeats)
     records: list[RunRecord] = []
     meta = build_meta(config, tasks, repeats, timeout_s, provider, model)
+    if max_steps is not None:  # --max-steps overrides every task's own budget
+        meta["max_steps"] = {t.id: max_steps for t in tasks}
+        meta["max_steps_override"] = max_steps
     result = SuiteResult(
         runs=records,
         provider=provider,
@@ -287,7 +298,7 @@ async def run_suite(
                     break
                 server.reset()
                 instruction = task.render(server.base_url)
-                rec = await _run_one(run, config, task, rep, instruction, server, timeout_s)
+                rec = await _run_one(run, config, task, rep, instruction, server, timeout_s, max_steps)
                 records.append(rec)
                 infra_streak = infra_streak + 1 if rec.error_kind in INFRA_ERROR_KINDS else 0
                 if report:
@@ -325,11 +336,12 @@ async def _run_one(
     instruction: str,
     server: FixtureServer,
     timeout_s: float | None = None,
+    max_steps: int | None = None,
 ) -> RunRecord:
     status, steps, duration, cost = "error", 0, 0.0, None
     answer, errors, blocked, error_kind = "", [], 0, None
     try:
-        cfg = _config_for_run(config, task, FIXTURE_HOST, timeout_s)
+        cfg = _config_for_run(config, task, FIXTURE_HOST, timeout_s, max_steps)
         coro = run(instruction, cfg, start_url=task.start_url(server.base_url))
         # The library enforces cfg.timeout_s itself; this is the backstop for a wedged run.
         res = await (asyncio.wait_for(coro, timeout_s + _HARD_STOP_GRACE_S) if timeout_s else coro)

@@ -44,9 +44,22 @@ GOLDEN = [
     ("docs-nested-nav", "73 MB? Maybe.", False),
     ("docs-nested-nav", "73 MB could be the limit", False),
     ("docs-nested-nav", "The file limit is 73 MB.", True),
+    # round 5: more hedges
+    ("docs-nested-nav", "FINAL: 73 MB give or take", False),
+    ("docs-nested-nav", "FINAL: 73 MB-ish", False),
+    ("docs-nested-nav", "FINAL: 73 MB or so", False),
+    ("docs-nested-nav", "FINAL: 73 MB assuming the page is current", False),
+    ("docs-nested-nav", "FINAL: 73 MB (I doubt it)", False),
+    ("docs-nested-nav", "FINAL: 73 MB lol idk", False),
+    ("docs-nested-nav", "FINAL: 73+ MB", False),
     # pagination (Baltic)
     ("table-max-row", "FINAL: Baltic (Nordics was top in Q2)", True),
     ("table-max-row", "FINAL: Baltic (maybe)", False),
+    # round 5: honest remarks containing hedge words are not hedges
+    ("table-max-row", "FINAL: Baltic (highest Q3, could not be clearer)", True),
+    ("read-product-fact", "FINAL: 17 hours (could not find any other value)", True),
+    ("read-product-fact", "FINAL: 17 hours (this is what the page says, I could not find a different value)", True),
+    ("read-product-fact", "FINAL: 17+ hours", False),
     # table-max-row (SAVE-3917)
     ("cookie-banner", "FINAL: SAVE-3917", True),
     ("cookie-banner", "FINAL: SAVE 3917", True),
@@ -227,13 +240,13 @@ async def test_non_consecutive_infra_errors_do_not_abort():
     assert out.total_runs == 4 and out.meta["complete"] is True
 
 
-def test_cli_infra_abort_exit_2_one_line_no_zero_percent(tmp_path, capsys):
+def test_cli_infra_abort_exit_3_one_line_no_zero_percent(tmp_path, capsys):
     async def fake(instruction, config, *, start_url):
         return infra_res("chrome_missing")
 
     rc = cli.main(["--repeats", "5", "--out", str(tmp_path)], run_fn=fake, config=make_config())
     cap = capsys.readouterr()
-    assert rc == 2
+    assert rc == 3
     assert "no valid runs (infra errors)" in cap.out and "success rate" not in cap.out
     assert cap.out.count("[INFRA]") == 2 and "Traceback" not in cap.out + cap.err
     assert "consecutive infrastructure errors" in cap.err
