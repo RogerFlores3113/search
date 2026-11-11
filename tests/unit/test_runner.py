@@ -121,23 +121,18 @@ async def test_run_agent_wraps_in_wait_for(monkeypatch):
     MockAgent = MagicMock(return_value=mock_agent_instance)
     MockChatOllama = MagicMock()
 
-    captured_calls = []
-
-    async def fake_wait_for(coro, timeout=None):
-        captured_calls.append({"timeout": timeout})
-        return await coro
+    # The library supervises the whole run itself (not via asyncio.wait_for): the app only has
+    # to hand the configured session timeout to AgentConfig.timeout_s.
+    from local_browser_agent.app.runner import build_agent_config
+    assert build_agent_config(_default_config).timeout_s == _default_config.session_timeout
 
     monkeypatch.setattr("local_browser_agent.app.runner.pre_flight_check", AsyncMock())
-    monkeypatch.setattr("local_browser_agent.app.runner.asyncio.wait_for", fake_wait_for)
-
     with patch("local_browser_agent.browser.BrowserSession", MockBrowserSession), \
          patch("browser_use.ChatOllama", MockChatOllama), \
          patch("local_browser_agent.runner.Agent", MockAgent):
         from local_browser_agent.app.runner import run_agent
         await run_agent("test task")
-
-    assert len(captured_calls) == 1
-    assert captured_calls[0]["timeout"] == _default_config.session_timeout
+    assert mock_agent_instance.run.await_count == 1
 
 
 # ---------------------------------------------------------------------------
