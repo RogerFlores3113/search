@@ -235,13 +235,6 @@ def _build_config(args: argparse.Namespace, api_key: str | None) -> Any:
     return cfg
 
 
-def _env_only_args(args: argparse.Namespace) -> argparse.Namespace:
-    """``args`` with the model flags cleared, to tell an invalid environment from an invalid flag value."""
-    clean = argparse.Namespace(**vars(args))
-    clean.provider = clean.model = clean.base_url = clean.cdp_url = None
-    return clean
-
-
 def _print_summary(result: Any, file: Any = None) -> None:
     file = file or sys.stdout
     _print = lambda *a: print(*a, file=file)  # noqa: E731
@@ -389,7 +382,9 @@ def _main(
 
             # Same rule as ``lba run``: a bad flag value is "usage"; an invalid LBA_* environment value is "config".
             try:
-                _build_config(_env_only_args(args), api_key)
+                from local_browser_agent.cli import _env_only_args  # noqa: PLC0415
+
+                _build_config(_env_only_args(args), None)
                 kind, code = "usage", EXIT_USAGE
             except ValueError:
                 kind, code = "config", EXIT_USAGE

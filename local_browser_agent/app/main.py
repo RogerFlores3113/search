@@ -358,7 +358,11 @@ async def index(request: Request):
     # 409 and the page's /stream shows it.
     boot_task = getattr(request.app.state, "pending_task", None)
     prefill_task = ""
-    if boot_task:
+    if request.app.state.chrome_missing:
+        # Settings-only view while Chrome is missing: the run would fail pre-flight, so leave the
+        # boot task pending for the first load after Chrome is installed (pre-filled only).
+        prefill_task = boot_task or ""
+    elif boot_task:
         # Only a typed URL or the app's own launch may start the task: a cross-site page
         # that embeds or links to http://127.0.0.1:8080/ sends Sec-Fetch-Site cross-site /
         # same-site (or a foreign Origin) and must not consume it. Then the task is only

@@ -189,6 +189,24 @@ def _config_from_args(args: argparse.Namespace):
     return AgentConfig.model_validate(data)
 
 
+_CONFIG_FLAGS = ("provider", "model", "base_url", "cdp_url", "max_steps", "timeout", "allowed_domains",
+                 "start_url", "api_key_env")
+
+
+def _env_only_args(args: argparse.Namespace) -> argparse.Namespace:
+    """``args`` with every flag that feeds the config cleared (so only ``LBA_*`` environment values remain).
+
+    Used to tell an invalid flag value ("usage") from an invalid environment ("config")."""
+    clean = argparse.Namespace(**vars(args))
+    for name in _CONFIG_FLAGS:
+        if hasattr(clean, name):
+            setattr(clean, name, None)
+    for name in ("headless", "headed"):
+        if hasattr(clean, name):
+            setattr(clean, name, False if name == "headed" else None)
+    return clean
+
+
 def _human_summary(result) -> str:
     """Stdout summary for humans; error messages go to stderr (see ``_cmd_run``)."""
     lines = [
@@ -307,7 +325,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
     except Exception as e:
         problems = _config_problems(e)
         message = "\n".join(f"invalid configuration: {p}" for p in problems)
-        return _fail(args, message, EXIT_USAGE, error_kind="config", errors=problems)
+        # A config that is valid from the environment alone means a flag caused this: "usage", else "config".
+        try:
+            _config_from_args(_env_only_args(args))
+            kind = "usage"
+        except Exception:
+            kind = "config"
+        return _fail(args, message, EXIT_USAGE, error_kind=kind, errors=problems)
     trace = None
     if args.trace:
         try:

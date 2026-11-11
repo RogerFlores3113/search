@@ -93,3 +93,20 @@ def test_hedged_final_is_rejected(needle, answer):
 @pytest.mark.parametrize(("needle", "answer"), HONEST)
 def test_honest_final_is_accepted(needle, answer):
     assert mentions(answer, needle)
+
+
+@pytest.mark.parametrize("answer", [
+    "I remember the page listing 42 items. FINAL: 42",
+    "FINAL: I remember the page listing 42 items: 42",
+    "FINAL: 42 (I remember the page listing 42 items)",
+])
+def test_plain_recall_statement_is_not_a_hedge(answer):
+    assert mentions(answer, "42")
+
+
+@pytest.mark.parametrize("answer", [
+    "FINAL: I'd say 42", "FINAL: 42, I'd say", "FINAL: 42, if I recall", "FINAL: 42, I recall",
+    "FINAL: I recall 42", "FINAL: I remember 42",
+])
+def test_qualifying_recall_is_still_a_hedge(answer):
+    assert not mentions(answer, "42")

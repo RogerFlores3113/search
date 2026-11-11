@@ -16,7 +16,7 @@ Three subcommands: `lba run` (one task), `lba eval` (the eval suite, see [EVALS.
 A `config` error means the same thing in both commands: fix the configuration (exit 2), whether it was
 found before or during the run. The two kinds are told apart by where the bad value came from: a bad
 command-line flag or value (unknown flag, empty task, malformed `--cdp-url` / `--start-url`, unwritable
-`--trace`) is `usage`; an invalid `LBA_*` environment value is `config`. Both exit 2 in `lba run` and
+`--trace`) is `usage` (including a bad `--provider`, `--max-steps` or `--base-url` value); an invalid `LBA_*` environment value is `config`. Both exit 2 in `lba run` and
 `lba eval`. With `--json`, even an argparse error (unknown flag, missing task) produces the JSON document,
 with `error_kind` `usage`, whatever the position or abbreviation of `--json` (`--jso` works too).
 

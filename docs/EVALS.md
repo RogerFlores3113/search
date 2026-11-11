@@ -53,7 +53,8 @@ convention is still scored. Matching is not a bare substring test:
   `73 MB was in a search result`, `73 MB give or take`, `73 MB-ish`, `73 MB or so`, `73 MB assuming ...`,
   `73 MB (I doubt it)`, `73 MB lol idk`, `73+ MB`, `73 MB, roughly`, `73 MB, probs`, `73 MB, if memory serves`,
   `73 MB (don't quote me)`, `73 MB as far as I can tell`, `73 MB (low confidence)`, `73 MB or thereabouts`,
-  `at most 73 MB`, `at least 73 MB`. A conditional clause about correctness or source is a hedge too:
+  `at most 73 MB`, `at least 73 MB`. "I recall", "I remember" and "I'd say" hedge only when they qualify the value
+  (`I'd say 73 MB`, `73 MB, I recall`); a plain statement such as `I remember the page listing 73 items: 73` is not a hedge (`CHECKER_VERSION` 10). A conditional clause about correctness or source is a hedge too:
   `provided|assuming|depending on|unless|if` followed by `right`, `correct`, `current`, `accurate`, `misread`,
   `serves`, `the page` or `the docs` (`73 MB, provided the docs are right`, `73 MB unless I misread`).
   `tests/evals/test_hedge_table.py` pins hedged and honest examples Honest remarks that only contain a hedge word are fine

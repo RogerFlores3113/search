@@ -33,7 +33,7 @@ def _rec(**kw):
 
 
 def test_checker_version_bumped():
-    assert CHECKER_VERSION == "9"
+    assert CHECKER_VERSION == "10"
 
 
 def test_all_infra_below_threshold_exits_3_and_leaves_no_out_dir(tmp_path, capsys):
