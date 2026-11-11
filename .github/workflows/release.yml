@@ -74,6 +74,26 @@ jobs:
           cat "$HOME/Library/Application Support/local-browser-agent/smoke.log" 2>/dev/null
           exit $code
 
+      - name: Smoke test frozen app startup
+        run: |
+          # Start the server and poll GET /healthz until it answers 200 (20 s limit), instead
+          # of only checking that --smoke imports work.
+          dist/local-browser-agent.app/Contents/MacOS/local-browser-agent --no-browser --port 8765 &
+          pid=$!
+          ok=0
+          for i in $(seq 1 20); do
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            if curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:8765/healthz; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" -ne 1 ]; then
+            if kill -0 "$pid" 2>/dev/null; then echo "app did not answer GET /healthz with 200 within 20 s"; else echo "app exited on startup"; fi
+            kill "$pid" 2>/dev/null || true
+            exit 1
+          fi
+          echo "app answered /healthz (pid $pid)"
+          kill "$pid" 2>/dev/null || true
+
       - name: Ad-hoc codesign
         run: codesign --force --deep -s - dist/local-browser-agent.app
 

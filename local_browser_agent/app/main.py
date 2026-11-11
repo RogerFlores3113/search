@@ -358,10 +358,19 @@ async def index(request: Request):
     boot_task = getattr(request.app.state, "pending_task", None)
     prefill_task = ""
     if boot_task:
-        request.app.state.pending_task = None
-        if accepted:
-            from local_browser_agent.app.config import config  # noqa: PLC0415
-            await _start_run(boot_task, config.active_prompt_id)
+        # Only a typed URL or the app's own launch may start the task: a cross-site page
+        # that embeds or links to http://127.0.0.1:8080/ sends Sec-Fetch-Site cross-site /
+        # same-site (or a foreign Origin) and must not consume it. Then the task is only
+        # pre-filled and stays pending for a legitimate load.
+        fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+        user_initiated = fetch_site in ("", "same-origin", "none") and _origin_ok(request)
+        if user_initiated:
+            request.app.state.pending_task = None
+            if accepted:
+                from local_browser_agent.app.config import config  # noqa: PLC0415
+                await _start_run(boot_task, config.active_prompt_id)
+            else:
+                prefill_task = boot_task
         else:
             prefill_task = boot_task
     return templates.TemplateResponse(

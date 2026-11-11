@@ -81,10 +81,11 @@ def get_secret_key() -> bytes:
 
 
 def get_settings_path() -> Path:
-    """Return path to settings.json in the platform config directory.
+    """Return path to settings.json (it also holds the encrypted API key blobs).
 
-    Unlike get_user_data_dir(), this always uses platformdirs.user_config_dir
-    in both dev and frozen modes — settings are config, not data.
+    ``LBA_DATA_DIR``, when set, holds settings.json next to history.db and secret.bin.
+    Otherwise it lives in the platform config directory (always platformdirs, in dev and
+    frozen modes alike; settings are config, not data):
 
     Dev mode:   ~/.config/local-browser-agent/settings.json  (Linux)
                 ~/Library/Preferences/local-browser-agent/settings.json (macOS)
@@ -93,7 +94,10 @@ def get_settings_path() -> Path:
 
     Always calls mkdir(parents=True, exist_ok=True) so callers never have to.
     """
-    from platformdirs import user_config_dir
-    path = Path(user_config_dir(APP_NAME)) / "settings.json"
+    if os.environ.get(DATA_DIR_ENV, "").strip():
+        path = get_user_data_dir() / "settings.json"
+    else:
+        from platformdirs import user_config_dir
+        path = Path(user_config_dir(APP_NAME)) / "settings.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path

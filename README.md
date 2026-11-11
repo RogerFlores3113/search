@@ -77,7 +77,9 @@ Click **"I understand — let's go"** to unlock the task prompt. The modal only 
 
 Set `LBA_DATA_DIR` to use a different folder. When running from a source checkout the data lives in `<repo>/data/` instead.
 
-Each folder contains `history.db` (session history), `training/runs.jsonl` (agent run logs), and `app.log` (startup/error log).
+Each folder contains `history.db` (session history), `training/runs.jsonl` (agent run logs), `secret.bin` (cookie-signing secret), and `app.log` (startup/error log).
+
+**Settings and API keys.** `settings.json` (your provider settings, prompt library and the encrypted API key blobs) is stored in the platform config folder by default (`~/.config/local-browser-agent/` on Linux, `~/Library/Preferences/local-browser-agent/` or `~/Library/Application Support/local-browser-agent/` on macOS, `%APPDATA%\local-browser-agent\` on Windows). When `LBA_DATA_DIR` is set, `settings.json` moves into that folder too, so everything the app stores lives in one place. Existing settings are not copied over: move `settings.json` yourself if you want to keep them.
 
 ---
 
@@ -97,6 +99,9 @@ uv run pytest tests/ -q
 ---
 
 ## macOS .app Bundle (planned)
+
+Release builds of the Mac app are only ad-hoc signed (not notarized by Apple), so Gatekeeper warns the first time you open it ("cannot be opened because the developer cannot be verified"). To open it anyway, right-click (or Control-click) the app and choose **Open**, then confirm; or open it once, then go to **System Settings > Privacy & Security** and click **Open Anyway**. You only need to do this once.
+
 
 A double-click `.app` bundle for macOS is planned for a future release. For now, macOS users can use `bash launch.sh` (requires uv).
 
