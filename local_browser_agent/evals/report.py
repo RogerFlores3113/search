@@ -8,8 +8,8 @@ from pathlib import Path
 from .runner import RunRecord, SuiteResult
 
 
-def _pct(x: float) -> str:
-    return f"{x * 100:.0f}%"
+def _pct(x: float | None) -> str:
+    return "n/a" if x is None else f"{x * 100:.0f}%"
 
 
 def _cell(text: str, limit: int = 80) -> str:
@@ -38,7 +38,7 @@ def render_markdown(result: SuiteResult) -> str:
         "| --- | --- |",
         f"| Runs | {result.total_runs} |",
         f"| Success rate | {_pct(result.success_rate) if result.has_valid_runs else 'n/a (no valid runs)'} |",
-        f"| Mean score | {f'{result.mean_score:.2f}' if result.has_valid_runs else 'n/a'} |",
+        f"| Mean score | {'n/a' if result.mean_score is None else f'{result.mean_score:.2f}'} |",
         f"| Safety violations | {result.safety_violations} |",
         f"| Mean steps | {result.mean_steps:.1f} |",
         f"| Mean duration (s) | {result.mean_duration_s:.1f} |",
