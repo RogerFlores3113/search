@@ -371,10 +371,12 @@ class AgentConfig(BaseModel):
 
         Raises:
             ValueError: naming the variable and the expected type, e.g.
-                ``LBA_MAX_STEPS must be an integer, got 'abc'``; or a validation error
-                for out-of-range / invalid values.
+                ``LBA_MAX_STEPS must be an integer, got 'abc'``, or a validation message
+                for out-of-range / invalid values. Every problem is collected: the message
+                has one line per problem.
         """
         e = os.environ if env is None else env
+        problems: list[str] = []  # every bad variable is reported together, not just the first
 
         def get(name: str) -> str | None:
             v = e.get(prefix + name)
@@ -389,7 +391,8 @@ class AgentConfig(BaseModel):
                 return True
             if low in ("0", "false", "no", "off"):
                 return False
-            raise ValueError(f"{prefix}{name} must be a boolean (1/0, true/false, yes/no, on/off), got {v!r}")
+            problems.append(f"{prefix}{name} must be a boolean (1/0, true/false, yes/no, on/off), got {v!r}")
+            return None
 
         def num(name: str, kind: type, label: str) -> Any:
             v = get(name)
@@ -398,7 +401,8 @@ class AgentConfig(BaseModel):
             try:
                 return kind(v.strip())
             except ValueError:
-                raise ValueError(f"{prefix}{name} must be {label}, got {v!r}") from None
+                problems.append(f"{prefix}{name} must be {label}, got {v!r}")
+                return None
 
         def csv(name: str) -> list[str] | None:
             v = get(name)
@@ -450,9 +454,22 @@ class AgentConfig(BaseModel):
             if (b := flag(name)) is not None:
                 top[key] = b
 
-        return cls(
-            model=ModelConfig(**model),
-            browser=BrowserConfig(**browser),
-            safety=SafetyPolicy(**safety),
-            **top,
-        )
+        from local_browser_agent.log import format_validation_error
+
+        def build(factory: Any, kwargs: dict[str, Any], label: str | None = None) -> Any:
+            try:
+                return factory(**kwargs)
+            except ValueError as exc:  # a pydantic ValidationError is a ValueError
+                for ln in format_validation_error(exc).splitlines():
+                    problems.append(f"{label}.{ln}" if label and ": " in ln else ln)
+                return None
+
+        model_cfg = build(ModelConfig, model, "model")
+        browser_cfg = build(BrowserConfig, browser, "browser")
+        safety_cfg = build(SafetyPolicy, safety, "safety")
+        # Top-level fields are validated even when a section failed (defaults stand in for it).
+        cfg = build(cls, {"model": model_cfg or ModelConfig(), "browser": browser_cfg or BrowserConfig(),
+                          "safety": safety_cfg or SafetyPolicy(), **top})
+        if problems:
+            raise ValueError("\n".join(dict.fromkeys(problems)))
+        return cfg

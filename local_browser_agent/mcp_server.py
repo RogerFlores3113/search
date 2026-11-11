@@ -9,6 +9,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from typing import Annotated, Any
@@ -56,6 +57,9 @@ def _redact_url(url: str | None) -> str | None:
         return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
     except ValueError:
         return _REDACTED
+
+
+_URL_IN_TEXT = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 
 
 def public_config(cfg: AgentConfig) -> dict[str, Any]:
@@ -255,8 +259,8 @@ class _ProgressSink:
         what = getattr(ev, "action_type", None) or "step"
         target = getattr(ev, "target_label", None) or getattr(ev, "value", None) or getattr(ev, "url", None)
         target = str(target) if target else ""
-        if target.startswith(("http://", "https://")):
-            target = _redact_url(target) or ""
+        # every embedded http(s) URL is redacted, wherever it sits in the text
+        target = _URL_IN_TEXT.sub(lambda m: _redact_url(m.group(0)) or "", target)
         text = f"{what}: {target}" if target else str(what)
         return text[:120]
 

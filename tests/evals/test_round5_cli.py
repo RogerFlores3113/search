@@ -189,7 +189,7 @@ def test_run_rejects_empty_task_and_domain(argv, capsys, monkeypatch):
 
 def test_run_rejects_empty_task_json(capsys):
     assert lba_cli.main(["run", " ", "--json"]) == 2
-    assert json.loads(capsys.readouterr().out)["error_kind"] == "config"
+    assert json.loads(capsys.readouterr().out)["error_kind"] == "usage"
 
 
 def test_config_errors_one_line_each_and_no_repeated_field(capsys):
