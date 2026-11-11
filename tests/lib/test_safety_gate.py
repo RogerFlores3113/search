@@ -262,3 +262,11 @@ async def test_gate_off_disables_everything(base_act):
 
 def test_bare_nodes_tolerated():
     assert element_risk(SimpleNamespace(), None, None) is None
+
+
+def test_allow_evaluate_flows_from_config():
+    from local_browser_agent.config import AgentConfig, SafetyPolicy
+
+    assert SafetyPolicy().allow_evaluate is False
+    cfg = AgentConfig.from_env(env={"LBA_ALLOW_EVALUATE": "true"})
+    assert cfg.safety.allow_evaluate is True

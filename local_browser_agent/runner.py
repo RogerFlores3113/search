@@ -416,6 +416,7 @@ class BrowserAgent:
                     tools = GuardedTools(
                         patterns=cfg.safety.commerce_patterns,
                         gate_commerce_clicks=cfg.safety.gate_commerce_clicks,
+                        allow_evaluate=cfg.safety.allow_evaluate,
                         approval=self.approval,
                         blocked_log=blocked,
                     )
@@ -565,9 +566,23 @@ class BrowserAgent:
 
 async def run_task(task: str, config: AgentConfig | None = None, *, sinks: Iterable[Any] = (),
                    approval: ApprovalCallback | None = None, start_url: str | None = None) -> RunResult:
+    """Run one natural-language task in Chrome and return its :class:`RunResult`.
+
+    Args:
+        task: What the agent should do, in plain language.
+        config: Model, browser and safety settings; ``AgentConfig.from_env()`` when omitted.
+        sinks: Event sinks (``QueueSink``, ``JsonlTraceSink``, ``CallbackSink`` or your own).
+        approval: Async callback asked before any gated purchase-like action; without
+            one, gated actions are denied.
+        start_url: Optional page to open before the agent starts.
+
+    Never raises for run failures: errors (including a missing Chrome or provider
+    problems) come back as ``status="error"`` with messages in ``RunResult.errors``.
+    """
     return await BrowserAgent(config, sinks=sinks, approval=approval).run(task, start_url=start_url)
 
 
 def run_task_sync(task: str, config: AgentConfig | None = None, *, sinks: Iterable[Any] = (),
                   approval: ApprovalCallback | None = None, start_url: str | None = None) -> RunResult:
+    """Blocking wrapper around :func:`run_task` for scripts without an event loop."""
     return asyncio.run(run_task(task, config, sinks=sinks, approval=approval, start_url=start_url))

@@ -124,6 +124,9 @@ class SafetyPolicy(BaseModel):
         gate_commerce_clicks: Block clicks whose label matches ``commerce_patterns``
             unless an approval callback says yes.
         commerce_patterns: Labels treated as commerce actions.
+        allow_evaluate: Let the agent run arbitrary page JavaScript without approval.
+            Off by default: ``evaluate`` can submit forms, so it goes through the approval
+            callback (and is denied when there is none).
     """
 
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
@@ -133,6 +136,7 @@ class SafetyPolicy(BaseModel):
     guardrail_prompt: str = GUARDRAIL_PROMPT
     gate_commerce_clicks: bool = True
     commerce_patterns: list[str] = Field(default_factory=lambda: list(DEFAULT_COMMERCE_PATTERNS))
+    allow_evaluate: bool = False
 
     @field_validator("blocked_domains", mode="before")
     @classmethod
@@ -225,6 +229,7 @@ class AgentConfig(BaseModel):
         - ``LBA_MAX_STEPS`` (int, 1-500), ``LBA_TIMEOUT_S`` (float, > 0)
         - ``LBA_USE_VISION`` (bool), ``LBA_USE_JUDGE`` (bool)
         - ``LBA_ALLOWED_DOMAINS`` / ``LBA_BLOCKED_DOMAINS`` (comma separated)
+        - ``LBA_ALLOW_EVALUATE`` (bool): run page JavaScript without approval
 
         Booleans accept 1/0, true/false, yes/no, on/off (any case). ``ANTHROPIC_API_KEY`` /
         ``OPENAI_API_KEY`` are used when the provider matches and ``LBA_API_KEY`` is unset.
@@ -295,6 +300,8 @@ class AgentConfig(BaseModel):
             safety["allowed_domains"] = v
         if (v := csv("BLOCKED_DOMAINS")) is not None:
             safety["blocked_domains"] = v
+        if (b := flag("ALLOW_EVALUATE")) is not None:
+            safety["allow_evaluate"] = b
 
         top: dict[str, Any] = {}
         if (i := num("MAX_STEPS", int, "an integer")) is not None:

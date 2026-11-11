@@ -59,6 +59,7 @@ environment); a missing key is reported by `check_provider` / `build_llm` and na
 | `LBA_USE_JUDGE` | bool | `false` | grade the result with the judge |
 | `LBA_ALLOWED_DOMAINS` | comma list | unset | restrict navigation to these domains |
 | `LBA_BLOCKED_DOMAINS` | comma list | unset | extra blocked domains (added to `SAFETY_DEFAULTS`) |
+| `LBA_ALLOW_EVALUATE` | bool | `false` | let the agent run page JavaScript without approval (off by default because scripts can submit forms) |
 | `LBA_ALLOW_TELEMETRY` | `1` | unset | read at import; `1` lets an inherited `ANONYMIZED_TELEMETRY=true` stand |
 
 Booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. By default importing the package forces

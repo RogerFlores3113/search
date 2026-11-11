@@ -95,8 +95,10 @@ def test_allow_list_cannot_reenable_blocked():
         BrowserConfig(), SafetyPolicy(blocked_domains=["bad.org"],
                                       allowed_domains=["ok.com", "paypal.com", "login.PayPal.com.", "*.bad.org"]))
     assert list(prof.allowed_domains) == ["ok.com"]
-    prof = build_browser_profile(BrowserConfig(), SafetyPolicy(allowed_domains=["paypal.com"]))
-    assert "paypal.com" not in prof.allowed_domains and prof.allowed_domains  # never "allow everything"
+    # An allow-list made only of blocked sites is rejected outright rather than
+    # silently becoming "allow everything".
+    with pytest.raises(ValueError):
+        SafetyPolicy(allowed_domains=["paypal.com"])
 
 
 def test_large_blocklist_keeps_wildcards():
