@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import sys
 import uuid
 from typing import Annotated, Any
@@ -209,6 +210,20 @@ def _error(message: str, kind: str, task: str = "") -> dict:
     return d
 
 
+def _config_problem_lines(exc: BaseException) -> list[str]:
+    """One message per configuration problem (all of them, same wording as the startup stderr lines)."""
+    from local_browser_agent.cli import _config_problems
+
+    return _config_problems(exc)
+
+
+def _config_error(exc: BaseException, task: str = "") -> dict:
+    """RunResult-shaped config failure with one ``errors`` entry per problem."""
+    d = _error("", "config", task)
+    d["errors"] = [f"invalid configuration: {p}" for p in _config_problem_lines(exc)]
+    return d
+
+
 def _as_result(d: dict) -> CallToolResult:
     return CallToolResult(
         content=[TextContent(type="text", text=json.dumps(d, indent=2, default=str))],
@@ -296,7 +311,7 @@ async def _run(task: str, start_url: str | None, max_steps: int | None,
                            "LBA_ALLOWED_DOMAINS policy; nothing was run", "invalid_argument")
             cfg.safety = SafetyPolicy(**{**cfg.safety.model_dump(), "allowed_domains": effective})
     except Exception as e:  # ValueError / pydantic ValidationError
-        return err(f"invalid configuration: {format_validation_error(e)}", "config")
+        return _config_error(e, task if isinstance(task, str) else "")
     lock = _lock()
     if lock.locked():
         return err("busy: another browser task is already running", "busy")
@@ -367,8 +382,8 @@ def get_agent_config() -> Annotated[CallToolResult, AgentConfigModel]:
         d = public_config(AgentConfig.from_env())
         is_error = False
     except Exception as e:
-        d = {"status": "error", "error_kind": "config",
-             "error": f"invalid configuration: {format_validation_error(e)}"}
+        problems = [f"invalid configuration: {p}" for p in _config_problem_lines(e)]
+        d = {"status": "error", "error_kind": "config", "error": "\n".join(problems), "errors": problems}
         is_error = True
     return CallToolResult(content=[TextContent(type="text", text=json.dumps(d, indent=2, default=str))],
                           structuredContent=d, isError=is_error)
@@ -409,6 +424,11 @@ def build_server() -> Any:
 
     # The mcp library warns "Tool 'x' not listed, no validation will be performed" for unknown tool names.
     logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.ERROR)
+    # bubus warns ">15s ... Possible slow processing or deadlock" for any long-running handler; a
+    # browser task legitimately runs for minutes inside one. Only touch a quiet (warning) level.
+    bubus = logging.getLogger("bubus")
+    if logging.WARNING <= bubus.level < logging.ERROR:
+        bubus.setLevel(logging.ERROR)
     server = _Server("local-browser-agent", instructions=SERVER_INSTRUCTIONS)
     server.tool(description=RUN_DESCRIPTION, annotations=ToolAnnotations(
         title="Run browser task", readOnlyHint=False, destructiveHint=False, idempotentHint=False,
@@ -422,28 +442,39 @@ def build_server() -> Any:
     return server
 
 
-def serve(log_level: str = "warning", *, third_party: str | None = None) -> int:
-    """Run the stdio server; returns an exit code (2 on bad configuration or a missing ``mcp`` extra).
+def _strict_from_env() -> bool:
+    return os.environ.get("LBA_MCP_STRICT", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def serve(log_level: str = "warning", *, third_party: str | None = None, strict: bool | None = None) -> int:
+    """Run the stdio server; returns an exit code (2 on a missing ``mcp`` extra, or on bad configuration in strict mode).
 
     stderr is quiet by default (only warnings and errors). The ``LBA_*`` configuration is validated once
-    here, so a bad value fails at startup instead of on every call.
+    here. By default a bad configuration is reported on stderr (one line per problem) but the server still
+    starts, so the MCP client can list the tools and receive the problems as a ``config`` error envelope
+    from ``run_browser_task`` / ``get_agent_config`` instead of an opaque "Connection closed". With
+    ``strict=True`` (or ``LBA_MCP_STRICT=1``) it exits with code 2 before the handshake instead.
     """
-    from local_browser_agent.log import configure_logging
+    from local_browser_agent.log import configure_logging, quiet_filters
 
     configure_logging(log_level, third_party=third_party)
+    if strict is None:
+        strict = _strict_from_env()
     try:
         AgentConfig.from_env()
     except Exception as e:
-        from local_browser_agent.cli import _config_problems
-
-        for problem in _config_problems(e):
+        for problem in _config_problem_lines(e):
             print(f"lba mcp: error: invalid configuration: {problem}", file=sys.stderr)
-        return 2
+        if strict:
+            return 2
+        print("lba mcp: serving anyway; every tool call will return the configuration errors "
+              "(use --strict or LBA_MCP_STRICT=1 to exit instead)", file=sys.stderr)
     try:
         server = build_server()
     except ImportError as e:
         print(f"lba mcp: error: the MCP server needs the 'mcp' extra ({e}). "
               "Install with: pip install 'local-browser-agent[mcp]'", file=sys.stderr)
         return 2
-    server.run(transport="stdio")
+    with quiet_filters():  # the server owns the process: held while it serves
+        server.run(transport="stdio")
     return 0

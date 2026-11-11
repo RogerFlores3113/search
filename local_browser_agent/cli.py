@@ -77,6 +77,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     m = sub.add_parser("mcp", prog="lba mcp", help="start the stdio MCP server (config from LBA_* env vars)")
     _add_log_args(m)
+    m.add_argument("--strict", action="store_true",
+                   help="exit 2 on an invalid LBA_* configuration instead of serving and reporting it per tool call "
+                        "(same as LBA_MCP_STRICT=1)")
     ev = sub.add_parser("eval", help="run the evaluation suite (remaining args are forwarded)", add_help=False)
     ev.add_argument("rest", nargs=argparse.REMAINDER)
     return p
@@ -114,10 +117,12 @@ def _config_problems(exc: BaseException) -> list[str]:
 
 
 class _DropRunFailedWarning(logging.Filter):
-    """``run_task`` logs "run <id> failed: <msg>" and the CLI prints the same message as an error."""
+    """``run_task`` logs "run <id> failed (<kind>)" and the CLI prints the full message as an error."""
+
+    _TEMPLATES = frozenset({"run %s failed (%s)", "run %s failed: %s"})
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return not (record.levelno == logging.WARNING and record.msg == "run %s failed: %s")
+        return not (record.levelno == logging.WARNING and record.msg in self._TEMPLATES)
 
 
 def _config_from_args(args: argparse.Namespace):
@@ -304,6 +309,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             print(f"lba run: error: {e}", file=sys.stderr)
     if result.status == "success":
         return EXIT_OK
+    if result.error_kind == "config":
+        return EXIT_USAGE  # invalid configuration found once the run started: same code as before it
     return EXIT_ENV if result.error_kind in ENV_ERROR_KINDS else EXIT_FAILED
 
 
@@ -324,12 +331,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_eval(argv[1:])
     args = _build_parser().parse_args(argv)
     if args.command == "run":
-        return _cmd_run(args)
+        from local_browser_agent.log import quiet_filters
+
+        with quiet_filters():  # the CLI owns the process: browser-use failure noise dropped for the whole run
+            return _cmd_run(args)
     if args.command == "mcp":
         from local_browser_agent.mcp_server import serve
 
         level, third_party = _log_settings(args, "warning")
-        return serve(level, third_party=third_party)
+        return serve(level, third_party=third_party, strict=True if args.strict else None)
     if args.command == "eval":
         return _cmd_eval(args.rest or [])
     return 2

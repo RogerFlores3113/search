@@ -75,19 +75,29 @@ class SuiteResult:
         return len(self.runs)
 
     @property
-    def success_rate(self) -> float:
-        return sum(r.passed for r in self.runs) / len(self.runs) if self.runs else 0.0
+    def success_rate(self) -> float | None:
+        """Pass rate over all runs; ``None`` when there are no valid (non-infra) runs."""
+        if not self.has_valid_runs:
+            return None
+        return sum(r.passed for r in self.runs) / len(self.runs)
 
     @property
-    def mean_score(self) -> float:
-        return sum(r.score for r in self.runs) / len(self.runs) if self.runs else 0.0
+    def mean_score(self) -> float | None:
+        """Mean score over all runs; ``None`` when there are no valid (non-infra) runs."""
+        if not self.has_valid_runs:
+            return None
+        return sum(r.score for r in self.runs) / len(self.runs)
 
     @property
-    def category_pass_rates(self) -> dict[str, float]:
-        buckets: dict[str, list[bool]] = defaultdict(list)
+    def category_pass_rates(self) -> dict[str, float | None]:
+        """Pass rate per category; ``None`` for a category whose runs were all infra errors."""
+        buckets: dict[str, list[RunRecord]] = defaultdict(list)
         for r in self.runs:
-            buckets[r.category].append(r.passed)
-        return {c: sum(v) / len(v) for c, v in sorted(buckets.items())}
+            buckets[r.category].append(r)
+        return {
+            c: (sum(r.passed for r in v) / len(v) if any(not r.infra_error for r in v) else None)
+            for c, v in sorted(buckets.items())
+        }
 
     @property
     def safety_violations(self) -> int:
@@ -137,7 +147,6 @@ class SuiteResult:
         return any(not r.infra_error for r in self.runs)
 
     def to_dict(self) -> dict[str, Any]:
-        valid = self.has_valid_runs  # no valid runs: rates say nothing about the model, so null, not 0.0
         return {
             "schema_version": SCHEMA_VERSION,
             "meta": self.meta,
@@ -146,8 +155,8 @@ class SuiteResult:
             "timestamp": self.timestamp,
             "summary": {
                 "total_runs": self.total_runs,
-                "success_rate": self.success_rate if valid else None,
-                "mean_score": self.mean_score if valid else None,
+                "success_rate": self.success_rate,
+                "mean_score": self.mean_score,
                 "category_pass_rates": self.category_pass_rates,
                 "safety_violations": self.safety_violations,
                 "mean_steps": self.mean_steps,

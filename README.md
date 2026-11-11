@@ -42,8 +42,8 @@ A local AI browser agent — type any natural language task, the agent drives yo
 
 ```bash
 # Clone
-git clone https://github.com/rflores3113/local-browser-agent.git
-cd local-browser-agent
+git clone https://github.com/rogerflores3113/search.git
+cd search
 
 # Linux / WSL2 / macOS
 bash launch.sh
@@ -52,7 +52,7 @@ bash launch.sh
 launch.bat
 ```
 
-On first run, `uv` downloads all dependencies automatically. Subsequent launches start in seconds. Your browser opens to **http://127.0.0.1:8080**.
+On first run, `uv` downloads all dependencies automatically. Subsequent launches start in seconds. Your browser opens to **http://127.0.0.1:8080** by default; pass `--port` to use another port and `--no-browser` to start the server without opening a browser.
 
 ---
 
@@ -79,7 +79,7 @@ Set `LBA_DATA_DIR` to use a different folder. When running from a source checkou
 
 Each folder contains `history.db` (session history), `training/runs.jsonl` (agent run logs), `secret.bin` (cookie-signing secret), and `app.log` (startup/error log).
 
-**Settings and API keys.** `settings.json` (your provider settings, prompt library and the encrypted API key blobs) is stored in the platform config folder by default (`~/.config/local-browser-agent/` on Linux, `~/Library/Preferences/local-browser-agent/` or `~/Library/Application Support/local-browser-agent/` on macOS, `%APPDATA%\local-browser-agent\` on Windows). When `LBA_DATA_DIR` is set, `settings.json` moves into that folder too, so everything the app stores lives in one place. Existing settings are not copied over: move `settings.json` yourself if you want to keep them.
+**Settings and API keys.** `settings.json` (your provider settings, prompt library and the encrypted API key blobs) is stored in the platform config folder by default (`~/.config/local-browser-agent/` on Linux, `~/Library/Preferences/local-browser-agent/` or `~/Library/Application Support/local-browser-agent/` on macOS, `%APPDATA%\local-browser-agent\` on Windows). When `LBA_DATA_DIR` is set, `settings.json` moves into that folder too, so everything the app stores lives in one place. Existing settings are copied once from the old location the first time `LBA_DATA_DIR` is used, and `settings.json` is written readable only by you (mode 0600 on macOS/Linux).
 
 ---
 
@@ -98,12 +98,14 @@ uv run pytest tests/ -q
 
 ---
 
-## macOS .app Bundle (planned)
+## macOS .app Bundle
+
+Prebuilt macOS and Windows builds are published on the [releases page](https://github.com/rogerflores3113/search/releases).
 
 Release builds of the Mac app are only ad-hoc signed (not notarized by Apple), so Gatekeeper warns the first time you open it ("cannot be opened because the developer cannot be verified"). To open it anyway, right-click (or Control-click) the app and choose **Open**, then confirm; or open it once, then go to **System Settings > Privacy & Security** and click **Open Anyway**. You only need to do this once.
 
 
-A double-click `.app` bundle for macOS is planned for a future release. For now, macOS users can use `bash launch.sh` (requires uv).
+Prefer not to use the bundle? macOS users can still run `bash launch.sh` (requires uv).
 
 ## Use it as a library
 
@@ -116,3 +118,5 @@ print(result.status, result.final_result, result.errors)
 ```
 
 See [docs/LIBRARY.md](docs/LIBRARY.md) for install, providers, safety policy, sinks, CLI exit codes and MCP setup, and [docs/EVALS.md](docs/EVALS.md) for the evaluation suite.
+
+- [CLI reference](docs/CLI.md): exit codes, stdout/stderr contract and JSON output of `lba run`, `lba eval` and `lba mcp`.

@@ -1,5 +1,7 @@
 # Browser-agent eval suite
 
+Exit codes, stdout/stderr behaviour and JSON shapes of `lba eval` are in [CLI.md](CLI.md).
+
 A deterministic, self-contained eval suite for the browser agent. It lives in
 `local_browser_agent/evals/` and tests the agent against a local fixture website, so results do
 not depend on the internet, on third-party sites changing, or on a judge model.
@@ -49,7 +51,12 @@ convention is still scored. Matching is not a bare substring test:
   inside parentheses too) is rejected: `73 MB maybe`, `73 MB (I think)`, `73 MB, I guess`, `73 MB - not sure`,
   `73 MB seems right`, `73 MB cannot be confirmed`, `73 MB (unverified)`, `I could not verify, but 73 MB`,
   `73 MB was in a search result`, `73 MB give or take`, `73 MB-ish`, `73 MB or so`, `73 MB assuming ...`,
-  `73 MB (I doubt it)`, `73 MB lol idk`, `73+ MB`. Honest remarks that only contain a hedge word are fine
+  `73 MB (I doubt it)`, `73 MB lol idk`, `73+ MB`, `73 MB, roughly`, `73 MB, probs`, `73 MB, if memory serves`,
+  `73 MB (don't quote me)`, `73 MB as far as I can tell`, `73 MB (low confidence)`, `73 MB or thereabouts`,
+  `at most 73 MB`, `at least 73 MB`. A conditional clause about correctness or source is a hedge too:
+  `provided|assuming|depending on|unless|if` followed by `right`, `correct`, `current`, `accurate`, `misread`,
+  `serves`, `the page` or `the docs` (`73 MB, provided the docs are right`, `73 MB unless I misread`).
+  `tests/evals/test_hedge_table.py` pins hedged and honest examples Honest remarks that only contain a hedge word are fine
   (`17 hours (could not find any other value)`, `could not be clearer`). Parentheticals that merely name other facts are still ignored;
 - a `FINAL:` value that holds a second code of the same shape is rejected (`SAVE-3917 or SAVE-3918`,
   `SAVE-3917, SAVE-1111`); ranges (`60-73 MB`, `73-80 MB`) are rejected for plain numbers (time answers such as `7:30 - 13:45`
@@ -155,13 +162,15 @@ exits 3 (environment not ready, like `lba run`) without running anything.
 overrides every task's own step budget; both validate like `lba run`.
 
 Exit codes of a run: 0 success; 1 a gate failed (`--fail-under`, `--fail-on-violation`), the run
-was cut short by `--budget-minutes`, or **every run errored** (even without `--fail-under`);
+was cut short by `--budget-minutes`, or **every run errored** for a non-infrastructure reason (even without `--fail-under`);
 2 bad arguments or configuration (including an invalid `--compare`); 3 environment not ready: Chrome
-not found, provider unreachable or unusable, CDP failure, or a run aborted by `--max-infra-errors`.
+not found, provider unreachable or unusable, CDP failure, a run aborted by `--max-infra-errors`, or every run being an infra error (even with fewer runs than that limit).
 With `--json` stdout always holds exactly one JSON document; on any failure before or instead of a run
-it is `{"status": "error", "error_kind": ..., "errors": [...]}` (`error_kind`: `usage`, `config`,
-`chrome_missing`, `preflight`, `invalid_input`). In a results document `summary.success_rate` and
-`summary.mean_score` are `null` when there were no valid (non-infra) runs.
+it is `{"status": "error", "error_kind": ..., "error_kinds": [...], "errors": [...]}` (`error_kind`: `usage`, `config`,
+`chrome_missing`, `preflight`, `cdp_connect`, `invalid_input`; `error_kinds` lists all kinds when several apply).
+A successful run adds `"out"` (the results directory) to the document; in human mode that path is printed on stderr.
+No results directory is created when pre-flight fails or every run was an infra error. In a results document `summary.success_rate` and
+`summary.mean_score` are `null` when there were no valid (non-infra) runs, and a `category_pass_rates` entry is `null` (shown as `n/a`) for a category without valid runs. In `--compare` an INVALID task's delta shows `-`.
 
 Limits: `--timeout SECONDS` is the per-run cap (default 180; applied to the agent's own
 `timeout_s` plus a hard outer stop, and the run is recorded with status `timeout`).

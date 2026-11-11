@@ -6,7 +6,9 @@ import asyncio
 import json
 import math
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -28,13 +30,19 @@ def _err(msg: str) -> None:
     print(f"{PREFIX} {msg}", file=sys.stderr)
 
 
-def _fail(args: argparse.Namespace, code: int, error_kind: str, errors: list[str], *, prefix: str = "") -> int:
+def _fail(args: argparse.Namespace, code: int, error_kind: str, errors: list[str], *, prefix: str = "",
+          error_kinds: list[str] | None = None) -> int:
     """Report a failure: one ``lba eval: error:`` line per problem on stderr and, with --json, one JSON
-    document on stdout (``{"status": "error", "error_kind": ..., "errors": [...]}``)."""
+    document on stdout (``{"status": "error", "error_kind": ..., "error_kinds": [...], "errors": [...]}``).
+    ``error_kind`` is the first kind; ``error_kinds`` (all kinds, in order) is given when there are several."""
     for e in errors:
         _err(f"{prefix}{e}")
     if getattr(args, "json", False):
-        print(json.dumps({"status": "error", "error_kind": error_kind, "errors": list(errors)}, indent=2))
+        doc: dict[str, Any] = {"status": "error", "error_kind": error_kind}
+        if error_kinds is not None:
+            doc["error_kinds"] = list(error_kinds)
+        doc["errors"] = list(errors)
+        print(json.dumps(doc, indent=2))
     return code
 
 
@@ -234,14 +242,14 @@ def _print_summary(result: Any, file: Any = None) -> None:
     if result.runs and all(r.infra_error for r in result.runs):
         _print("no valid runs (infra errors)")
         return
-    _print(f"success rate:      {result.success_rate * 100:.0f}%")
-    _print(f"mean score:        {result.mean_score:.2f}")
+    _print(f"success rate:      {'n/a' if result.success_rate is None else f'{result.success_rate * 100:.0f}%'}")
+    _print(f"mean score:        {'n/a' if result.mean_score is None else f'{result.mean_score:.2f}'}")
     _print(f"safety violations: {result.safety_violations}")
     _print(f"mean steps:        {result.mean_steps:.1f}")
     _print(f"mean duration:     {result.mean_duration_s:.1f}s")
     _print(f"total cost:        {'n/a' if cost is None else f'${cost:.4f}'}")
     for cat, rate in result.category_pass_rates.items():
-        _print(f"  {cat:<12} {rate * 100:.0f}%")
+        _print(f"  {cat:<12} {'n/a' if rate is None else f'{rate * 100:.0f}%'}")
 
 
 def preflight_problems(config: Any) -> list[str]:
@@ -273,6 +281,18 @@ def preflight_problems(config: Any) -> list[str]:
 
 
 def main(
+    argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any = None, preflight: Any = None
+) -> int:
+    """CLI entry (see :func:`_main`); holds the quiet-log filters for a real run."""
+    if config is not None:
+        return _main(argv, run_fn=run_fn, config=config, preflight=preflight)
+    from local_browser_agent.log import quiet_filters  # noqa: PLC0415
+
+    with quiet_filters():
+        return _main(argv, run_fn=run_fn, config=config, preflight=preflight)
+
+
+def _main(
     argv: Sequence[str] | None = None, *, run_fn: Any = None, config: Any = None, preflight: Any = None
 ) -> int:
     """CLI entry. ``run_fn`` / ``config`` / ``preflight`` are injection points for tests.
@@ -364,8 +384,10 @@ def main(
         if problems:
             from local_browser_agent.chrome import CHROME_NOT_FOUND_MESSAGE  # noqa: PLC0415
 
-            kind = "chrome_missing" if any(p == CHROME_NOT_FOUND_MESSAGE for p in problems) else "preflight"
-            _fail(args, EXIT_ENV, kind, problems, prefix="pre-flight failed: ")
+            kinds = ["chrome_missing" if p == CHROME_NOT_FOUND_MESSAGE else "preflight" for p in problems]
+            kinds = list(dict.fromkeys(kinds))
+            # the first problem's kind leads (chrome is checked before the provider)
+            _fail(args, EXIT_ENV, kinds[0], problems, prefix="pre-flight failed: ", error_kinds=kinds)
             print("no tasks were run", file=sys.stderr)
             return EXIT_ENV
 
@@ -382,12 +404,18 @@ def main(
         flag = "PASS" if rec.passed else "FAIL"
         print(f"[{flag}] {rec.task_id} #{rec.repeat} score={rec.score:.2f} steps={rec.steps}", file=human, flush=True)
 
+    out_dir = Path(args.out)
+    out_existed = out_dir.exists()
+    # A pre-existing --out is never touched unless the result is kept: run into a staging directory beside
+    # it and move the files over afterwards.
+    run_dir = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}.staging-", dir=out_dir.resolve().parent)) \
+        if out_existed else out_dir
     result = asyncio.run(
         run_suite(
             config,
             task_ids=task_ids,
             repeats=args.repeats,
-            out_dir=Path(args.out),
+            out_dir=run_dir,
             run_fn=run_fn,
             progress=progress,
             timeout_s=args.timeout,
@@ -396,12 +424,44 @@ def main(
             max_steps=args.max_steps,
         )
     )
+    infra_kinds = _all_infra_kinds(result)
+    if infra_kinds:
+        # Every run failed for environment reasons: nothing worth keeping, and no results dir left behind
+        # (a pre-existing one keeps its old files).
+        shutil.rmtree(run_dir, ignore_errors=True)
+        errors = [result.meta["infra_abort"]] if result.meta.get("infra_abort") else []
+        errors += list(dict.fromkeys(e for r in result.runs for e in r.errors if e))[:5]
+        if not errors:
+            errors = [f"every run failed with {', '.join(infra_kinds)}; no valid results"]
+        if not args.quiet:
+            _print_summary(result, human)
+        # Only bad configuration: a usage problem (exit 2), as in ``lba run``; anything else is the environment (3).
+        code = EXIT_USAGE if infra_kinds == ["config"] else EXIT_ENV
+        return _fail(args, code, infra_kinds[0], errors,
+                     error_kinds=infra_kinds if len(infra_kinds) > 1 else None)
+    if run_dir != out_dir:
+        for item in run_dir.iterdir():
+            dest = out_dir / item.name
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            shutil.move(str(item), str(dest))
+        shutil.rmtree(run_dir, ignore_errors=True)
+    out_path = str(out_dir.resolve())
     if not args.quiet:
         _print_summary(result, human)
-        print(f"\nreports written to {Path(args.out).resolve()}", file=human)
+        print(f"\nreports written to {out_path}", file=sys.stderr)
     if args.json:
-        print(json.dumps(result.to_dict(), indent=2))
+        doc = result.to_dict()
+        doc["out"] = out_path
+        print(json.dumps(doc, indent=2))
     return _gate(result, args)
+
+
+def _all_infra_kinds(result: Any) -> list[str]:
+    """Distinct ``error_kind`` values (in order) when every run failed for an environment reason, else ``[]``."""
+    if not result.runs or not all(r.error_kind in INFRA_ERROR_KINDS for r in result.runs):
+        return []
+    return list(dict.fromkeys(r.error_kind for r in result.runs))
 
 
 def _gate(result: Any, args: argparse.Namespace) -> int:

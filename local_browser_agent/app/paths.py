@@ -107,6 +107,10 @@ def get_settings_path() -> Path:
             try:
                 if legacy.is_file() and legacy.resolve() != path.resolve():
                     shutil.copy2(legacy, path)
+                    try:
+                        path.chmod(0o600)  # no-op on Windows
+                    except OSError:
+                        pass
                     logger.info("Copied existing settings from %s to %s", legacy, path)
             except OSError as e:
                 logger.warning("Could not copy existing settings from %s: %s", legacy, e)
