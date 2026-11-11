@@ -50,8 +50,34 @@ def _add_log_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--log-level", choices=LEVELS, help="stderr log level (default: info; warning for mcp; errors only with --json)")
 
 
+class _UsageError(Exception):
+    """argparse rejected the command line (raised instead of exiting, so ``--json`` can still get its document)."""
+
+    def __init__(self, parser: argparse.ArgumentParser, message: str) -> None:
+        super().__init__(message)
+        self.parser = parser
+        self.message = message
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str):  # type: ignore[override]
+        raise _UsageError(self, message)
+
+
+def _wants_json(argv: Sequence[str]) -> bool:
+    """Is ``--json`` (or an unambiguous argparse prefix such as ``--jso``) among the flags?"""
+    for a in argv:
+        if a == "--":
+            return False
+        if a.startswith("--") and len(a) >= 3:
+            name = a.split("=", 1)[0]
+            if len(name) >= 3 and "--json".startswith(name):
+                return True
+    return False
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="lba", description="Local browser agent: run a task, serve MCP, or run evals.")
+    p = _Parser(prog="lba", description="Local browser agent: run a task, serve MCP, or run evals.")
     p.add_argument("--version", action="version", version=f"lba {_version()}")
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -259,6 +285,12 @@ def _usage_problem(args: argparse.Namespace) -> str | None:
     for d in args.allowed_domains or []:
         if not d.strip():
             return "invalid --allowed-domain: must not be empty"
+    if args.cdp_url is not None and not _valid_cdp_url(args.cdp_url):
+        return ("invalid --cdp-url: expected an http(s):// or ws(s):// URL with a host, "
+                f"got {args.cdp_url!r}")
+    if args.start_url is not None and not _valid_url(args.start_url, ("http", "https")):
+        return ("invalid --start-url: expected an http(s):// URL with a host, "
+                f"got {args.start_url!r}")
     return None
 
 
@@ -269,7 +301,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     usage = _usage_problem(args)
     if usage:
-        return _fail(args, usage, EXIT_USAGE, error_kind="config")
+        return _fail(args, usage, EXIT_USAGE, error_kind="usage")
     try:
         cfg = _config_from_args(args)
     except Exception as e:
@@ -282,7 +314,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             trace = _open_trace(args.trace)
         except OSError as e:
             return _fail(args, f"cannot write --trace {args.trace!r}: {e.strerror or e}", EXIT_USAGE,
-                          error_kind="config")
+                          error_kind="usage")
     sinks = [trace] if trace else []
 
     async def go():
@@ -329,7 +361,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # capture leading options such as `--self-test`.
     if argv and argv[0] == "eval":
         return _cmd_eval(argv[1:])
-    args = _build_parser().parse_args(argv)
+    try:
+        args = _build_parser().parse_args(argv)
+    except _UsageError as e:
+        if argv[:1] == ["run"] and _wants_json(argv):
+            print(json.dumps(_error_result("", [e.message], error_kind="usage"), indent=2))
+        e.parser.print_usage(sys.stderr)
+        print(f"{e.parser.prog}: error: {e.message}", file=sys.stderr)
+        return EXIT_USAGE
     if args.command == "run":
         from local_browser_agent.log import quiet_filters
 

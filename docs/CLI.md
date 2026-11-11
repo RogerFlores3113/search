@@ -9,12 +9,29 @@ Three subcommands: `lba run` (one task), `lba eval` (the eval suite, see [EVALS.
 | --- | --- | --- | --- | --- |
 | 0 | success | run status `success` | all gates passed; `--compare` OK; `--list` / `--self-test` OK | server exited normally |
 | 1 | the work failed | status `failed`, `timeout`, `stopped` or `error` with any other `error_kind` (`agent_error`, `timeout`, `captcha`, `stopped`, `start_url_blocked`) | a gate failed (`--fail-under`, `--fail-on-violation`), the run was cut short by `--budget-minutes`, or every run errored for a non-infrastructure reason; `--compare` found a regression, new safety violation or missing task (or a warning with `--strict`); `--self-test` failed | not used |
-| 2 | usage or configuration error | bad flags, empty task, malformed `--cdp-url` / `--start-url`, unwritable `--trace`, invalid `LBA_*` values or a `config` error raised once the run started (`error_kind` `config`) | bad flags or config (`usage`, `config`); **every run** failed with `config` and nothing else; `--compare` with unreadable or invalid files (`invalid_input`) or an invalid comparison (different task set, too few runs, mostly infra errors) | invalid `LBA_*` configuration with `--strict` / `LBA_MCP_STRICT=1` (otherwise the server keeps serving, see below), or the `mcp` extra is missing |
+| 2 | usage or configuration error | bad flags, empty task, malformed `--cdp-url` / `--start-url`, unwritable `--trace` (`error_kind` `usage`), invalid `LBA_*` values or a `config` error raised once the run started (`error_kind` `config`) | bad flags or config (`usage`, `config`); **every run** failed with `config` and nothing else; `--compare` with unreadable or invalid files (`invalid_input`) or an invalid comparison (different task set, too few runs, mostly infra errors) | invalid `LBA_*` configuration with `--strict` / `LBA_MCP_STRICT=1` (otherwise the server keeps serving, see below), or the `mcp` extra is missing |
 | 3 | environment not ready | `chrome_missing`, `preflight`, `cdp_connect` | pre-flight failed (`chrome_missing`, `preflight`); **every run** failed with an infra kind (`chrome_missing`, `preflight`, `cdp_connect`, or `config` mixed with one of those), even with fewer runs than `--max-infra-errors`; or the run was aborted after `--max-infra-errors` consecutive infra errors | not used |
 | 130 | interrupted (Ctrl-C) | yes | not used | not used |
 
 A `config` error means the same thing in both commands: fix the configuration (exit 2), whether it was
-found before or during the run.
+found before or during the run. The two kinds are told apart by where the bad value came from: a bad
+command-line flag or value (unknown flag, empty task, malformed `--cdp-url` / `--start-url`, unwritable
+`--trace`) is `usage`; an invalid `LBA_*` environment value is `config`. Both exit 2 in `lba run` and
+`lba eval`. With `--json`, even an argparse error (unknown flag, missing task) produces the JSON document,
+with `error_kind` `usage`, whatever the position or abbreviation of `--json` (`--jso` works too).
+
+Handling the exit code in a shell:
+
+```sh
+lba run --json "Find the price of a USB-C cable" > result.json
+case $? in
+  0)   echo "success" ;;
+  1)   echo "the work failed; see errors in result.json" ;;
+  2)   echo "usage or configuration error; fix the flags / LBA_* variables" ;;
+  3)   echo "environment not ready (Chrome, provider or CDP endpoint)" ;;
+  130) echo "interrupted" ;;
+esac
+```
 
 ## stdout and stderr
 

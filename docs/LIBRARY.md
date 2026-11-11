@@ -62,7 +62,12 @@ configure_logging("warning")  # one plain stderr handler; no browser-use emoji/t
 
 async def fetch(task: str) -> str | None:
     try:
-        result = await run_task(task, AgentConfig.from_env(), sink_timeout_s=10)
+        config = AgentConfig.from_env()
+    except ValueError as exc:
+        # One line per bad LBA_* variable; see the Errors table below.
+        raise RuntimeError(f"invalid LBA_* configuration:\n{exc}") from exc
+    try:
+        result = await run_task(task, config, sink_timeout_s=10)
     except asyncio.CancelledError:
         # Your own cancellation (timeout, shutdown): the browser is torn down before this propagates.
         # Clean up your side and re-raise.
@@ -84,7 +89,8 @@ async def fetch(task: str) -> str | None:
 Without `configure_logging`, a failed run still logs one short `WARNING run <id> failed (<error_kind>)` line on the
 `local_browser_agent` logger (the full text is in `result.errors`, and at DEBUG); browser-use's duplicate failure
 records are dropped by filters on its loggers, whatever handlers your application uses, unless you set the
-`browser_use` logger to INFO or DEBUG.
+`browser_use` logger to INFO or DEBUG. Setting the *root* logger to INFO has the same effect and brings
+browser-use's own records back; keep them quiet with `logging.getLogger("browser_use").setLevel(logging.WARNING)`.
 
 ## Configuration
 
@@ -94,7 +100,7 @@ Configs are pydantic models and are validated when constructed: `ModelConfig` ra
 environment); a missing key is reported by `check_provider` / `build_llm` and names the variables, e.g.
 "Anthropic API key is not set. Set ANTHROPIC_API_KEY or LBA_API_KEY." `AgentConfig` requires
 `1 <= max_steps <= 500` and `timeout_s > 0`. `from_env` errors name the variable and expected type
-(`LBA_MAX_STEPS must be an integer, got 'abc'`).
+(`LBA_MAX_STEPS must be an integer, got 'abc'`); all bad variables are reported together, one per line of the `ValueError` message.
 
 | variable | type | default | meaning |
 |---|---|---|---|
@@ -376,7 +382,8 @@ a time, the safety gates, the key `LBA_*` variables).
 - One task at a time; a concurrent call fails at once with a `busy` error.
 - **Progress.** When the client sends a `progressToken`, `run_browser_task` emits an MCP progress notification
   per agent step (`progress` = step, `total` = max steps, `message` = e.g. `Step 3/25: click: Sign in`).
-  Clients without a token are unaffected. Both tools advertise `additionalProperties: false` in their `inputSchema`.
+  Every `http(s)` URL in that text has its credentials and query-string values masked (the host and path are kept:
+  path segments are not redacted, so do not put secrets in paths). Clients without a token are unaffected. Both tools advertise `additionalProperties: false` in their `inputSchema`.
   An unusable `allowed_domains` entry such as `*.com` is `invalid_argument`; an unreachable `LBA_CDP_URL` is `cdp_connect`.
 - `max_steps` must be 1-200; `allowed_domains`, if given, must be non-empty; `start_url`, if given, must be an
   `http(s)` URL with a host. Unknown arguments are rejected with `invalid_argument` naming the key(s). All of this
