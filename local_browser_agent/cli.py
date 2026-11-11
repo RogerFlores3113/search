@@ -114,10 +114,12 @@ def _config_problems(exc: BaseException) -> list[str]:
 
 
 class _DropRunFailedWarning(logging.Filter):
-    """``run_task`` logs "run <id> failed: <msg>" and the CLI prints the same message as an error."""
+    """``run_task`` logs "run <id> failed (<kind>)" and the CLI prints the full message as an error."""
+
+    _TEMPLATES = frozenset({"run %s failed (%s)", "run %s failed: %s"})
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return not (record.levelno == logging.WARNING and record.msg == "run %s failed: %s")
+        return not (record.levelno == logging.WARNING and record.msg in self._TEMPLATES)
 
 
 def _config_from_args(args: argparse.Namespace):

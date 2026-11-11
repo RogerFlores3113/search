@@ -215,6 +215,7 @@ def test_failed_run_message_printed_once(monkeypatch):
 
     async def fake_run_task(task, cfg, **kw):
         lib.warning("run %s failed: %s", "rid", "boom")
+        lib.warning("run %s failed (%s)", "rid", "agent_error")
         return RunResult(run_id="rid", task=task, status="error", success=False, errors=["boom"])
 
     import local_browser_agent
@@ -229,7 +230,7 @@ def test_failed_run_message_printed_once(monkeypatch):
     finally:
         lib.removeHandler(handler)
     assert rc == 1
-    assert not [r for r in seen if r.msg == "run %s failed: %s"]
+    assert not [r for r in seen if r.msg in ("run %s failed: %s", "run %s failed (%s)")]
 
 
 @pytest.mark.parametrize("flag", ["--jso", "--js", "--json"])
