@@ -46,7 +46,7 @@ def norm(text: str | None) -> str:
 
 #: Bump whenever answer matching or any checker's logic changes: it is part of ``taskset_hash``, so
 #: results recorded with different matching rules are never silently compared.
-CHECKER_VERSION = "8"
+CHECKER_VERSION = "9"
 
 _FINAL_BOL_RE = re.compile(r"^[ \t>*_`#-]*final(?:[ \t]+answer)?[ \t*_`]*[:=][ \t*_`]*(.+?)[ \t*_`]*$", re.I | re.M)
 # After other text on the same line ("The result is 73 MB. FINAL: 73 MB"): upper case only, so
@@ -98,6 +98,9 @@ _HEDGE_PHRASES = re.compile(
     r"|[,;(]\s*(?:roughly|approximately|approx\.?|around|about|circa|ish)\s*\)?\s*$"
     r"|\b(?:provided|providing|assuming|depending\s+on|unless|if)\b[^,;.\n]*"
     r"\b(?:right|correct|current|accurate|misread|serves|the\s+page|the\s+docs?)\b"
+    r"|\b(?:fairly|pretty|reasonably|somewhat|moderately|mostly|kind\s+of|sort\s+of)\s+(?:sure|certain|confident)\b"
+    r"|\bnot\s+(?:\d+\s*%\s*|entirely\s+|completely\s+|totally\s+|fully\s+|absolutely\s+|100\s*%\s*)?(?:sure|certain)\b"
+    r"|\bi\s+(?:recall|remember|seem\s+to\s+recall)\b|\bi'?d\s+say\b|\broughly\s*[.!]?\s*$"
     r"|\bidk\b|\blol\b|\bi\s+(?:do\s*n[o']?t|dunno)\s+know\b|\bdunno\b|\d(?!\s+\+\s+[$€£¥]?\d)\s*\+"
 )
 #: Honest remarks that merely contain a hedge word ("could not find any other value") and are not hedges.

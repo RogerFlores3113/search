@@ -42,8 +42,9 @@ entries in `errors`, so it has no `error_kinds`.
 
 Success (a real run): the results document (`schema_version`, `meta`, `provider`, `model`,
 `timestamp`, `summary`, `tasks`, `runs`; see [EVALS.md](EVALS.md)) plus `"out"`, the absolute path
-of the results directory. In `summary`, `success_rate` and `mean_score` are `null` when there were no
-valid (non-infra) runs, and a `category_pass_rates` entry is `null` for a category with no valid runs.
+of the results directory. In `summary`, `n_valid` counts the non-infra runs, `valid_success_rate` is passes over
+those (`null` when `n_valid` is 0), `success_rate` (passes over all runs, which `--fail-under` uses) and `mean_score` are `null`
+when there were no valid (non-infra) runs, and a `category_pass_rates` entry is `null` for a category with no valid runs.
 
 Failure (usage, config, pre-flight, `--compare` input, all runs infra errors):
 
@@ -57,8 +58,10 @@ Failure (usage, config, pre-flight, `--compare` input, all runs infra errors):
 ```
 
 `error_kind` is the first kind (`usage`, `config`, `invalid_input`, `chrome_missing`, `preflight`,
-`cdp_connect`). `error_kinds` lists all distinct kinds in order and is present when the failure can
-have several (pre-flight; all runs infra errors). Neither case creates the `--out` directory (a
+`cdp_connect`). `error_kinds` lists all distinct kinds in order (always a list, even with one kind)
+for pre-flight and all-infra failures. In `errors` the root cause comes first and the
+"aborting: N consecutive infrastructure errors" wrapper last. A bad flag value is `usage`; an invalid
+`LBA_*` environment value is `config` (as in `lba run`). `--tasks` with an unknown id lists the valid ids. Neither case creates the `--out` directory (a
 pre-existing one is left alone). When `--max-infra-errors` aborts a run that had some valid runs, the
 results document is printed instead, with exit 3.
 
