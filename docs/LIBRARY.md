@@ -162,13 +162,17 @@ uv run lba eval ...     # evaluation suite (when installed)
 ```
 
 **Exit codes:** `0` success; `1` the run failed, errored, timed out, or the pre-flight check failed; `2` usage or
-configuration error (invalid flags / `LBA_*` values, or `lba eval` unavailable); `130` interrupted (Ctrl-C).
+configuration error (invalid flags such as `--max-steps 0`, `--timeout -1`, a malformed `--cdp-url`, an unwritable
+`--trace` path, invalid `LBA_*` values, or `lba eval` unavailable); `130` interrupted (Ctrl-C). Flag overrides go
+through the same validation as `AgentConfig`, and error messages are one `field: message` line per problem.
 
 **Output streams:** with `--json`, stdout is always one JSON document shaped like `RunResult`, including when
 pre-flight fails (then `status` is `"error"`, `success` is `null`, `errors` holds the message, `steps` is empty);
-the human-readable message goes to stderr. Without `--json`, stdout holds the human summary and diagnostics go
-to stderr. Logs always go to stderr; `--json` defaults to `warning` level, otherwise `info`; ANSI colour is
-stripped when stderr is not a terminal.
+the human-readable message goes to stderr. Without `--json`, stdout holds the human summary (status, steps, result,
+blocked actions) and the failure messages go to stderr. Logs always go to stderr. `-q` and `--json` mean errors only
+from this library and nothing at all from browser-use (no emoji, no tracebacks); `--log-level` overrides that and
+applies to everything. The default is `info` (`warning` for `mcp`). ANSI colour is stripped when stderr is not a
+terminal. The library itself configures no logging on import; only the CLI and MCP entry points do.
 
 **Pre-flight:** unless `--no-preflight`, `lba run` checks the provider first. For `ollama` it queries the local
 server; for `anthropic` and `openai` it makes a **live API call** (listing models) with your key, so it needs
@@ -176,25 +180,32 @@ network access and can fail on a bad key or an outage. Chrome-not-found is also 
 
 **Trace (`--trace PATH`):** `JsonlTraceSink` *appends* to an existing file (it never truncates), one JSON object
 per event. Each record has `ts` (ISO 8601, UTC) and `run_id` (a uuid4 per sink, i.e. per CLI invocation), so
-several runs can share a file. A pre-flight failure still writes `error_msg`, `state: error` and `done` events.
+several runs can share a file. A pre-flight failure still writes `error_msg`, `state: error` and `done` events, with
+the same `run_id` as the `--json` output. The path is checked up front: if it cannot be written the CLI exits 2.
 
 ## MCP server
 
 Tools: `run_browser_task(task, start_url?, max_steps?, allowed_domains?)` and `get_agent_config()` (no secrets;
-API key shown as `set`, URL credentials/tokens and `model.extra` values redacted).
+API key shown as `set`, URL credentials/tokens and `model.extra` values redacted). Both declare an `outputSchema`, so
+clients receive `structuredContent`. The server sends `instructions` on `initialize` (what the tools do, one task at
+a time, the safety gates, the key `LBA_*` variables).
 
+- Configuration comes from the `LBA_*` environment variables in the [Configuration table](#configuration)
+  (plus `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` for those providers). It is validated once at startup: a bad value
+  prints a clear message to stderr and `lba mcp` exits with code 2 instead of failing every call.
 - One task at a time; a concurrent call fails at once with a `busy` error.
-- `max_steps` must be 1-200; `allowed_domains`, if given, must be non-empty. Invalid input is rejected.
-- If the server has `LBA_ALLOWED_DOMAINS`, a call's `allowed_domains` can only **narrow** it: a requested domain
-  is kept only if it equals or is a subdomain of a server domain; an empty result returns an error and nothing runs.
-  Without a server allowlist the call's list is used. Blocked domains (banks, payments, ...) always stay blocked.
-- Any status other than `success` is returned with `isError: true`; the `RunResult` dict is in `structuredContent`
-  (and the text content).
-
-Configuration comes from `LBA_*` environment variables: `LBA_PROVIDER`, `LBA_MODEL`, `LBA_API_KEY`, `LBA_BASE_URL`,
-`LBA_HEADLESS`, `LBA_CDP_URL`, `LBA_MAX_STEPS`, `LBA_TIMEOUT_S`, `LBA_ALLOWED_DOMAINS` (comma-separated), plus
-`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` for those providers. See `AgentConfig.from_env` in
-`local_browser_agent/config.py` for the full list.
+- `max_steps` must be 1-200; `allowed_domains`, if given, must be non-empty; `start_url`, if given, must be an
+  `http(s)` URL with a host.
+- If the server has `LBA_ALLOWED_DOMAINS`, a call's `allowed_domains` can only **narrow** it, using browser-use's
+  matching: `*.a.com` covers `a.com` and every subdomain, a plain `a.com` covers only `a.com` (and `www.a.com`). So
+  with server `*.a.com` a call may ask for `a.com`, `x.a.com` or `*.x.a.com`, but with a plain server `a.com` a call
+  entry `*.a.com` or `x.a.com` is dropped. If nothing survives, an error is returned and nothing runs. Without a
+  server allowlist the call's list is used. Blocked domains (banks, payments, ...) always stay blocked.
+- **One error shape.** Every failure, including schema violations (`max_steps=0`, `allowed_domains=[]`), rejected
+  arguments, a busy server and bad `LBA_*` values, is returned with `isError: true` and a complete `RunResult`-shaped
+  object in `structuredContent` (and as JSON in the text content): `status: "error"`, `success: null`, `errors`,
+  and an `error_kind` of `invalid_argument`, `busy`, `config` or `internal`. Failed real runs return their own
+  `RunResult` (any status other than `success` is `isError: true`).
 
 Run it without cloning anything, via uvx:
 
