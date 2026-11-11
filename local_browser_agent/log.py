@@ -76,6 +76,69 @@ class _StartFailureNoise(logging.Filter):
         return not any(m in msg for m in _START_FAILURE_MARKERS)
 
 
+class _QuietUnlessVerbose(logging.Filter):
+    """Wraps a noise filter so it only applies while ``browser_use`` is at WARNING or above.
+
+    Installed on browser-use's own loggers at package import (see :func:`install_quiet_filters`),
+    independent of any handler the host application has; a host that sets ``browser_use`` to INFO
+    or DEBUG still sees everything."""
+
+    def __init__(self, inner: logging.Filter) -> None:
+        super().__init__()
+        self.inner = inner
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if logging.getLogger("browser_use").getEffectiveLevel() <= logging.INFO:
+            return True
+        return bool(self.inner.filter(record))
+
+
+_QUIET_ATTR = "_lba_quiet_filters"
+_quiet_logger_classes: dict[type, type] = {}
+
+
+def _quiet_filters() -> list[logging.Filter]:
+    return [_QuietUnlessVerbose(_DomainListWarning()), _QuietUnlessVerbose(_StartFailureNoise())]
+
+
+def _quiet(lg: logging.Logger) -> None:
+    if not getattr(lg, _QUIET_ATTR, False):
+        for f in _quiet_filters():
+            lg.addFilter(f)
+        setattr(lg, _QUIET_ATTR, True)
+
+
+def install_quiet_filters() -> None:
+    """Drop browser-use's redundant failure noise regardless of the host's logging handlers.
+
+    Logger-level filters only see records created on that exact logger, and browser-use logs from
+    ``browser_use.utils`` (the "Optimizing domain list" warning) and from per-instance loggers named
+    ``browser_use.BrowserSession...`` / ``browser_use.Agent...`` (the start-failure ERROR records and
+    the "Agent run failed with exception" traceback). The per-instance ones are created on demand, so
+    new ``browser_use.*`` loggers get the filters through the logger manager's factory. Idempotent."""
+    mgr = logging.Logger.manager
+    if not getattr(mgr.loggerClass, "_lba_factory", False):
+        previous = mgr.loggerClass
+
+        def factory(name: str) -> logging.Logger:
+            base = previous or logging.getLoggerClass()
+            if name == "browser_use" or name.startswith("browser_use."):
+                cls = _quiet_logger_classes.get(base)
+                if cls is None:
+                    def __init__(self, n, *a, **k):
+                        base.__init__(self, n, *a, **k)
+                        _quiet(self)
+                    cls = _quiet_logger_classes[base] = type("_QuietLogger", (base,), {"__init__": __init__})
+                return cls(name)
+            return base(name)
+
+        factory._lba_factory = True  # type: ignore[attr-defined]
+        mgr.loggerClass = factory  # type: ignore[assignment]
+    for lname, lg in list(mgr.loggerDict.items()):  # loggers created before this ran
+        if isinstance(lg, logging.Logger) and (lname == "browser_use" or lname.startswith("browser_use.")):
+            _quiet(lg)
+
+
 class _StderrHandler(logging.Handler):
     """Writes to whatever ``sys.stderr`` is at emit time (so redirection and capture work)."""
 

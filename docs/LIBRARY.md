@@ -52,6 +52,40 @@ else:  # run failures never raise; they come back here
 `AgentConfig.from_env()` builds a config from the `LBA_*` variables below (`ANTHROPIC_API_KEY` /
 `OPENAI_API_KEY` are used when the provider matches and `LBA_API_KEY` is unset). See `examples/use_as_library.py`.
 
+### Recommended embedding setup
+
+```python
+import asyncio
+from local_browser_agent import AgentConfig, configure_logging, run_task
+
+configure_logging("warning")  # one plain stderr handler; no browser-use emoji/traceback noise
+
+async def fetch(task: str) -> str | None:
+    try:
+        result = await run_task(task, AgentConfig.from_env(), sink_timeout_s=10)
+    except asyncio.CancelledError:
+        # Your own cancellation (timeout, shutdown): the browser is torn down before this propagates.
+        # Clean up your side and re-raise.
+        raise
+    match result.error_kind:
+        case None if result.status == "success":
+            return result.final_result
+        case "chrome_missing" | "cdp_connect" | "preflight" | "config":
+            raise RuntimeError(f"setup problem: {result.errors}")  # fix the environment, retrying will not help
+        case "captcha" | "start_url_blocked":
+            return None  # needs a human / a different URL
+        case "timeout" | "stopped":
+            return None
+        case _:  # "agent_error", or a failed run without an error_kind
+            print(result.status, result.errors)
+            return None
+```
+
+Without `configure_logging`, a failed run still logs one short `WARNING run <id> failed (<error_kind>)` line on the
+`local_browser_agent` logger (the full text is in `result.errors`, and at DEBUG); browser-use's duplicate failure
+records are dropped by filters on its loggers, whatever handlers your application uses, unless you set the
+`browser_use` logger to INFO or DEBUG.
+
 ## Configuration
 
 Configs are pydantic models and are validated when constructed: `ModelConfig` raises `ValueError`
@@ -247,7 +281,7 @@ What **does raise**:
 |---|---|
 | `RuntimeError` | `run()` called while the same `BrowserAgent` is already running (use one instance per concurrent run); `run_task_sync()` called from inside a running event loop (use `await run_task(...)`) |
 | `pydantic.ValidationError` (a `ValueError`) | constructing or assigning a config object with invalid values (`ModelConfig`, `BrowserConfig`, `SafetyPolicy`, `AgentConfig`), e.g. `cfg.max_steps = -5` |
-| `ValueError` | `AgentConfig.from_env()` on a bad `LBA_*` value (the message names the variable and expected type); `register_provider` / `build_llm` for an unknown provider |
+| `ValueError` | `sink_timeout_s` that is not a finite number > 0, or `sink_max_timeouts` that is not an integer >= 1 (`BrowserAgent(...)`, `run_task`, `run_task_sync`; raised before anything runs); `AgentConfig.from_env()` on a bad `LBA_*` value (the message names the variable and expected type); `register_provider` / `build_llm` for an unknown provider |
 
 `KeyboardInterrupt` and `asyncio.CancelledError` propagate as usual.
 
@@ -330,7 +364,15 @@ a time, the safety gates, the key `LBA_*` variables).
 
 - Configuration comes from the `LBA_*` environment variables in the [Configuration table](#configuration)
   (plus `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` for those providers). It is validated once at startup: a bad value
-  prints a clear message to stderr and `lba mcp` exits with code 2 instead of failing every call.
+  prints one line per problem to stderr (see degraded mode below).
+- **Degraded mode.** With an invalid configuration the server still starts and completes the MCP handshake, so the
+  client lists both tools instead of showing only "Connection closed". `run_browser_task` then returns a
+  `RunResult`-shaped error (`error_kind: "config"`, one `errors` entry per problem, each
+  `invalid configuration: <field>: <message>`) and `get_agent_config` returns `{status: "error", error_kind: "config",
+  error, errors}`. The same lines are printed to stderr at startup. Set `LBA_MCP_STRICT=1` (or call
+  `serve(strict=True)`) to get the old behaviour: print the problems and exit with code 2 before the handshake.
+  Claude Desktop shows an MCP server's stderr in Claude Desktop's MCP log (the per-server log file for
+  `local-browser-agent`, reachable from its Developer settings / log folder), which is where those startup lines appear.
 - One task at a time; a concurrent call fails at once with a `busy` error.
 - **Progress.** When the client sends a `progressToken`, `run_browser_task` emits an MCP progress notification
   per agent step (`progress` = step, `total` = max steps, `message` = e.g. `Step 3/25: click: Sign in`).

@@ -240,11 +240,12 @@ def test_serve_exits_2_on_bad_config(monkeypatch, capsys):
 
     monkeypatch.setenv("LBA_MAX_STEPS", "0")
     monkeypatch.setattr(mcp_server, "build_server", lambda: pytest.fail("must not start"))
-    assert mcp_server.serve() == 2
+    assert mcp_server.serve(strict=True) == 2
     err = capsys.readouterr().err
     assert "invalid configuration" in err and "max_steps" in err and "errors.pydantic.dev" not in err
     monkeypatch.delenv("LBA_MAX_STEPS")
     monkeypatch.setenv("LBA_PROVIDER", "nope")
+    monkeypatch.setenv("LBA_MCP_STRICT", "1")
     assert cli.main(["mcp"]) == 2
 
 
