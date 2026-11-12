@@ -285,13 +285,15 @@ regressions fail the job. No baseline is shipped; record one deliberately:
 
 ```bash
 uv run lba eval --provider anthropic --model claude-haiku-5-5 --api-key-env ANTHROPIC_API_KEY \
-    --repeats 3 --out eval-results/baseline
+    --repeats 1 --timeout 120 --out eval-results/baseline
 mkdir -p local_browser_agent/evals/baselines
 cp eval-results/baseline/results.json local_browser_agent/evals/baselines/claude-haiku-5-5.json
 ```
 
-Record it with the same `--repeats` and timeout CI uses (set the `repeats` input when dispatching,
-or record with `--repeats 1`), from a complete, error-free run. Re-record it whenever `taskset_hash`
+Record it with the same `--repeats` and `--timeout` CI uses (CI defaults: `--repeats 1`, `--timeout 120`,
+as above). A baseline recorded with more repeats than CI runs makes every CI comparison exit 2 ("fewer runs
+than the baseline"), so for a 3-repeat baseline also dispatch the workflow with `repeats: 3`. Use a complete,
+error-free run. Re-record it whenever `taskset_hash`
 changes (tasks, fixtures or `CHECKER_VERSION`), since `--compare` exits 2 on a mismatch.
 
 ## Adding a task
